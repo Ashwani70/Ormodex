@@ -1,0 +1,49 @@
+{
+  "summary": "Iteration 2 testing of GEW ERP after backend refactor (server.py → routers/ + core/) plus 3 new features: object-storage product image uploads, PDF endpoints for QUO/SO/INV/DC, multi-currency on QUO/SO/INV. Backend: 39/39 pytest tests pass — 20 regression (auth, warehouses, products, suppliers, customers, leads, PO, full sales flow, dashboard, reports, users) + 19 new (uploads incl. unauth/oversize/wrong-type, file serve incl. 404, image_path persistence, multi-currency QUO USD / SO AED / INV EUR, currency defaults, no _id leakage across all collections, all 4 PDF endpoints incl. 401/404). Frontend smoke: login OK, Products New modal shows ImageUploader Upload button (URL input gone), Quotations/SalesOrders/Invoices New modals all expose data-testid='form-currency'; exchange-rate field correctly hidden when INR and shown when switched to USD. PDF blob download triggered from Sales Orders row produced a valid PDF (magic bytes %PDF). Dispatches has PDF download buttons (3 found). Quotations PDF download verified via API (test passed). However, Invoices page has NO PDF download button on rows — only a Printer (in-app print preview) button, even though the page imports downloadPdf from currency lib. This is a missing-feature bug.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Invoices.jsx (table row actions)",
+        "issue": "No Download-PDF button on invoice rows. The page imports `downloadPdf` and `Download` icon but only renders a Printer button that opens an in-app print preview — it does not trigger /api/invoices/{id}/pdf blob download. Other pages (Quotations, SalesOrders, Dispatches) correctly render a download button with data-testid='pdf-{id}' that calls downloadPdf().",
+        "selector": "[data-testid^='pdf-']",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Dashboard",
+        "issues": ["Recharts still emits benign width(-1)/height(-1) console warnings during route transitions (carry-over from iteration 1, not blocking)."]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_gew_erp.py",
+    "/app/backend/tests/test_gew_erp_v2.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/pytest_v2_results.xml"
+  ],
+  "action_items": [
+    "Add a Download-PDF button to each row in /app/frontend/src/pages/Invoices.jsx, mirroring the pattern in Quotations.jsx / SalesOrders.jsx — `<button data-testid={`pdf-${p.id}`} onClick={() => downloadPdf(`/invoices/${p.id}/pdf`, `${p.invoice_number}.pdf`)}><Download/></button>`. The lucide `Download` icon and `downloadPdf` helper are already imported."
+  ],
+  "critical_code_review_comments": [
+    "Backend refactor is clean: server.py is now ~75 lines and mounts 6 routers; core/ holds db, auth_utils, models, utils, storage, pdf, seed (all <300 lines each).",
+    "core/storage.py initialises Emergent object storage at startup with EMERGENT_LLM_KEY (.env) and re-inits on 403 — good resilience.",
+    "Inventory router enforces image content-type allowlist (jpg/png/webp/gif) and 6MB size limit BEFORE writing — verified by tests.",
+    "GET /api/files/{path} only serves paths that exist in db.uploaded_files (path traversal protection by db lookup) — good.",
+    "core/pdf.py uses currency-aware money formatter, prints exchange-rate footer when currency != INR — verified by reading PDF body.",
+    "All MongoDB queries still project away `_id` (regression test passed across 6 collections)."
+  ],
+  "updated_files": ["/app/backend/tests/test_gew_erp_v2.py"],
+  "success_rate": {"backend": "100% (39/39)", "frontend": "92% — 1 missing PDF button on Invoices page"},
+  "test_credentials": "admin@gravityengineering.com / Admin@123 (verified working).",
+  "seed_data_creation": "Tests create TEST_-prefixed quotation (USD), sales-order (AED), invoice (EUR), and one dispatch — they remain in DB after the run (no cleanup hooks). Pre-existing seeded data from iteration 1 also remains.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All backend tests live in /app/backend/tests/test_gew_erp.py (regression, 20) and /app/backend/tests/test_gew_erp_v2.py (uploads/PDF/multi-currency, 19). Run both with: pytest /app/backend/tests/ -v. Frontend issue is purely an Invoices.jsx row-action-button miss; once main agent adds the download button, re-running the Playwright smoke (look for [data-testid^='pdf-'] on /invoices) will confirm. Object storage uploads use Emergent's internal API via EMERGENT_LLM_KEY in backend/.env — no external setup needed.",
+  "rca_of_the_issue": "Invoices.jsx imports `downloadPdf` and `Download` from lucide-react but the JSX in the actions <td> only renders Printer/Edit/Delete/Payment buttons. Quotations.jsx and SalesOrders.jsx both render `<button data-testid={`pdf-${q.id}`} onClick={() => downloadPdf(...)}>` — that snippet was not added to Invoices.jsx during iteration 2 implementation. Fix: add the button (~6 lines) inside the existing <div className='inline-flex gap-1'> in Invoices.jsx between the Printer and Edit buttons."
+}

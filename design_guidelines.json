@@ -1,0 +1,99 @@
+{
+  "theme_archetype": "Industrial & Heavy-Duty (Derived from Swiss & High-Contrast)",
+  "vibe": "Mechanical, reliable, hazard-aware, precise, blueprint feel. Focuses on high-contrast scannability for harsh industrial environments and control rooms.",
+  "typography": {
+    "headings": {
+      "font_family": "Chivo, sans-serif",
+      "strategy": "Bold, authoritative, high-legibility. Used for metrics, dashboard KPIs, and module titles."
+    },
+    "body": {
+      "font_family": "IBM Plex Sans, sans-serif",
+      "strategy": "Technical, tabular, crisp. Perfect for dense data tables, product specs, and forms."
+    },
+    "scales": {
+      "h1": "text-3xl sm:text-4xl lg:text-5xl tracking-tight font-black",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-bold",
+      "h3": "text-xl sm:text-2xl tracking-tight font-bold",
+      "h4": "text-lg sm:text-xl font-bold",
+      "body": "text-sm sm:text-base leading-relaxed",
+      "labels": "text-xs font-bold uppercase tracking-[0.1em] text-zinc-400"
+    }
+  },
+  "colors": {
+    "background": {
+      "primary": "#09090B",
+      "secondary": "#18181B",
+      "tertiary": "#27272A"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "tertiary": "#71717A",
+      "inverse": "#09090B"
+    },
+    "brand": {
+      "yellow_primary": "#FACC15",
+      "yellow_hover": "#EAB308",
+      "yellow_active": "#CA8A04"
+    },
+    "status": {
+      "success": "#22C55E",
+      "warning": "#FACC15",
+      "danger": "#EF4444",
+      "info": "#3B82F6"
+    },
+    "border": "#27272A"
+  },
+  "spacing_and_layout": {
+    "philosophy": "Control Room Grid. Dense, rigorous, utilitarian. Every pixel must serve a purpose. High contrast dividers over empty space.",
+    "dashboard_grid": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4 or gap-px with border-collapse logic.",
+    "padding": "p-4 sm:p-6 for module containers. p-2 sm:p-4 for table cells and dense widgets.",
+    "radius": "rounded-none (0px) or maximally rounded-sm (2px) for an angular, structural metal feel."
+  },
+  "surfaces": {
+    "strategy": "The 'Technical Grid' Look. Avoid soft shadows. Expose the skeleton.",
+    "cards": "Flat background (bg-zinc-900 or bg-black), 1px sharp solid border (border-zinc-800), zero drop shadow. On hover, border changes to brand yellow (border-yellow-400) rather than lifting up.",
+    "glass": "Not recommended for industrial apps, use solid opaque surfaces for maximum legibility.",
+    "active_states": "Use glowing left-borders (border-l-4 border-yellow-400) for active sidebar items or selected rows."
+  },
+  "motion": {
+    "philosophy": "Mechanical and instant. No slow easing. 0.15s max transition times.",
+    "hover": "Instant color snaps or sharp borders. No translation/lifting."
+  },
+  "component_usage": {
+    "tables": "Dense, striped rows (bg-transparent odd / bg-zinc-900/50 even). Yellow highlights on hover.",
+    "buttons": "Sharp edges, flat. Primary: bg-yellow-400 text-black hover:bg-yellow-500. Secondary: border border-zinc-700 bg-transparent text-white hover:border-yellow-400.",
+    "inputs": "bg-black border border-zinc-700 rounded-none focus:border-yellow-400 focus:ring-1 focus:ring-yellow-400 text-white.",
+    "badges": "Sharp rectangular. Warning uses hazard yellow, Success uses Kelly Green, Error uses Signal Red.",
+    "charts": "Recharts. Tooltips should have stark black backgrounds with yellow borders. Grid lines should be faint zinc-800.",
+    "icons": "Use Phosphor Icons (solid/regular) or Lucide (stroke-width: 2) for crisp technical metaphors."
+  },
+  "media": {
+    "login_background": {
+      "url": "https://images.unsplash.com/photo-1761519609119-fa20763499f9?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzB8MHwxfHNlYXJjaHwzfHxpbmR1c3RyaWFsJTIwd2FyZWhvdXNlJTIwaW50ZXJpb3IlMjBzdGVlbHxlbnwwfHx8fDE3NzgzMTc1NzF8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Industrial warehouse interior with steel beams. Use with a heavy black overlay (bg-black/80) to ensure login form readability."
+    },
+    "scaffolding_hero": {
+      "url": "https://images.unsplash.com/photo-1551104271-0bcb571ad767?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NjZ8MHwxfHNlYXJjaHwzfHxzY2FmZm9sZGluZyUyMHN0ZWVsJTIwY29uc3RydWN0aW9ufGVufDB8fHx8MTc3ODMxNzU5NHww&ixlib=rb-4.1.0&q=85",
+      "description": "Close view of scaffolding attached to a building. Good for hero images or module headers."
+    },
+    "product_placeholder": {
+      "url": "https://images.pexels.com/photos/35155685/pexels-photo-35155685.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Detailed view of steel scaffolding. Use as a fallback for product images in the inventory table."
+    },
+    "empty_state_graphic": {
+      "url": "https://images.unsplash.com/photo-1772311348078-b102bb43fe4e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTF8MHwxfHNlYXJjaHwyfHxjYXV0aW9uJTIweWVsbG93JTIwaW5kdXN0cmlhbCUyMHdhcm5pbmd8ZW58MHx8fHwxNzc4MzE3NTk0fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Yellow caution sign. Use this for 'No Data Found' or system alerts in a creative way."
+    }
+  },
+  "instructions_to_main_agent": [
+    "This is a dark-theme only industrial app. Ensure all backgrounds default to zinc-950 or black.",
+    "Do NOT use soft rounding (rounded-xl, rounded-2xl). Stick to rounded-none or rounded-sm.",
+    "For CRM follow-ups, include WhatsApp integration via wa.me links (e.g., https://wa.me/1234567890).",
+    "For Emails, use mailto: links (e.g., mailto:buyer@domain.com).",
+    "Dashboard must feel like a mission-control screen. Dense, metric-heavy, no wasted white (black) space.",
+    "Use data-testid attributes on all buttons, links, and forms for reliable testing.",
+    "Include a sidebar navigation (dark zinc-950) with active states highlighted by a thick yellow left border.",
+    "Avoid Shadcn 'Cards' out-of-the-box styling; strip out shadows and soft radius. Replace with 1px border and flat backgrounds."
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 3 testing of GEW ERP Proforma Invoice (PI) export module. Backend: 61/61 pytest pass — 39 regression (auth/products/orders/invoices/uploads/PDFs/multi-currency from iter 1+2) + 22 NEW PI tests (auth, CRUD, auto-numbering PI-YY-NNNNN, explicit pi_number preservation, server-computed totals (qty/net-weight/amount), search across pi_number/buyer/status/buyer_country, GET 404, PUT recompute + persistence, admin-only DELETE (employee gets 403), PDF endpoint with Content-Type=application/pdf and %PDF- magic bytes, _id never leaked). Deep PDF content extraction with pypdf confirmed: company header, PI No (PI-26-NNNNN auto-numbered), buyer name, port of discharge, Incoterms, currency-aware line totals & TOTAL row using € symbol for EUR, amount-in-words 'One Thousand Euros Only', terms block, dual signature footer — all matching the FECOCIVIL S.A. export-PI specification. Frontend smoke (admin login → /proforma-invoices): sidebar item 'Proforma Invoices' present, page mounts, New Proforma modal opens with all 5 sections, Currency dropdown = USD/EUR/GBP/AED/INR, Incoterms dropdown = FOB/CIF/CFR/EXW/CIP/DAP/DDP, Status dropdown = DRAFT/SENT/ACCEPTED/CONVERTED/CANCELLED. Filling line item (1x40 ft hc, qty=6000, weight=9.1, unit=9.05) auto-updated running line totals (54,300 / 54,600 kg) and footer totals; Save POSTed and the new row PI-26-00001 with FECOCIVIL S.A. / $60,975 appeared. Download-PDF button (data-testid='pi-pdf-{id}') triggered a real blob download with suggested filename 'PI-26-00012.pdf'. No console errors, no _id leak, no broken UI. Both backend regression and the new PI module are production-ready.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Proforma Invoices list (when buyer_country/port_of_discharge are blank)",
+        "issues": ["Empty cells render only an em-dash next to the icon — fine, but consider hiding the icon when value is missing for cleaner look (cosmetic only)."]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_gew_erp.py",
+    "/app/backend/tests/test_gew_erp_v2.py",
+    "/app/backend/tests/test_gew_erp_v3.py",
+    "/app/test_reports/pytest/pytest_v3_results.xml"
+  ],
+  "action_items": [
+    "Note from iteration 2 still open: Invoices.jsx (GST invoices) row actions still lack a Download-PDF button — backend /api/invoices/{id}/pdf works but the UI does not expose it. Mirror the pattern from Quotations.jsx / SalesOrders.jsx / ProformaInvoices.jsx (all of which now have working data-testid='pdf-{id}' or 'pi-pdf-{id}' buttons)."
+  ],
+  "critical_code_review_comments": [
+    "routers/proforma.py is clean (~80 lines): uses crud_* helpers, computes totals server-side via _compute_totals, admin-only delete, PDF response with proper Content-Disposition.",
+    "core/models.py ProformaInvoice has Literal-typed currency/incoterms/status — Pydantic enforces enum validation at the boundary.",
+    "core/utils.next_doc_number uses MongoDB find_one_and_update with upsert+$inc — atomic, race-safe across requests; same counter pattern as PO/QUO/SO/INV.",
+    "core/words.amount_in_words handles up to trillion and per-currency major/minor names (Dollars/Cents, Euros/Cents, Pounds/Pence, Dirhams/Fils, Rupees/Paise) — verified in PDF output.",
+    "core/pi_pdf.py renders a structured export PI: black header, buyer/logistics two-column block, line-item table with currency-aware money formatter, yellow TOTAL row, amount-in-words, terms, dual signature — pypdf extraction confirms all key strings present.",
+    "Frontend ProformaInvoices.jsx (~680 lines) is at the upper end of the recommended file size; could be split into ProformaList + ProformaForm for maintainability, but not blocking.",
+    "All MongoDB queries on proforma_invoices project away _id (regression test verified across 7 collections including proforma_invoices)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_gew_erp_v3.py (new)"
+  ],
+  "success_rate": {"backend": "100% (61/61)", "frontend": "100% on PI module"},
+  "test_credentials": "admin@gravityengineering.com / Admin@123 (verified). Test employee created in DB: test_pi_emp@gravityengineering.com / EmpPass@123.",
+  "seed_data_creation": "Tests create several TEST PIs (FECOCIVIL S.A. with USD/EUR, one with explicit PI-CUSTOM-* number, and a few short-lived rows via employee-delete test that are immediately cleaned up). Frontend smoke also creates one PI-26-NNNNN row tagged 'FECOCIVIL S.A. (TEST)'. No automatic teardown — these rows remain in DB and are visible in the list.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All backend tests live in /app/backend/tests/ — three files: test_gew_erp.py (iter1 regression), test_gew_erp_v2.py (iter2 uploads/PDF/multi-currency), test_gew_erp_v3.py (iter3 PI module). Run all with: pytest /app/backend/tests/ -v. Frontend PI page is /proforma-invoices, sidebar testid='nav-proforma-invoices', table rows testid='pi-row-{id}', PDF button testid='pi-pdf-{id}', new-button testid='new-pi', save-button testid='save-pi', form fields testid='pi-buyer-name'/'pi-currency'/'pi-add-item'. Open iter-2 carry-over: GST Invoices page still missing PDF download button. Otherwise environment is healthy.",
+  "rca_of_the_issue": "N/A — no bugs found in iteration 3."
+}
