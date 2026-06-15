@@ -56,6 +56,15 @@ import Projects from "@/pages/Projects";
 import POS from "@/pages/POS";
 import Integration from "@/pages/Integration";
 import Branches from "@/pages/Branches";
+import StockItems from "@/pages/StockItems";
+import Godowns from "@/pages/Godowns";
+import StockTransfers from "@/pages/StockTransfers";
+import InventoryReports from "@/pages/InventoryReports";
+import Vendors from "@/pages/Vendors";
+import PurchaseOrdersV2 from "@/pages/PurchaseOrdersV2";
+import GRNs from "@/pages/GRNs";
+import PurchaseBills from "@/pages/PurchaseBills";
+import PurchaseReturns from "@/pages/PurchaseReturns";
 
 
 
@@ -116,6 +125,16 @@ function App() {
               <Route path="/stock-log" element={<StockLog />} />
               <Route path="/suppliers" element={<Suppliers />} />
               <Route path="/purchase-orders" element={<PurchaseOrders />} />
+              {/* Inventory & Purchase v2 (stock-ledger backed) */}
+              <Route path="/stock-items" element={<StockItems />} />
+              <Route path="/godowns" element={<Godowns />} />
+              <Route path="/stock-transfers" element={<StockTransfers />} />
+              <Route path="/inventory-reports" element={<InventoryReports />} />
+              <Route path="/vendors" element={<Vendors />} />
+              <Route path="/purchase-orders-v2" element={<PurchaseOrdersV2 />} />
+              <Route path="/grns" element={<GRNs />} />
+              <Route path="/purchase-bills" element={<PurchaseBills />} />
+              <Route path="/purchase-returns" element={<PurchaseReturns />} />
               <Route path="/customers" element={<Customers />} />
               <Route path="/leads" element={<Leads />} />
               <Route path="/quotations" element={<Quotations />} />

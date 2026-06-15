@@ -122,7 +122,89 @@ accrual: receipt ≠ vendor invoice). Confirmed with the user.
   (intra CGST+SGST / inter-state IGST), TDS splitting the payable, idempotency,
   return reverses the bill, graceful skip when CoA unseeded.
 
-Total new tests across phases: **25 passing**.
+## Frontend (Phase 4 of work order) — DONE
+
+10 screens reusing the existing design system (ui-kit, Modal, sonner, `@/` alias,
+dark zinc/yellow theme), online-only with an offline indicator that disables
+writes (the only offline mechanism in the repo is POS-local; no generic queue):
+- Masters: `StockItems.jsx` (conditional batch/serial/expiry), `Godowns.jsx`
+  (nesting), `Vendors.jsx`.
+- Documents: `StockTransfers.jsx`, `PurchaseOrdersV2.jsx`, `GRNs.jsx`
+  (per-item conditional batch/serial/expiry capture), `PurchaseBills.jsx` (TDS,
+  GRN/PO linkage, live totals), `PurchaseReturns.jsx`.
+- Reports: `InventoryReports.jsx` (tabbed summary / movement / aging / low-stock).
+- Shared: `hooks/useOnline.js`, `components/OfflineBanner.jsx`. Wired into
+  `App.js` routes and `Sidebar.jsx` nav. `craco build` compiles clean.
+- Also hardened the Job Work challan modal: searchable product picker
+  (name/SKU/qty, loading + "no products" states), custom-product entry
+  (name/desc/UoM/remarks), Description column. `JobWork.jsx` only.
+
+Total new tests across phases: **34 passing** (9 valuation, 3 stock-ledger
+service, 7 audit, 6 purchase-bill posting, 9 RBAC guards).
+
+## Definition of Done — honest status
+
+- [x] **Audit trail logs every create/edit/delete atomically and cannot be
+  disabled or mutated.** Done via shared `crud_*` → `_write_with_audit`
+  (transaction when available, else compensating rollback); read-only RBAC
+  endpoint; tests in `test_audit_trail.py`. DB-level immutability (revoke
+  grants) is a deployment control documented in `backend/AUDIT.md` — Mongo has
+  no per-collection REVOKE, so it can't be enforced in code.
+- [x] **Stock item / godown / batch / serial masters with conditional tracking.**
+  Backend `inventory_v2`, frontend forms enforce batch/serial/expiry only when
+  the item tracks them.
+- [x] **GRN posts inward stock; transfers move stock; valuation (FIFO + WA)
+  correct and tested.** `test_stock_valuation.py` + `test_stock_ledger_service.py`
+  (incl. per-godown FIFO isolation).
+- [x] **PO → GRN → Bill posts to the existing accounting ledger; debit notes
+  reverse.** `test_purchase_bill_posting.py` proves balanced voucher + reversal.
+- [x] **Four inventory reports return correct numbers.** Reports derive from the
+  same valuation engine the unit tests assert; report endpoints reuse
+  `value_movements`. (Report *endpoints* are not separately integration-tested —
+  see gap note below.)
+- [~] **Tenant isolation and RBAC verified by tests.** RBAC: DONE
+  (`test_rbac_guards.py`, 9 tests). **Tenant isolation: NOT MET** — this app is
+  single-tenant on MongoDB; there is no `tenant_id` scoping or RLS to test. A
+  real isolation test cannot exist until multi-tenancy is built. Flagged, not
+  faked.
+- [x] **PLAN.md + CHANGELOG.** This file + `CHANGELOG.md`.
+
+### Known gaps (not done)
+- **Tenant isolation** — no tenancy exists; see above.
+- **Report endpoints** are proven only at the valuation-engine level, not via
+  live HTTP integration tests (no running server/Mongo in this environment).
+- **Frontend** verified by `craco build` only — not click-tested against a live
+  backend.
+- Two parallel purchase/inventory stacks now coexist (legacy flat model +
+  v2 stock-ledger); legacy retirement + data backfill migration are deferred.
+
+## Remaining items (next phase)
+
+Carried forward and explicitly deferred from this phase:
+
+1. **Multi-tenancy & tenant isolation — FUTURE ENHANCEMENT.**
+   The app is single-tenant on MongoDB today. Closing the DoD "tenant isolation"
+   item requires, as a cross-cutting change:
+   - a `tenant_id` on every business collection and on `audit_logs`;
+   - tenant context threaded through auth (JWT claim → request scope) and
+     injected into every `crud_*` / query filter so no read or write can cross
+     tenants;
+   - a test proving "a query as tenant A returns zero tenant-B rows".
+   Note: MongoDB has no RLS, so isolation must be enforced in the application
+   data layer (or via per-tenant databases) — there is no Postgres-style
+   `REVOKE`/RLS equivalent. Tracked as a future enhancement, not a bug.
+
+2. **Report endpoint integration tests.**
+   The four inventory reports (`/inventory/v2/reports/*`) and the purchase
+   posting endpoints are validated at the engine/unit level. Add live HTTP
+   integration tests (running server + Mongo, or `httpx.AsyncClient` against the
+   FastAPI app) asserting the JSON shape and numbers end-to-end, including
+   auth/RBAC on each route.
+
+3. **Legacy stack retirement + data backfill** (lower priority): migrate
+   `suppliers`/`purchase_orders`/`products`/`stock_transactions` into the v2
+   `vendors`/`purchase_orders_v2`/`stock_items`/stock-ledger collections, then
+   retire the legacy routes once the frontend is fully on v2.
 
 ## Out of scope (explicitly not doing)
 

@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import {
   Boxes, Plus, ArrowDownToLine, ArrowUpFromLine,
   TrendingDown, AlertTriangle, FileText, Trash2,
+  Search, ChevronDown, PencilLine, Loader2,
 } from "lucide-react";
 import {
   PageHeader, PrimaryButton, SecondaryButton,
@@ -13,6 +14,112 @@ import Modal from "@/components/Modal";
 
 const inr = (n) => Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 const num = (n, d = 2) => Number(n || 0).toFixed(d);
+
+const UOM_OPTIONS = ["pcs", "kg", "g", "ltr", "ml", "mtr", "cm", "box", "set", "nos", "pair", "roll", "sheet"];
+
+const blankExistingItem = () => ({ product_id: "", quantity: 1, sku: "", product_name: "", description: "", remarks: "", is_custom: false });
+const blankCustomItem = () => ({ product_id: "", quantity: 1, sku: "", product_name: "", description: "", unit: "pcs", remarks: "", is_custom: true });
+
+// Searchable, dark-theme product picker. Shows name + SKU + available qty,
+// supports type-to-filter for long lists, and surfaces loading / empty states.
+// `disabledIds` prevents picking the same product on two rows.
+function SearchableProductSelect({ products, loading, value, onChange, disabledIds = [], invalid }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const onDocClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  const selected = products.find((p) => p.id === value);
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? products.filter((p) =>
+        `${p.name || ""} ${p.sku || ""} ${p.category || ""}`.toLowerCase().includes(q))
+    : products;
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={`w-full flex items-center justify-between gap-2 bg-background border text-left text-sm px-3 py-2 transition-colors focus:outline-none focus:border-primary ${
+          invalid ? "border-red-500" : "border-input hover:border-primary/60"
+        }`}
+        style={{ borderRadius: "var(--radius)" }}
+      >
+        <span className={`truncate ${selected ? "text-foreground" : "text-muted-foreground"}`}>
+          {selected ? (
+            <>
+              {selected.name}
+              <span className="text-muted-foreground"> · {selected.sku || "—"}</span>
+            </>
+          ) : (
+            "Select product…"
+          )}
+        </span>
+        <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+      </button>
+
+      {open && (
+        <div className="absolute z-30 mt-1 w-full min-w-[18rem] bg-card border border-border shadow-2xl"
+          style={{ borderRadius: "var(--radius)" }}>
+          <div className="flex items-center gap-2 px-2.5 py-2 border-b border-border">
+            <Search className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+            <input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search name, SKU…"
+              className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+            />
+          </div>
+          <div className="max-h-56 overflow-y-auto">
+            {loading ? (
+              <div className="flex items-center gap-2 px-3 py-4 text-muted-foreground font-mono text-xs">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading products…
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="px-3 py-4 text-muted-foreground font-mono text-xs text-center">No products found</div>
+            ) : (
+              filtered.map((p) => {
+                const isDisabled = disabledIds.includes(p.id) && p.id !== value;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    disabled={isDisabled}
+                    onClick={() => { onChange(p.id); setOpen(false); setQuery(""); }}
+                    className={`w-full text-left px-3 py-2 flex items-center justify-between gap-3 border-b border-border/50 last:border-0 transition-colors ${
+                      isDisabled
+                        ? "opacity-40 cursor-not-allowed"
+                        : p.id === value
+                        ? "bg-primary/10 text-primary"
+                        : "hover:bg-muted/40 text-foreground"
+                    }`}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm">{p.name}</span>
+                      <span className="block truncate font-mono text-[10px] text-muted-foreground">
+                        {p.sku || "no-sku"}{isDisabled ? " · already added" : ""}
+                      </span>
+                    </span>
+                    <span className="font-mono text-[11px] text-muted-foreground whitespace-nowrap flex-shrink-0">
+                      {num(p.quantity, 2)} {p.unit || "pcs"}
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function JobWork() {
   const [challans, setChallans] = useState([]);
@@ -35,7 +142,7 @@ export default function JobWork() {
   const [newChallan, setNewChallan] = useState({
     job_worker_id: "", date: new Date().toISOString().split("T")[0],
     nature: "inputs",
-    items: [{ product_id: "", quantity: 1, sku: "", product_name: "", is_custom: false }],
+    items: [blankExistingItem()],
     notes: "",
   });
 
@@ -89,18 +196,27 @@ export default function JobWork() {
 
     for (const it of newChallan.items) {
       if (it.is_custom) {
-        if (!String(it.product_name || "").trim()) { toast.warning("Please enter a product name for the manual line item."); return; }
+        if (!String(it.product_name || "").trim()) { toast.warning("Please enter a product name for the custom line item."); return; }
       } else if (!it.product_id) {
         toast.warning("Please select a product for each line item."); return;
       }
+      if (!(parseFloat(it.quantity) > 0)) { toast.warning("Each line item needs a quantity greater than zero."); return; }
     }
 
     const finalItems = newChallan.items.map(it => {
       if (it.is_custom) {
-        return { product_id: null, product_name: it.product_name.trim(), sku: it.sku || "", quantity: parseFloat(it.quantity), unit: it.unit || "pcs", is_custom: true };
+        return {
+          product_id: null, product_name: it.product_name.trim(), sku: it.sku || "",
+          description: (it.description || "").trim(), quantity: parseFloat(it.quantity),
+          unit: it.unit || "pcs", remarks: (it.remarks || "").trim(), is_custom: true,
+        };
       }
       const pr = products.find(p => p.id === it.product_id);
-      return { product_id: it.product_id, product_name: pr?.name || "", sku: pr?.sku || "", quantity: parseFloat(it.quantity), unit: pr?.unit || "pcs", is_custom: false };
+      return {
+        product_id: it.product_id, product_name: pr?.name || "", sku: pr?.sku || "",
+        description: (it.description || "").trim(), quantity: parseFloat(it.quantity),
+        unit: pr?.unit || "pcs", remarks: (it.remarks || "").trim(), is_custom: false,
+      };
     });
     for (const item of finalItems) {
       if (item.is_custom) continue;
@@ -115,7 +231,7 @@ export default function JobWork() {
       await api.post("/job-work/challans", { ...newChallan, job_worker_name: worker?.company || worker?.name || "", items: finalItems });
       toast.success("Job Work Challan generated!");
       setIsChallanModalOpen(false);
-      setNewChallan({ job_worker_id: "", date: new Date().toISOString().split("T")[0], nature: "inputs", items: [{ product_id: "", quantity: 1, sku: "", product_name: "", is_custom: false }], notes: "" });
+      setNewChallan({ job_worker_id: "", date: new Date().toISOString().split("T")[0], nature: "inputs", items: [blankExistingItem()], notes: "" });
       loadData();
     } catch (err) { toast.error("Failed: " + (err.response?.data?.detail || "")); }
   };
@@ -483,93 +599,98 @@ export default function JobWork() {
           <div className="space-y-3 pt-2">
             <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground block">Material Line Items</span>
             <div className="border border-border overflow-x-auto rounded-md">
-              <table className="w-full text-left text-xs font-mono">
+              <table className="w-full text-left text-xs font-mono min-w-[40rem]">
                 <thead>
                   <tr className="border-b border-border bg-muted/40 text-muted-foreground">
-                    <th className="p-2.5 uppercase font-semibold">Product</th>
+                    <th className="p-2.5 uppercase font-semibold w-[34%]">Product</th>
+                    <th className="p-2.5 uppercase font-semibold w-[28%]">Description</th>
                     <th className="p-2.5 uppercase font-semibold w-28 text-right">Quantity</th>
-                    <th className="p-2.5 uppercase font-semibold w-28 text-right">Available</th>
+                    <th className="p-2.5 uppercase font-semibold w-28 text-right">Available Stock</th>
                     <th className="p-2.5 uppercase font-semibold w-12 text-center">Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {newChallan.items.map((item, idx) => {
                     const selectedProduct = !item.is_custom && products.find(p => p.id === item.product_id);
-                    const availableQty = item.is_custom ? "—" : selectedProduct ? `${selectedProduct.quantity} ${selectedProduct.unit || "pcs"}` : "—";
+                    const availableQty = item.is_custom
+                      ? "—"
+                      : selectedProduct ? `${num(selectedProduct.quantity, 2)} ${selectedProduct.unit || "pcs"}` : "—";
                     const isOverStock = !item.is_custom && selectedProduct && parseFloat(item.quantity || 0) > parseFloat(selectedProduct.quantity || 0);
+                    const disabledIds = newChallan.items.filter((_, i) => i !== idx).map(it => it.product_id).filter(Boolean);
 
-                    const toggleCustom = () => {
-                      const updated = [...newChallan.items];
-                      updated[idx] = { ...updated[idx], is_custom: !updated[idx].is_custom, product_id: "", product_name: "", sku: "" };
-                      setNewChallan(p => ({ ...p, items: updated }));
-                    };
+                    const patch = (changes) => setNewChallan(p => ({
+                      ...p, items: p.items.map((it, i) => (i === idx ? { ...it, ...changes } : it)),
+                    }));
 
                     return (
-                      <tr key={idx} className="border-b border-border hover:bg-muted/10">
-                        <td className="p-2">
+                      <tr key={idx} className="border-b border-border hover:bg-muted/10 align-top">
+                        <td className="p-2 align-top">
                           {item.is_custom ? (
+                            <div className="space-y-1.5">
+                              <Input
+                                type="text"
+                                value={item.product_name}
+                                placeholder="Product name *"
+                                onChange={e => patch({ product_name: e.target.value })}
+                                required
+                                className="h-9 py-1"
+                              />
+                              <Select
+                                value={item.unit}
+                                onChange={e => patch({ unit: e.target.value })}
+                                className="h-9 py-1"
+                                aria-label="Unit of measure"
+                              >
+                                {UOM_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
+                              </Select>
+                              <span className="inline-flex items-center gap-1 font-mono text-[9px] uppercase tracking-wider text-primary">
+                                <PencilLine className="w-3 h-3" /> Custom product
+                              </span>
+                            </div>
+                          ) : (
+                            <SearchableProductSelect
+                              products={products}
+                              loading={loading}
+                              value={item.product_id}
+                              disabledIds={disabledIds}
+                              onChange={(id) => patch({ product_id: id })}
+                            />
+                          )}
+                        </td>
+                        <td className="p-2 align-top">
+                          <Input
+                            type="text"
+                            value={item.description || ""}
+                            placeholder={item.is_custom ? "Work / description (optional)" : "Optional"}
+                            onChange={e => patch({ description: e.target.value })}
+                            className="h-9 py-1"
+                          />
+                          {item.is_custom && (
                             <Input
                               type="text"
-                              value={item.product_name}
-                              placeholder="Write product name…"
-                              onChange={e => {
-                                const updated = [...newChallan.items];
-                                updated[idx].product_name = e.target.value;
-                                setNewChallan(p => ({ ...p, items: updated }));
-                              }}
-                              required
-                              className="h-9 py-1"
+                              value={item.remarks || ""}
+                              placeholder="Remarks (optional)"
+                              onChange={e => patch({ remarks: e.target.value })}
+                              className="h-9 py-1 mt-1.5"
                             />
-                          ) : (
-                            <Select
-                              value={item.product_id}
-                              onChange={e => {
-                                const updated = [...newChallan.items];
-                                updated[idx].product_id = e.target.value;
-                                setNewChallan(p => ({ ...p, items: updated }));
-                              }}
-                              required
-                              className="h-9 py-1"
-                            >
-                              <option value="">Select product…</option>
-                              {products.map(p => {
-                                const isSelectedElsewhere = newChallan.items.some((it, i) => i !== idx && !it.is_custom && it.product_id === p.id);
-                                return (
-                                  <option key={p.id} value={p.id} disabled={isSelectedElsewhere}>
-                                    {p.name} ({p.sku})
-                                  </option>
-                                );
-                              })}
-                            </Select>
                           )}
-                          <button
-                            type="button"
-                            onClick={toggleCustom}
-                            className="mt-1 font-mono text-[10px] uppercase tracking-wider text-primary hover:underline"
-                          >
-                            {item.is_custom ? "Pick from list" : "Write manually"}
-                          </button>
                         </td>
-                        <td className="p-2 text-right">
+                        <td className="p-2 text-right align-top">
                           <Input
                             type="number"
                             value={item.quantity}
-                            onChange={e => {
-                              const updated = [...newChallan.items];
-                              updated[idx].quantity = e.target.value;
-                              setNewChallan(p => ({ ...p, items: updated }));
-                            }}
+                            onChange={e => patch({ quantity: e.target.value })}
                             min="0.001"
                             step="any"
                             required
-                            className={`h-9 py-1 text-right ${isOverStock ? "border-red-500 focus:border-red-500 focus:ring-red-500 text-red-400" : ""}`}
+                            className={`h-9 py-1 text-right ${isOverStock ? "border-red-500 focus:border-red-500 text-red-400" : ""}`}
                           />
                         </td>
-                        <td className={`p-2 text-right tabular text-xs font-semibold ${isOverStock ? "text-red-400" : "text-muted-foreground"}`}>
+                        <td className={`p-2 text-right tabular text-xs font-semibold align-top pt-4 ${isOverStock ? "text-red-400" : "text-muted-foreground"}`}>
                           {availableQty}
                           {isOverStock && <div className="text-[9px] text-red-500 uppercase mt-0.5">Over Stock</div>}
                         </td>
-                        <td className="p-2 text-center">
+                        <td className="p-2 text-center align-top">
                           <button
                             type="button"
                             onClick={() => {
@@ -593,12 +714,20 @@ export default function JobWork() {
               </table>
             </div>
 
-            <SecondaryButton
-              icon={Plus}
-              onClick={() => setNewChallan(p => ({ ...p, items: [...p.items, { product_id: "", quantity: 1, sku: "", product_name: "", is_custom: false }] }))}
-            >
-              + Add Product
-            </SecondaryButton>
+            <div className="flex flex-wrap gap-2">
+              <SecondaryButton
+                icon={Plus}
+                onClick={() => setNewChallan(p => ({ ...p, items: [...p.items, blankExistingItem()] }))}
+              >
+                Add Existing Product
+              </SecondaryButton>
+              <SecondaryButton
+                icon={PencilLine}
+                onClick={() => setNewChallan(p => ({ ...p, items: [...p.items, blankCustomItem()] }))}
+              >
+                Add Custom Product
+              </SecondaryButton>
+            </div>
           </div>
 
           <Field label="Notes">
