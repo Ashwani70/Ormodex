@@ -1,5 +1,24 @@
 # Changelog
 
+## Voucher engine — payroll posting + replica-set transactional tests
+
+- **Payroll posting** — `payroll` now posts a balanced salary journal (Dr
+  Salaries & Wages; Cr PF / ESI / PT / TDS payables; Cr net Salary Payable) from
+  accounting_lines, idempotent and reversible. `attendance` is an explicit
+  no-post source document (payable days / piece-rate). **All 34 parent_types are
+  now implemented — nothing remains gated.**
+- **Replica-set scaffolding** — `docker-compose.mongo-rs.yml` (single-node rs0)
+  + `test_txn_rollback_integration.py`: proves the app's transactional write+audit
+  path (`core.utils._write_with_audit`) **rolls back the business write when the
+  audit insert fails inside the transaction**. Skips unless `MONGO_URL` is a
+  replica set — closing the previously-documented gap once infra is available.
+
+Tests: `test_payroll_posting.py` (5) — balanced salary JE, idempotent,
+unbalanced rejected, reversal mirrors, attendance posts nothing. Maintained
+subset 108 passing; +2 transactional-rollback tests skip until a replica set runs.
+
+---
+
 ## Voucher engine — manufacturing, transfers, reconciliation, concurrency proof
 
 Four milestones over the posting engine (each its own commit):

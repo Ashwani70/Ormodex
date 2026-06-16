@@ -1,0 +1,34 @@
+# Single-node MongoDB replica set for local development + transactional tests.
+#
+# The app's audit path (core.utils._write_with_audit) uses multi-document
+# transactions when the server supports them — which requires a replica set.
+# A standalone mongod cannot do transactions, so the atomic write+audit rollback
+# can only be exercised against this.
+#
+# Usage:
+#   docker compose -f docker-compose.mongo-rs.yml up -d
+#   # one-time: initiate the replica set
+#   docker compose -f docker-compose.mongo-rs.yml exec mongo \
+#       mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'
+#   # then point the app/tests at it:
+#   export MONGO_URL="mongodb://localhost:27017/?replicaSet=rs0"
+#
+# Tear down: docker compose -f docker-compose.mongo-rs.yml down -v
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: gw_mongo_rs
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_rs_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mongo_rs_data:
