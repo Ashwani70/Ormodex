@@ -17,6 +17,19 @@ const num = (n, d = 2) => Number(n || 0).toFixed(d);
 
 const UOM_OPTIONS = ["pcs", "kg", "g", "ltr", "ml", "mtr", "cm", "box", "set", "nos", "pair", "roll", "sheet"];
 
+// Normalize a product doc from /products into the shape the selector relies on.
+// The API returns `id` (Mongo `_id` is projected out) and `quantity` for stock;
+// we also tolerate `_id` / `availableQty` defensively so a backend shape change
+// can't silently break the dropdown (value=undefined / blank qty).
+const normalizeProduct = (p) => ({
+  ...p,
+  id: p.id ?? p._id ?? "",
+  name: p.name ?? "",
+  sku: p.sku ?? "",
+  quantity: Number(p.quantity ?? p.availableQty ?? 0),
+  unit: p.unit ?? "pcs",
+});
+
 const blankExistingItem = () => ({ product_id: "", quantity: 1, sku: "", product_name: "", description: "", remarks: "", is_custom: false });
 const blankCustomItem = () => ({ product_id: "", quantity: 1, sku: "", product_name: "", description: "", unit: "pcs", remarks: "", is_custom: true });
 
@@ -125,6 +138,7 @@ export default function JobWork() {
   const [challans, setChallans] = useState([]);
   const [receipts, setReceipts] = useState([]);
   const [products, setProducts] = useState([]);
+  const [productsLoading, setProductsLoading] = useState(true);
   const [suppliers, setSuppliers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("challans");
@@ -150,19 +164,43 @@ export default function JobWork() {
     date: new Date().toISOString().split("T")[0], items: [], notes: "",
   });
 
+  const loadProducts = async () => {
+    // Loaded independently so it can be refreshed when the challan modal opens,
+    // and so a failure here is reported on its own (not masked by other calls).
+    setProductsLoading(true);
+    try {
+      const pRes = await api.get("/products");
+      setProducts(Array.isArray(pRes.data) ? pRes.data.map(normalizeProduct) : []);
+    } catch (e) {
+      setProducts([]);
+      toast.error("Failed to load inventory products. Use 'Add Custom Product' to continue.");
+    } finally {
+      setProductsLoading(false);
+    }
+  };
+
+  // Refresh products each time the challan modal opens, so the selector reflects
+  // current inventory (and recovers if the initial load failed).
+  const openChallanModal = () => {
+    setIsChallanModalOpen(true);
+    loadProducts();
+  };
+
   const loadData = async () => {
     setLoading(true);
-    try {
-      const [cRes, pRes, sRes] = await Promise.all([
-        api.get("/job-work/challans"),
-        api.get("/products"),
-        api.get("/suppliers"),
-      ]);
-      setChallans(cRes.data);
-      setProducts(pRes.data);
-      setSuppliers(sRes.data);
-    } catch { toast.error("Failed to load Job Work data."); }
-    finally { setLoading(false); }
+    // Each call is independent: a failing challans/suppliers fetch must not blank
+    // out the product list (which would break the challan product selector).
+    const [cRes, sRes] = await Promise.allSettled([
+      api.get("/job-work/challans"),
+      api.get("/suppliers"),
+    ]);
+    if (cRes.status === "fulfilled") setChallans(cRes.value.data);
+    if (sRes.status === "fulfilled") setSuppliers(sRes.value.data);
+    if (cRes.status === "rejected" || sRes.status === "rejected") {
+      toast.error("Some Job Work data failed to load.");
+    }
+    await loadProducts();
+    setLoading(false);
   };
 
   const loadReceipts = async () => {
@@ -182,6 +220,7 @@ export default function JobWork() {
     } catch (e) { toast.error(e.response?.data?.detail || "Failed to load ITC-04"); }
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { loadData(); }, []);
 
   useEffect(() => {
@@ -287,7 +326,7 @@ export default function JobWork() {
         eyebrow="Inventory & Production"
         title="Job Work Processing"
         description="Track materials sent to job workers · Record returns · Monitor overdue challans · Generate ITC-04."
-        actions={<PrimaryButton icon={Plus} onClick={() => setIsChallanModalOpen(true)}>NEW JOB WORK CHALLAN</PrimaryButton>}
+        actions={<PrimaryButton icon={Plus} onClick={openChallanModal}>NEW JOB WORK CHALLAN</PrimaryButton>}
       />
 
       {/* Tab bar */}
@@ -648,13 +687,24 @@ export default function JobWork() {
                               </span>
                             </div>
                           ) : (
-                            <SearchableProductSelect
-                              products={products}
-                              loading={loading}
-                              value={item.product_id}
-                              disabledIds={disabledIds}
-                              onChange={(id) => patch({ product_id: id })}
-                            />
+                            <div className="space-y-1">
+                              <SearchableProductSelect
+                                products={products}
+                                loading={productsLoading}
+                                value={item.product_id}
+                                disabledIds={disabledIds}
+                                onChange={(id) => patch({ product_id: id })}
+                              />
+                              {!productsLoading && products.length === 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => patch({ is_custom: true, product_id: "" })}
+                                  className="font-mono text-[10px] uppercase tracking-wider text-primary hover:underline"
+                                >
+                                  No inventory products — add as custom
+                                </button>
+                              )}
+                            </div>
                           )}
                         </td>
                         <td className="p-2 align-top">
