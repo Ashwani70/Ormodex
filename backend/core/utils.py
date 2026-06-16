@@ -1,3 +1,5 @@
+from typing import Optional
+
 import uuid
 from datetime import datetime, timezone
 
@@ -169,11 +171,41 @@ async def crud_create(collection: str, doc: dict, user: dict | None = None, ip: 
     return doc
 
 
-async def crud_list(collection, q=None, search_fields=None, sort_field="created_at", filt=None):
+async def paginated_list(collection, *, page=None, limit=None, q=None,
+                          search_fields=None, sort_field="created_at", sort_dir=-1,
+                          filt=None, from_date=None, to_date=None, date_field="created_at"):
+    """Generic paginated, filterable, searchable list helper.
+
+    Returns the standard envelope {total, page, items} when paging params
+    are supplied, or a bare array when page/limit are None (backward compat).
+    Page/limit are clamped: page>=1, 1<=limit<=200.
+    """
     f = dict(filt or {})
     if q and search_fields:
         f["$or"] = [{x: {"$regex": q, "$options": "i"}} for x in search_fields]
-    return await db[collection].find(f, {"_id": 0}).sort(sort_field, -1).to_list(2000)
+    if from_date or to_date:
+        rng: dict = {}
+        if from_date:
+            rng["$gte"] = from_date
+        if to_date:
+            rng["$lte"] = to_date
+        f[date_field] = rng
+
+    if page is not None or limit is not None:
+        page = max(1, int(page or 1))
+        limit = max(1, min(200, int(limit or 50)))
+        total = await db[collection].count_documents(f)
+        skip = (page - 1) * limit
+        items = await db[collection].find(f, {"_id": 0}).sort(sort_field, sort_dir).skip(skip).limit(limit).to_list(limit)
+        return {"total": total, "page": page, "items": items}
+    return await db[collection].find(f, {"_id": 0}).sort(sort_field, sort_dir).to_list(2000)
+
+
+async def crud_list(collection, q=None, search_fields=None, sort_field="created_at", sort_dir=-1, filt=None):
+    f = dict(filt or {})
+    if q and search_fields:
+        f["$or"] = [{x: {"$regex": q, "$options": "i"}} for x in search_fields]
+    return await db[collection].find(f, {"_id": 0}).sort(sort_field, sort_dir).to_list(2000)
 
 
 async def crud_get(collection: str, item_id: str) -> dict:

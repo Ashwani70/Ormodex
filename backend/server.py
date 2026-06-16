@@ -241,12 +241,48 @@ api_router.include_router(voucher_engine_router)
 
 app.include_router(api_router)
 
-# Versioned API alias: masters + vouchers are also reachable under /api/v1/*
-# (spec convention) in addition to the existing /api/* paths. Same router
-# objects, so behaviour is identical — no duplication, no breakage of /api/*.
+# Versioned API alias: all major router groups are also reachable under /api/v1/*
+# (spec convention) in addition to the existing /api/* paths. Same router objects,
+# so behaviour is identical — no duplication, no breakage of /api/*.
 v1_router = APIRouter(prefix="/api/v1")
 v1_router.include_router(masters_router)
 v1_router.include_router(voucher_engine_router)
+v1_router.include_router(accounting_router)
+v1_router.include_router(gst_accounting_router)
+v1_router.include_router(ledger_router)
+v1_router.include_router(vouchers_router)
+v1_router.include_router(inventory_v2_router)
+v1_router.include_router(purchase_v2_router)
+v1_router.include_router(banking_router)
+v1_router.include_router(banking_pdc_router)
+v1_router.include_router(budget_router)
+v1_router.include_router(expense_mgmt_router)
+v1_router.include_router(hr_setup_router)
+v1_router.include_router(hr_employees_router)
+v1_router.include_router(hr_attendance_router)
+v1_router.include_router(hr_payroll_router)
+v1_router.include_router(payroll_router)
+v1_router.include_router(manufacturing_router)
+v1_router.include_router(job_work_router)
+v1_router.include_router(sales_router)
+v1_router.include_router(purchase_router)
+v1_router.include_router(inventory_router)
+v1_router.include_router(fixed_assets_router)
+v1_router.include_router(approvals_router)
+v1_router.include_router(verifications_router)
+v1_router.include_router(ai_assistant_router)
+v1_router.include_router(mis_reports_router)
+v1_router.include_router(stock_analysis_router)
+v1_router.include_router(reports_router)
+v1_router.include_router(reports_engine_router)
+v1_router.include_router(pricing_router)
+v1_router.include_router(projects_router)
+v1_router.include_router(branches_router)
+v1_router.include_router(audit_router)
+v1_router.include_router(portal_router)
+v1_router.include_router(pos_router)
+v1_router.include_router(company_router)
+v1_router.include_router(theme_settings_router)
 app.include_router(v1_router)
 
 

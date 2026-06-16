@@ -20,7 +20,7 @@ from core.purchase_models import (
     GRNV2, PurchaseBill, PurchaseOrderV2, PurchaseReturn, Vendor, VendorUpdate,
 )
 from core.stock_ledger import post_entry
-from core.utils import crud_create, crud_get, crud_list, crud_update, log_audit, next_doc_number, now_iso
+from core.utils import crud_create, crud_get, crud_list, crud_update, log_audit, next_doc_number, now_iso, paginated_list
 
 router = APIRouter(prefix="/purchase/v2", tags=["Purchase v2"])
 
@@ -42,9 +42,14 @@ async def _grn_over_receipt_blocked() -> bool:
 # ───────────────────────── Vendor master ─────────────────────────
 
 @router.get("/vendors")
-async def list_vendors(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_vendors(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                       from_date: Optional[str] = None, to_date: Optional[str] = None,
+                       user: dict = Depends(get_current_user)):
     _require_purchase(user)
-    return await crud_list("vendors", q, ["name", "gstin", "email", "phone"], sort_field="name")
+    return await paginated_list("vendors", page=page, limit=limit, q=q,
+                                 search_fields=["name", "gstin", "email", "phone"],
+                                 sort_field="name", sort_dir=1,
+                                 from_date=from_date, to_date=to_date, date_field="created_at")
 
 
 @router.post("/vendors")
@@ -77,9 +82,14 @@ def _line_amount(line: dict) -> float:
 
 
 @router.get("/orders")
-async def list_orders(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_orders(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                      from_date: Optional[str] = None, to_date: Optional[str] = None,
+                      user: dict = Depends(get_current_user)):
     _require_purchase(user)
-    return await crud_list("purchase_orders_v2", q, ["po_number", "vendor_name", "status"])
+    return await paginated_list("purchase_orders_v2", page=page, limit=limit, q=q,
+                                 search_fields=["po_number", "vendor_name", "status"],
+                                 sort_field="created_at", sort_dir=-1,
+                                 from_date=from_date, to_date=to_date)
 
 
 @router.get("/orders/{po_id}")
@@ -148,9 +158,14 @@ async def _recompute_po_receipt_status(po_id: str, user: dict):
 
 
 @router.get("/grns")
-async def list_grns(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_grns(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                    from_date: Optional[str] = None, to_date: Optional[str] = None,
+                    user: dict = Depends(get_current_user)):
     _require_purchase(user)
-    return await crud_list("goods_receipt_notes_v2", q, ["grn_number", "vendor_name"])
+    return await paginated_list("goods_receipt_notes_v2", page=page, limit=limit, q=q,
+                                 search_fields=["grn_number", "vendor_name"],
+                                 sort_field="created_at", sort_dir=-1,
+                                 from_date=from_date, to_date=to_date)
 
 
 @router.post("/grns")
@@ -211,9 +226,14 @@ async def create_grn(payload: GRNV2, user: dict = Depends(get_current_user)):
 # ───────────────────────── Purchase Bill ─────────────────────────
 
 @router.get("/bills")
-async def list_bills(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_bills(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                     from_date: Optional[str] = None, to_date: Optional[str] = None,
+                     user: dict = Depends(get_current_user)):
     _require_purchase(user)
-    return await crud_list("purchase_bills", q, ["bill_number", "vendor_invoice_no", "vendor_name"])
+    return await paginated_list("purchase_bills", page=page, limit=limit, q=q,
+                                 search_fields=["bill_number", "vendor_invoice_no", "vendor_name"],
+                                 sort_field="created_at", sort_dir=-1,
+                                 from_date=from_date, to_date=to_date)
 
 
 @router.post("/bills")
@@ -324,9 +344,14 @@ async def three_way_match(bill_id: str, user: dict = Depends(get_current_user)):
 # ───────────────────────── Purchase Return / Debit Note ─────────────────────────
 
 @router.get("/returns")
-async def list_returns(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_returns(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                       from_date: Optional[str] = None, to_date: Optional[str] = None,
+                       user: dict = Depends(get_current_user)):
     _require_purchase(user)
-    return await crud_list("purchase_returns", q, ["debit_note_number", "vendor_name"])
+    return await paginated_list("purchase_returns", page=page, limit=limit, q=q,
+                                 search_fields=["debit_note_number", "vendor_name"],
+                                 sort_field="created_at", sort_dir=-1,
+                                 from_date=from_date, to_date=to_date)
 
 
 @router.post("/returns")

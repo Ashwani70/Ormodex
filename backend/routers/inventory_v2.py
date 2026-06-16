@@ -18,6 +18,7 @@ from core.stock_ledger import LEDGER, on_hand, post_entry
 from core.stock_valuation import value_movements
 from core.utils import (
     crud_create, crud_delete, crud_get, crud_list, crud_update, next_doc_number,
+    paginated_list,
 )
 
 router = APIRouter(prefix="/inventory/v2", tags=["Inventory v2"])
@@ -34,9 +35,14 @@ def _require_inventory(user: dict) -> dict:
 # ───────────────────────── Units of Measure ─────────────────────────
 
 @router.get("/units")
-async def list_units(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_units(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                     from_date: Optional[str] = None, to_date: Optional[str] = None,
+                     user: dict = Depends(get_current_user)):
     _require_inventory(user)
-    return await crud_list("units_of_measure", q, ["name", "uqc_code"], sort_field="name")
+    return await paginated_list("units_of_measure", page=page, limit=limit, q=q,
+                                 search_fields=["name", "uqc_code"],
+                                 sort_field="name", sort_dir=1,
+                                 from_date=from_date, to_date=to_date)
 
 
 @router.post("/units")
@@ -62,9 +68,14 @@ async def delete_unit(item_id: str, user: dict = Depends(require_admin)):
 # ───────────────────────── Godowns (nestable) ─────────────────────────
 
 @router.get("/godowns")
-async def list_godowns(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_godowns(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                       from_date: Optional[str] = None, to_date: Optional[str] = None,
+                       user: dict = Depends(get_current_user)):
     _require_inventory(user)
-    return await crud_list("godowns", q, ["name", "address"], sort_field="name")
+    return await paginated_list("godowns", page=page, limit=limit, q=q,
+                                 search_fields=["name", "address"],
+                                 sort_field="name", sort_dir=1,
+                                 from_date=from_date, to_date=to_date)
 
 
 @router.post("/godowns")
@@ -97,13 +108,21 @@ async def delete_godown(item_id: str, user: dict = Depends(require_admin)):
 async def list_items(
     q: Optional[str] = None,
     low_stock: bool = False,
+    page: Optional[int] = None,
+    limit: Optional[int] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
     _require_inventory(user)
-    items = await crud_list("stock_items", q, ["name", "sku", "hsn_sac_code"], sort_field="name")
+    items = await paginated_list("stock_items", page=page, limit=limit, q=q,
+                                  search_fields=["name", "sku", "hsn_sac_code"],
+                                  sort_field="name", sort_dir=1,
+                                  from_date=from_date, to_date=to_date)
     if low_stock:
+        raw = items if isinstance(items, list) else items.get("items", [])
         flagged = []
-        for it in items:
+        for it in raw:
             oh = await on_hand(it["id"])
             if oh["qty"] <= float(it.get("reorder_level", 0)):
                 it["on_hand_qty"] = oh["qty"]
@@ -158,10 +177,14 @@ async def delete_item(item_id: str, user: dict = Depends(require_admin)):
 # ───────────────────────── Batches & Serials ─────────────────────────
 
 @router.get("/batches")
-async def list_batches(stock_item_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_batches(stock_item_id: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                       from_date: Optional[str] = None, to_date: Optional[str] = None,
+                       user: dict = Depends(get_current_user)):
     _require_inventory(user)
     filt = {"stock_item_id": stock_item_id} if stock_item_id else None
-    return await crud_list("batches", None, None, sort_field="created_at", filt=filt)
+    return await paginated_list("batches", page=page, limit=limit, filt=filt,
+                                 sort_field="created_at", sort_dir=-1,
+                                 from_date=from_date, to_date=to_date)
 
 
 @router.post("/batches")
@@ -174,10 +197,14 @@ async def create_batch(payload: Batch, user: dict = Depends(get_current_user)):
 
 
 @router.get("/serials")
-async def list_serials(stock_item_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_serials(stock_item_id: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                       from_date: Optional[str] = None, to_date: Optional[str] = None,
+                       user: dict = Depends(get_current_user)):
     _require_inventory(user)
     filt = {"stock_item_id": stock_item_id} if stock_item_id else None
-    return await crud_list("serial_numbers", None, None, sort_field="created_at", filt=filt)
+    return await paginated_list("serial_numbers", page=page, limit=limit, filt=filt,
+                                 sort_field="created_at", sort_dir=-1,
+                                 from_date=from_date, to_date=to_date)
 
 
 @router.post("/serials")
@@ -244,9 +271,14 @@ async def create_transfer(payload: StockTransfer, user: dict = Depends(get_curre
 
 
 @router.get("/transfers")
-async def list_transfers(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def list_transfers(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                         from_date: Optional[str] = None, to_date: Optional[str] = None,
+                         user: dict = Depends(get_current_user)):
     _require_inventory(user)
-    return await crud_list("stock_transfers", q, ["transfer_number", "remarks"])
+    return await paginated_list("stock_transfers", page=page, limit=limit, q=q,
+                                 search_fields=["transfer_number", "remarks"],
+                                 sort_field="created_at", sort_dir=-1,
+                                 from_date=from_date, to_date=to_date)
 
 
 # ───────────────────────── Reports ─────────────────────────

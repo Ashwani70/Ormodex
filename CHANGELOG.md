@@ -1,5 +1,37 @@
 # Changelog
 
+## API conventions — Phase 2 (extend pagination + /api/v1 aliases)
+
+Extends the Phase 1 API conventions to the remaining high-volume router groups.
+
+- **Shared pagination helper** — `core/utils.py:paginated_list()` returns the
+  standard `{total, page, items}` envelope with search, equality filters, date
+  ranges, and clamped page/limit (page≥1, 1≤limit≤200). Backward-compat: bare
+  array returned when no paging params are supplied. The existing `crud_list()`
+  continues unchanged for internal callers.
+- **Purchase v2 pagination** — all 5 list endpoints (`/vendors`, `/orders`,
+  `/grns`, `/bills`, `/returns`) now accept `page`/`limit`/`from_date`/`to_date`
+  and return the standard envelope when paginated. Back-compat preserved.
+- **Inventory v2 pagination** — all 6 master list endpoints (`/units`,
+  `/godowns`, `/items`, `/batches`, `/serials`, `/transfers`) now accept
+  `page`/`limit`/`from_date`/`to_date` and return the standard envelope.
+- **/api/v1 aliases** — all ~40 router groups (accounting, ledger, inventory_v2,
+  purchase_v2, HR, banking, vouchers, etc.) are now mounted under `/api/v1/*`
+  in addition to `/api/*`, using the same router objects. Zero duplication.
+- **Gap analysis** — `memory/phase-2-gap-analysis.md` documents the full audit
+  of every router's pagination status, response formats, and deferred items.
+
+Tests: `test_pagination_phase2.py` +17 — paginated_list helper envelope/clamping/
+backward-compat/search/date-range, purchase v2 pagination (5 endpoints),
+inventory v2 pagination (6 endpoints), cross-collection pagination.
+
+Deferred (documented in gap analysis): Zod schemas, analytical report pagination
+(trial-balance/P&L/balance-sheet/day-book are aggregate computations — would
+produce wrong results if truncated), HR pagination, search parameter
+standardisation, masters envelope format alignment.
+
+---
+
 ## API conventions — Phase 1 (foundation masters: pagination + /api/v1)
 
 Phase 1 of the API/frontend-conventions build. The 8 foundation masters (Group,
