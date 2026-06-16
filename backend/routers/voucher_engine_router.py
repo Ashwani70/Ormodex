@@ -17,7 +17,7 @@ from core.tenant import stamp_tenant, tenant_ctx, tenant_filter
 from core.utils import log_audit, new_id, now_iso
 from core.voucher_engine import (
     CATALOG, auto_reverse_due, itc04_data, job_work_reconciliation,
-    order_fulfilment, post_voucher, spec_for, validate_voucher,
+    order_fulfilment, post_voucher, reverse_posting, spec_for, validate_voucher,
 )
 from core.voucher_numbering import create_numbering_indexes, generate_voucher_no
 from core.voucher_models import VoucherCreate, VoucherUpdate
@@ -176,23 +176,67 @@ async def approve_voucher(voucher_id: str, tenant: str = Depends(tenant_ctx), us
     v = await db[COLL].find_one(tenant_filter(tenant, {"id": voucher_id}), {"_id": 0})
     if not v:
         raise HTTPException(404, "Voucher not found")
-    if v["status"] == "approved":
-        return {"ok": True, "status": "approved", "already": True}
+    if v["status"] in ("approved", "posted"):
+        return {"ok": True, "status": v["status"], "already": True}
     if v["status"] != "pending":
         raise HTTPException(400, f"Can only approve a pending voucher (this is '{v['status']}')")
     validate_voucher(v)
-    # Post FIRST; only flip to approved if posting succeeds (so an un-posted
-    # voucher is never left marked approved).
+    # Post FIRST; only advance state if posting succeeds (so a document is never
+    # left marked posted without its movements/voucher). Idempotent in the engine.
     posting = await post_voucher(v, user, tenant)
+    # Lifecycle: a doc that wrote movements/journal becomes 'posted'; a doc that
+    # posts nothing (orders) becomes 'approved'.
+    new_status = "posted" if posting.get("posted") else "approved"
+    fields = {"status": new_status, "approved_by": user["id"],
+              "approved_at": now_iso(), "updated_at": now_iso(), "posting_result": posting}
+    if new_status == "posted":
+        fields["posted_at"] = now_iso()
+        if posting.get("journal_entry_id"):
+            fields["voucher_journal_entry_id"] = posting["journal_entry_id"]  # doc→voucher ref
+    await db[COLL].update_one(tenant_filter(tenant, {"id": voucher_id}), {"$set": fields})
+    new_doc = await db[COLL].find_one(tenant_filter(tenant, {"id": voucher_id}), {"_id": 0})
+    await log_audit("UPDATE", COLL, voucher_id, user, old_values=v, new_values=new_doc)
+    return {"ok": True, "status": new_status, "posting": posting}
+
+
+@router.post("/{voucher_id}/reconcile")
+async def reconcile_voucher(voucher_id: str, tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+    """Final lifecycle step: posted → reconciled (e.g. matched against bank/GRN)."""
+    _require_voucher(user)
+    v = await db[COLL].find_one(tenant_filter(tenant, {"id": voucher_id}), {"_id": 0})
+    if not v:
+        raise HTTPException(404, "Voucher not found")
+    if v["status"] == "reconciled":
+        return {"ok": True, "status": "reconciled", "already": True}
+    if v["status"] != "posted":
+        raise HTTPException(400, f"Can only reconcile a posted voucher (this is '{v['status']}')")
+    await db[COLL].update_one(tenant_filter(tenant, {"id": voucher_id}),
+                             {"$set": {"status": "reconciled", "reconciled_by": user["id"],
+                                       "reconciled_at": now_iso(), "updated_at": now_iso()}})
+    await log_audit("UPDATE", COLL, voucher_id, user, old_values=v, new_values={**v, "status": "reconciled"})
+    return {"ok": True, "status": "reconciled"}
+
+
+@router.post("/{voucher_id}/reverse")
+async def reverse_voucher(voucher_id: str, tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+    """Explicitly reverse a posted/reconciled document: post opposite stock
+    movements + a reversing journal, then mark it 'cancelled' with a reversal ref.
+    Idempotent — re-reversing is a no-op. Approval (checker) privilege required."""
+    _require_approver(user)
+    v = await db[COLL].find_one(tenant_filter(tenant, {"id": voucher_id}), {"_id": 0})
+    if not v:
+        raise HTTPException(404, "Voucher not found")
+    if v["status"] not in ("posted", "reconciled"):
+        raise HTTPException(400, f"Only posted/reconciled documents can be reversed (this is '{v['status']}')")
+    reversal = await reverse_posting(v, user, tenant)
     await db[COLL].update_one(
         tenant_filter(tenant, {"id": voucher_id}),
-        {"$set": {"status": "approved", "approved_by": user["id"],
-                  "approved_at": now_iso(), "updated_at": now_iso(),
-                  "posting_result": posting}},
+        {"$set": {"status": "cancelled", "reversed_by": user["id"],
+                  "reversed_at": now_iso(), "updated_at": now_iso(), "reversal_result": reversal}},
     )
     new_doc = await db[COLL].find_one(tenant_filter(tenant, {"id": voucher_id}), {"_id": 0})
     await log_audit("UPDATE", COLL, voucher_id, user, old_values=v, new_values=new_doc)
-    return {"ok": True, "status": "approved", "posting": posting}
+    return {"ok": True, "status": "cancelled", "reversal": reversal}
 
 
 @router.post("/{voucher_id}/cancel")
@@ -252,3 +296,13 @@ async def create_voucher_engine_indexes(database):
     await database[COLL].create_index([("tenant_id", 1), ("effective_date", 1)])
     # Numbering uniqueness per (tenant, voucher_type_id, FY, voucher_no).
     await create_numbering_indexes(database)
+    # Duplicate-movement guard: at most one stock-ledger entry per source doc/line.
+    # This is the DB-level backstop behind the app's check-then-insert dedup, making
+    # duplicate inventory movements impossible even under concurrent posting.
+    await database["stock_ledger_entries"].create_index(
+        [("source_doc_type", 1), ("source_doc_id", 1), ("stock_item_id", 1),
+         ("movement_type", 1), ("batch_id", 1), ("serial_id", 1)],
+        unique=True,
+        partialFilterExpression={"source_doc_type": "voucher"},
+        name="uniq_voucher_stock_movement",
+    )

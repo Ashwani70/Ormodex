@@ -188,8 +188,9 @@ def test_numbering_is_tenant_isolated():
 # ───────────────────────── order fulfilment ─────────────────────────
 
 def _approved_voucher(db, vid, parent_type, inv_lines, links=None):
+    # 'posted' is the fulfilment-relevant state (movements written).
     asyncio.run(db.vouchers_v2.insert_one({
-        "id": vid, "tenant_id": T, "is_deleted": False, "status": "approved",
+        "id": vid, "tenant_id": T, "is_deleted": False, "status": "posted",
         "parent_type": parent_type, "voucher_no": vid, "date": "2026-06-01",
         "inventory_lines": inv_lines, "links": links or [],
     }))
@@ -224,7 +225,7 @@ def test_job_work_window_breach_flags_deemed_supply():
     db = _setup()
     # Inputs sent >365 days ago, nothing returned → deemed supply.
     asyncio.run(db.vouchers_v2.insert_one({
-        "id": "JC1", "tenant_id": T, "is_deleted": False, "status": "approved",
+        "id": "JC1", "tenant_id": T, "is_deleted": False, "status": "posted",
         "parent_type": "job_work_challan", "voucher_no": "JC1", "date": "2024-01-01",
         "inventory_lines": [{"stock_item_id": "I1", "qty": 50}],
         "statutory": {"extra": {"goods_type": "inputs"}}, "links": [],
@@ -240,13 +241,13 @@ def test_job_work_window_open_and_closed():
     db = _setup()
     # Capital goods, sent recently, fully returned → closed.
     asyncio.run(db.vouchers_v2.insert_one({
-        "id": "JC2", "tenant_id": T, "is_deleted": False, "status": "approved",
+        "id": "JC2", "tenant_id": T, "is_deleted": False, "status": "posted",
         "parent_type": "job_work_challan", "voucher_no": "JC2", "date": "2026-05-01",
         "inventory_lines": [{"stock_item_id": "I1", "qty": 10}],
         "statutory": {"extra": {"goods_type": "capital_goods"}}, "links": [],
     }))
     asyncio.run(db.vouchers_v2.insert_one({
-        "id": "MI1", "tenant_id": T, "is_deleted": False, "status": "approved",
+        "id": "MI1", "tenant_id": T, "is_deleted": False, "status": "posted",
         "parent_type": "job_work_material_inward", "voucher_no": "MI1", "date": "2026-05-20",
         "inventory_lines": [{"stock_item_id": "I1", "qty": 10}],
         "links": [{"ref_voucher_id": "JC2", "ref_type": "job_work_challan"}],

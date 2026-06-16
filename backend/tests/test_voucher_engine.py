@@ -133,10 +133,12 @@ def test_memorandum_never_posts():
 
 def test_not_implemented_type_is_gated():
     _setup()
-    v = _voucher("delivery_note", [])
+    # payroll posting is still deferred (routers/payroll.py remains source of
+    # truth) — must stay gated so it can't be silently approved-as-posted.
+    v = _voucher("payroll", [])
     with pytest.raises(HTTPException) as exc:
         asyncio.run(ve.post_voucher(v, USER, TENANT))
-    assert exc.value.status_code == 501          # never silently approved-as-posted
+    assert exc.value.status_code == 501
 
 
 # ───────────────────────── validation ─────────────────────────
@@ -208,3 +210,97 @@ def test_catalog_covers_all_spec_parent_types():
                "delivery_note", "stock_journal", "job_work_challan",
                "purchase_order", "sales_order", "attendance", "payroll"]:
         assert pt in ve.CATALOG, f"missing parent_type {pt}"
+
+
+# ───────────────────────── Statutory TDS on Payment ─────────────────────────
+
+def test_payment_with_tds_posts_journal_and_records_tds():
+    db = _setup()
+    asyncio.run(db.suppliers.insert_one({
+        "id": "supp_123",
+        "name": "Acme Contractors",
+        "pan_number": "ABCDE1234F",
+        "tenant_id": TENANT
+    }))
+    
+    v = _voucher("payment", PAY_LINES, vid="v_tds")
+    v["party_id"] = "supp_123"
+    v["statutory"] = {
+        "tds": {
+            "section_code": "194C",
+            "rate": 2.0,
+            "amount": 20.0,
+            "base_amount": 1000.0
+        }
+    }
+    
+    result = asyncio.run(ve.post_voucher(v, USER, TENANT))
+    assert result["posted"] is True
+    
+    # Verify statutory block carried to journal entry
+    assert len(db.journal_entries.docs) == 1
+    je = db.journal_entries.docs[0]
+    assert je["statutory"] == v["statutory"]
+    
+    # Verify TDS entry is recorded in tds_entries
+    assert len(db.tds_entries.docs) == 1
+    tds_entry = db.tds_entries.docs[0]
+    assert tds_entry["tenant_id"] == TENANT
+    assert tds_entry["party_id"] == "supp_123"
+    assert tds_entry["party_name"] == "Acme Contractors"
+    assert tds_entry["party_pan"] == "ABCDE1234F"
+    assert tds_entry["tds_section"] == "194C"
+    assert tds_entry["tds_rate"] == 2.0
+    assert tds_entry["tds_amount"] == 20.0
+    assert tds_entry["base_amount"] == 1000.0
+    assert tds_entry["net_amount"] == 980.0
+    assert tds_entry["return_period"] == "062026"
+    assert tds_entry["status"] == "DEDUCTED"
+    assert tds_entry["source_collection"] == "vouchers_v2"
+    assert tds_entry["source_id"] == "v_tds"
+
+
+def test_payment_with_tds_fallback_base_amount():
+    db = _setup()
+    v = _voucher("payment", PAY_LINES, vid="v_tds_fallback")
+    v["party_name"] = "Voucher Party"
+    v["statutory"] = {
+        "tds": {
+            "section_code": "194J",
+            "rate": 10.0,
+            "amount": 100.0
+        }
+    }
+    
+    result = asyncio.run(ve.post_voucher(v, USER, TENANT))
+    assert result["posted"] is True
+    
+    # Verify TDS entry is recorded with computed base amount
+    assert len(db.tds_entries.docs) == 1
+    tds_entry = db.tds_entries.docs[0]
+    assert tds_entry["party_name"] == "Voucher Party"
+    assert tds_entry["tds_section"] == "194J"
+    assert tds_entry["tds_rate"] == 10.0
+    assert tds_entry["tds_amount"] == 100.0
+    assert tds_entry["base_amount"] == 1000.0
+    assert tds_entry["net_amount"] == 900.0
+
+
+def test_payment_with_tds_idempotency():
+    db = _setup()
+    v = _voucher("payment", PAY_LINES, vid="v_tds_idem")
+    v["statutory"] = {
+        "tds": {
+            "section_code": "194C",
+            "rate": 2.0,
+            "amount": 20.0
+        }
+    }
+    
+    # Post twice
+    asyncio.run(ve.post_voucher(v, USER, TENANT))
+    asyncio.run(ve.post_voucher(v, USER, TENANT))
+    
+    # Verify only one TDS entry was created
+    assert len(db.tds_entries.docs) == 1
+

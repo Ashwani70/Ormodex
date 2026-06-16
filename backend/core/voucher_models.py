@@ -55,10 +55,12 @@ class AccountingLine(BaseModel):
 
 class InventoryLine(BaseModel):
     stock_item_id: str
-    location_id: Optional[str] = None
+    location_id: Optional[str] = None       # source godown
+    to_location_id: Optional[str] = None    # destination godown (transfers)
     qty: float
     rate: float = 0.0
     amount: float = 0.0
+    role: Optional[str] = None              # "consume" | "produce" (stock_journal)
     batch: Optional[str] = None
     serial: Optional[str] = None
     tracking_ref: Optional[str] = None

@@ -60,25 +60,25 @@ CATALOG: dict[str, TypeSpec] = {
     "job_work_expenses": TypeSpec("accounting", posts_to_books=True, note="GST + TDS 194C via statutory"),
     "reversing_journal": TypeSpec("accounting", posts_to_books=True, note="Reports-only; auto-reverses on effective date"),
     "memorandum": TypeSpec("accounting", posts_to_books=False, note="Never posts to books"),
-    # ----- Inventory (deferred: existing stock_ledger/job_work remain source of truth) -----
-    "delivery_note": TypeSpec("inventory", posts_to_stock=True, implemented=False),
-    "receipt_note": TypeSpec("inventory", posts_to_stock=True, implemented=False),
-    "rejections_in": TypeSpec("inventory", posts_to_stock=True, implemented=False),
-    "rejections_out": TypeSpec("inventory", posts_to_stock=True, implemented=False),
-    "physical_stock": TypeSpec("inventory", posts_to_stock=True, implemented=False),
-    "stock_journal": TypeSpec("inventory", posts_to_stock=True, implemented=False),
-    "material_in": TypeSpec("inventory", posts_to_stock=True, implemented=False),
-    "material_out": TypeSpec("inventory", posts_to_stock=True, implemented=False),
-    "job_work_challan": TypeSpec("inventory", posts_to_stock=True, implemented=False, note="§143, ITC-04, return-window: see routers/job_work.py"),
-    "job_work_material_inward": TypeSpec("inventory", posts_to_stock=True, implemented=False),
-    "non_returnable_gate_pass": TypeSpec("inventory", posts_to_stock=True, implemented=False),
-    "stock_transfer_interunit": TypeSpec("inventory", posts_to_stock=True, posts_to_books=True, implemented=False),
-    "stock_transfer_material_interunit": TypeSpec("inventory", posts_to_stock=True, implemented=False),
-    # ----- Order (no posting; track fulfilled vs pending via links) -----
-    "purchase_order": TypeSpec("order", implemented=False, note="Tracks fulfilment via links chain"),
-    "sales_order": TypeSpec("order", implemented=False),
-    "job_work_in_order": TypeSpec("order", implemented=False),
-    "job_work_out_order": TypeSpec("order", implemented=False),
+    # ----- Inventory (posting implemented; signed stock-ledger movements) -----
+    "delivery_note": TypeSpec("inventory", posts_to_stock=True, note="Sales dispatch → stock out"),
+    "receipt_note": TypeSpec("inventory", posts_to_stock=True, note="Purchase receipt → stock in"),
+    "rejections_in": TypeSpec("inventory", posts_to_stock=True),
+    "rejections_out": TypeSpec("inventory", posts_to_stock=True),
+    "physical_stock": TypeSpec("inventory", posts_to_stock=True, note="Adjustment: signed variance per line"),
+    "material_in": TypeSpec("inventory", posts_to_stock=True),
+    "material_out": TypeSpec("inventory", posts_to_stock=True),
+    "job_work_challan": TypeSpec("inventory", posts_to_stock=True, note="Job work issue → WIP out (§143 window via reconciliation)"),
+    "job_work_material_inward": TypeSpec("inventory", posts_to_stock=True, note="Job work receipt → WIP/FG in"),
+    "non_returnable_gate_pass": TypeSpec("inventory", posts_to_stock=True),
+    "stock_journal": TypeSpec("inventory", posts_to_stock=True, note="BOM consume→produce; cost rolls into FG"),
+    "stock_transfer_interunit": TypeSpec("inventory", posts_to_stock=True, note="Out source + in dest; taxable+e-way when GSTIN differs"),
+    "stock_transfer_material_interunit": TypeSpec("inventory", posts_to_stock=True, note="Out source + in dest at cost"),
+    # ----- Order (no stock/books posting; track fulfilled vs pending via links) -----
+    "purchase_order": TypeSpec("order", note="Receipt tracking via links chain"),
+    "sales_order": TypeSpec("order", note="Dispatch tracking via links chain"),
+    "job_work_in_order": TypeSpec("order"),
+    "job_work_out_order": TypeSpec("order"),
     # ----- Payroll (deferred: existing payroll router remains source of truth) -----
     "attendance": TypeSpec("payroll", implemented=False),
     "payroll": TypeSpec("payroll", posts_to_books=True, implemented=False, note="PF/ESI/PT/TDS: see routers/payroll.py"),
@@ -215,6 +215,249 @@ async def _post_memorandum(voucher: dict, user: dict, tenant: str):
     return None  # explicitly never posts to books
 
 
+# ───────────────────────── inventory posting ─────────────────────────
+
+LEDGER = "stock_ledger_entries"
+
+# parent_type → (movement_type, sign). sign +1 = stock in, -1 = stock out.
+# WIP/FG semantics ride on movement_type for reporting; the ledger sign is what
+# moves quantity. job_work_challan issues to a job worker (out of own stock);
+# job_work_material_inward brings WIP/finished goods back in.
+INVENTORY_DIRECTION: dict[str, tuple[str, int]] = {
+    "receipt_note": ("PURCHASE_IN", +1),
+    "material_in": ("MATERIAL_IN", +1),
+    "rejections_in": ("REJECTION_IN", +1),
+    "delivery_note": ("SALES_OUT", -1),
+    "material_out": ("MATERIAL_OUT", -1),
+    "rejections_out": ("REJECTION_OUT", -1),
+    "job_work_challan": ("JOBWORK_WIP_OUT", -1),
+    "job_work_material_inward": ("JOBWORK_WIP_IN", +1),
+    "non_returnable_gate_pass": ("GATE_PASS_OUT", -1),
+}
+
+
+async def _stock_already_posted(voucher_id: str) -> bool:
+    """Duplicate-movement guard: any ledger entry already sourced from this voucher?"""
+    hit = await db[LEDGER].find_one(
+        {"source_doc_type": "voucher", "source_doc_id": voucher_id}, {"_id": 0, "id": 1})
+    return hit is not None
+
+
+async def _post_inventory_movements(voucher: dict, user: dict, tenant: str, *, reverse: bool = False) -> Optional[dict]:
+    """Post signed stock-ledger entries for a voucher's inventory_lines.
+
+    Idempotent on (source_doc_type='voucher', source_doc_id=voucher id) — re-posting
+    is a no-op. `reverse=True` flips the sign for cancellation/reversal documents
+    and tags entries so they net the original out.
+    """
+    from .stock_ledger import post_entry  # local import avoids a circular dependency
+
+    pt = voucher["parent_type"]
+    movement_type, sign = INVENTORY_DIRECTION.get(pt, (pt.upper(), +1))
+    if reverse:
+        sign = -sign
+        movement_type = f"REVERSAL_{movement_type}"
+
+    lines = voucher.get("inventory_lines") or []
+    if not lines:
+        return None
+
+    # Guard: never double-post the same voucher's movements (concurrent approves,
+    # re-runs). For reversal we key on a distinct source so it can post once too.
+    src_id = f"{voucher['id']}::rev" if reverse else voucher["id"]
+    already = await db[LEDGER].find_one(
+        {"source_doc_type": "voucher", "source_doc_id": src_id}, {"_id": 0, "id": 1})
+    if already:
+        return {"already_posted": True, "movements": 0}
+
+    posted_ids = []
+    for ln in lines:
+        qty = abs(float(ln.get("qty", 0))) * sign
+        if qty == 0:
+            continue
+        entry = await post_entry(
+            stock_item_id=ln["stock_item_id"],
+            godown_id=ln.get("location_id") or "default",
+            qty=qty,
+            movement_type=movement_type,
+            rate=float(ln.get("rate") or 0.0) if qty > 0 else None,
+            batch_id=ln.get("batch"),
+            serial_id=ln.get("serial"),
+            source_doc_type="voucher",
+            source_doc_id=src_id,
+            entry_date=reporting_date(voucher),
+            user=user,
+        )
+        posted_ids.append(entry["id"])
+    return {"movements": len(posted_ids), "ledger_entry_ids": posted_ids, "movement_type": movement_type}
+
+
+@handler(
+    "receipt_note", "material_in", "rejections_in",
+    "delivery_note", "material_out", "rejections_out",
+    "job_work_challan", "job_work_material_inward", "non_returnable_gate_pass",
+)
+async def _post_inventory(voucher: dict, user: dict, tenant: str):
+    return await _post_inventory_movements(voucher, user, tenant)
+
+
+@handler("physical_stock")
+async def _post_physical_stock(voucher: dict, user: dict, tenant: str):
+    """Stock adjustment / physical count: post the signed variance per line.
+
+    Each inventory_line carries the *adjustment* qty (signed): + to correct up,
+    − to correct down. Idempotent on the voucher id."""
+    from .stock_ledger import post_entry
+
+    if await _stock_already_posted(voucher["id"]):
+        return {"already_posted": True, "movements": 0}
+    posted_ids = []
+    for ln in voucher.get("inventory_lines") or []:
+        qty = float(ln.get("qty", 0))
+        if qty == 0:
+            continue
+        entry = await post_entry(
+            stock_item_id=ln["stock_item_id"],
+            godown_id=ln.get("location_id") or "default",
+            qty=qty,
+            movement_type="ADJUSTMENT",
+            rate=float(ln.get("rate") or 0.0) if qty > 0 else None,
+            batch_id=ln.get("batch"),
+            source_doc_type="voucher",
+            source_doc_id=voucher["id"],
+            entry_date=reporting_date(voucher),
+            user=user,
+        )
+        posted_ids.append(entry["id"])
+    return {"movements": len(posted_ids), "ledger_entry_ids": posted_ids, "movement_type": "ADJUSTMENT"}
+
+
+def _split_consume_produce(lines: list) -> tuple[list, list]:
+    """Partition stock_journal lines into (consume, produce).
+
+    A line is a consume if role=='consume' or qty<0; a produce if role=='produce'
+    or qty>0. role wins when present, so callers may pass positive qty for both."""
+    consume, produce = [], []
+    for ln in lines:
+        role = ln.get("role")
+        qty = float(ln.get("qty", 0))
+        if role == "consume" or (role is None and qty < 0):
+            consume.append(ln)
+        elif role == "produce" or (role is None and qty > 0):
+            produce.append(ln)
+    return consume, produce
+
+
+@handler("stock_journal")
+async def _post_stock_journal(voucher: dict, user: dict, tenant: str):
+    """Manufacturing / stock journal: consume components → produce finished goods,
+    and/or move stock between godowns. Idempotent on the voucher id.
+
+    Costing: the produced item's rate is the rolled-up cost of what was consumed
+    (sum of consumed outward value) apportioned across produced qty — so value
+    flows from inputs to output rather than being client-asserted. A pure
+    inter-godown move (consume in godown A, produce same item in godown B) carries
+    cost across at the consumed rate.
+    """
+    from .stock_ledger import post_entry
+
+    if await _stock_already_posted(voucher["id"]):
+        return {"already_posted": True, "movements": 0}
+
+    consume, produce = _split_consume_produce(voucher.get("inventory_lines") or [])
+    posted_ids = []
+    consumed_value = 0.0
+
+    # 1) Consume (outward) — priced by the ledger's valuation engine.
+    for ln in consume:
+        qty = abs(float(ln.get("qty", 0)))
+        if qty == 0:
+            continue
+        entry = await post_entry(
+            stock_item_id=ln["stock_item_id"],
+            godown_id=ln.get("location_id") or "default",
+            qty=-qty,
+            movement_type="MFG_CONSUME",
+            batch_id=ln.get("batch"), serial_id=ln.get("serial"),
+            source_doc_type="voucher", source_doc_id=voucher["id"],
+            entry_date=reporting_date(voucher), user=user,
+        )
+        posted_ids.append(entry["id"])
+        consumed_value += abs(float(entry.get("value", 0)))
+
+    # 2) Produce (inward) — rate rolled up from consumed value, unless the line
+    # gives an explicit rate (e.g. by-product at a fixed cost).
+    produced_qty = sum(abs(float(ln.get("qty", 0))) for ln in produce)
+    rolled_rate = round(consumed_value / produced_qty, 4) if produced_qty > 0 else 0.0
+    for ln in produce:
+        qty = abs(float(ln.get("qty", 0)))
+        if qty == 0:
+            continue
+        rate = float(ln["rate"]) if ln.get("rate") not in (None, "", 0) else rolled_rate
+        entry = await post_entry(
+            stock_item_id=ln["stock_item_id"],
+            godown_id=ln.get("location_id") or "default",
+            qty=qty,
+            movement_type="MFG_PRODUCE",
+            rate=rate,
+            batch_id=ln.get("batch"), serial_id=ln.get("serial"),
+            source_doc_type="voucher", source_doc_id=voucher["id"],
+            entry_date=reporting_date(voucher), user=user,
+        )
+        posted_ids.append(entry["id"])
+
+    return {"movements": len(posted_ids), "ledger_entry_ids": posted_ids,
+            "movement_type": "STOCK_JOURNAL", "consumed_value": round(consumed_value, 2),
+            "produced_rate": rolled_rate}
+
+
+@handler("stock_transfer_interunit", "stock_transfer_material_interunit")
+async def _post_interunit_transfer(voucher: dict, user: dict, tenant: str):
+    """Inter-unit stock transfer: out of the source location, in to the destination.
+
+    Each inventory_line moves one item; the source is `location_id` and the
+    destination is `to_location_id`. Cost carries across at the outward (consumed)
+    rate. When the two units have *different* GSTINs the move is a taxable supply
+    (the voucher should carry statutory.gst + statutory.eway, and an accounting
+    voucher is raised separately); when the same GSTIN it's an internal transfer
+    at cost. This handler does the stock legs; the taxable-supply accounting leg
+    is posted via a linked sales/purchase voucher (kept separate by design).
+    """
+    from .stock_ledger import post_entry
+
+    if await _stock_already_posted(voucher["id"]):
+        return {"already_posted": True, "movements": 0}
+
+    interstate = bool((voucher.get("statutory") or {}).get("gst"))
+    posted_ids = []
+    for ln in voucher.get("inventory_lines") or []:
+        qty = abs(float(ln.get("qty", 0)))
+        if qty == 0:
+            continue
+        src = ln.get("location_id") or "default"
+        dest = ln.get("to_location_id") or ln.get("tracking_ref") or "default"
+        if src == dest:
+            raise HTTPException(400, "Inter-unit transfer requires distinct source/destination locations")
+        out = await post_entry(
+            stock_item_id=ln["stock_item_id"], godown_id=src, qty=-qty,
+            movement_type="TRANSFER_OUT", batch_id=ln.get("batch"), serial_id=ln.get("serial"),
+            source_doc_type="voucher", source_doc_id=voucher["id"],
+            entry_date=reporting_date(voucher), user=user,
+        )
+        # Carry cost across at the rate that left the source.
+        carry_rate = float(out.get("rate") or 0.0)
+        inn = await post_entry(
+            stock_item_id=ln["stock_item_id"], godown_id=dest, qty=qty, rate=carry_rate,
+            movement_type="TRANSFER_IN", batch_id=ln.get("batch"), serial_id=ln.get("serial"),
+            source_doc_type="voucher", source_doc_id=voucher["id"],
+            entry_date=reporting_date(voucher), user=user,
+        )
+        posted_ids += [out["id"], inn["id"]]
+
+    return {"movements": len(posted_ids), "ledger_entry_ids": posted_ids,
+            "movement_type": "INTERUNIT_TRANSFER", "taxable_supply": interstate}
+
+
 async def _record_tds_entry_if_needed(voucher: dict, tenant: str, user: dict):
     statutory = voucher.get("statutory")
     if not statutory:
@@ -326,11 +569,20 @@ async def post_voucher(voucher: dict, user: dict, tenant: str) -> dict:
     result = await fn(voucher, user, tenant)
     if result:
         await _record_tds_entry_if_needed(voucher, tenant, user)
-    return {
-        "posted": bool(result),
-        "journal_entry_id": result.get("id") if result else None,
-        "parent_type": voucher["parent_type"],
-    }
+    out = {"posted": bool(result), "parent_type": voucher["parent_type"]}
+    if isinstance(result, dict):
+        # Accounting handlers return a journal entry (has 'id'); inventory/journal/
+        # transfer handlers return movement details. Surface everything the handler
+        # reports except the raw JE 'id', which is exposed as journal_entry_id.
+        if "id" in result:
+            out["journal_entry_id"] = result["id"]
+        for k, v in result.items():
+            if k != "id":
+                out[k] = v
+        # An idempotent no-op (already posted) still counts as posted.
+        if result.get("already_posted"):
+            out["posted"] = True
+    return out
 
 
 async def auto_reverse_due(tenant: str, as_of: Optional[str], user: dict) -> int:
@@ -372,6 +624,64 @@ async def auto_reverse_due(tenant: str, as_of: Optional[str], user: dict) -> int
     return count
 
 
+# ═══════════════════════ Reversal / cancellation of posted documents ═══════════════════════
+
+async def reverse_posting(voucher: dict, user: dict, tenant: str) -> dict:
+    """Reverse a posted voucher's effects with explicit counter-movements.
+
+    - Stock: posts opposite-sign ledger entries (idempotent, keyed `<id>::rev`),
+      so on-hand nets back to pre-posting.
+    - Books: posts a reversing (reports-aware) journal mirror of the original JE.
+    Idempotent: a second call is a no-op. Returns what was reversed.
+    """
+    result: dict = {"reversed_stock": 0, "reversed_journal": False}
+
+    spec = spec_for(voucher["parent_type"])
+
+    # Stock side.
+    if spec.posts_to_stock:
+        inv = await _post_inventory_movements(voucher, user, tenant, reverse=True)
+        if inv and not inv.get("already_posted"):
+            result["reversed_stock"] = inv.get("movements", 0)
+
+    # Books side: mirror the original journal entry (swap Dr/Cr), once.
+    if spec.posts_to_books:
+        orig = await db[JE_COLL].find_one(
+            {"source_collection": "vouchers_v2", "source_id": voucher["id"], "tags": {"$nin": ["REVERSAL"]}},
+            {"_id": 0})
+        if orig:
+            already = await db[JE_COLL].find_one({"reversed_for": orig["id"]}, {"_id": 0, "id": 1})
+            if not already:
+                mirror_lines = [
+                    {**l, "debit": l.get("credit", 0), "credit": l.get("debit", 0)} for l in orig.get("lines", [])
+                ]
+                fy = await db.fiscal_years.find_one({"is_active": True})
+                mirror = {
+                    "id": str(uuid.uuid4()),
+                    "entry_number": await _next_je_number(tenant),
+                    "tenant_id": tenant,
+                    "date": date.today().isoformat(),
+                    "narration": f"Reversal of {orig.get('entry_number')} ({voucher.get('voucher_no')})",
+                    "lines": mirror_lines,
+                    "status": "POSTED",
+                    "fiscal_year": (fy or {}).get("name") or orig.get("fiscal_year"),
+                    "tags": ["AUTO", "VOUCHER", "REVERSAL"],
+                    "source_collection": "vouchers_v2",
+                    "source_id": voucher["id"],
+                    "reversed_for": orig["id"],
+                    "total_debit": orig.get("total_credit", 0),
+                    "total_credit": orig.get("total_debit", 0),
+                    "created_by": user.get("id", "system"),
+                    "created_at": now_iso(),
+                }
+                await db[JE_COLL].insert_one(mirror)
+                await log_audit("CREATE", JE_COLL, mirror["id"], user,
+                                new_values={k: v for k, v in mirror.items() if k != "_id"})
+                result["reversed_journal"] = True
+                result["reversal_journal_entry_id"] = mirror["id"]
+    return result
+
+
 # ═══════════════════════ Cross-cutting rule helpers ═══════════════════════
 
 VOUCHERS = "vouchers_v2"
@@ -395,9 +705,11 @@ async def order_fulfilment(order_id: str, tenant: str) -> dict:
     for ln in order.get("inventory_lines", []):
         ordered[ln["stock_item_id"]] = ordered.get(ln["stock_item_id"], 0.0) + float(ln.get("qty", 0))
 
-    # Downstream vouchers (delivery/GRN/invoice/inward) that link back to this order.
+    # Downstream vouchers (delivery/GRN/invoice/inward) that link back to this
+    # order. Only *posted* documents actually fulfil (movements written); reversed
+    # ones become 'cancelled' and drop out automatically.
     downstream = await db[VOUCHERS].find(
-        tenant_filter(tenant, {"status": "approved", "links.ref_voucher_id": order_id}),
+        tenant_filter(tenant, {"status": "posted", "links.ref_voucher_id": order_id}),
         {"_id": 0},
     ).to_list(5000)
 
@@ -413,8 +725,15 @@ async def order_fulfilment(order_id: str, tenant: str) -> dict:
         pending = round(oqty - fqty, 4)
         if pending > 1e-9:
             all_complete = False
-        rows.append({"stock_item_id": item_id, "ordered_qty": round(oqty, 4),
-                     "fulfilled_qty": fqty, "pending_qty": max(0.0, pending)})
+        rows.append({
+            "stock_item_id": item_id, "ordered_qty": round(oqty, 4),
+            "fulfilled_qty": fqty,
+            "pending_qty": max(0.0, pending),
+            # Backorder = unfulfilled balance still owed (same as pending here, but
+            # named explicitly for SO dispatch / PO receipt tracking).
+            "backorder_qty": max(0.0, pending),
+            "over_fulfilled_qty": max(0.0, -pending),
+        })
 
     return {
         "order_id": order_id,
@@ -422,6 +741,7 @@ async def order_fulfilment(order_id: str, tenant: str) -> dict:
         "parent_type": order.get("parent_type"),
         "lines": rows,
         "fully_fulfilled": all_complete and bool(rows),
+        "has_backorder": any(r["backorder_qty"] > 1e-9 for r in rows),
         "fulfilling_voucher_ids": [v["id"] for v in downstream],
     }
 
@@ -443,7 +763,7 @@ async def job_work_reconciliation(tenant: str, as_of: Optional[str] = None) -> d
     ('inputs' | 'capital_goods'), defaulting to inputs (the 1-year window)."""
     as_of = as_of or date.today().isoformat()
     challans = await db[VOUCHERS].find(
-        tenant_filter(tenant, {"parent_type": "job_work_challan", "status": "approved"}),
+        tenant_filter(tenant, {"parent_type": "job_work_challan", "status": "posted"}),
         {"_id": 0},
     ).to_list(5000)
 
@@ -454,7 +774,7 @@ async def job_work_reconciliation(tenant: str, as_of: Optional[str] = None) -> d
             sent[ln["stock_item_id"]] = sent.get(ln["stock_item_id"], 0.0) + float(ln.get("qty", 0))
 
         inwards = await db[VOUCHERS].find(
-            tenant_filter(tenant, {"parent_type": "job_work_material_inward", "status": "approved",
+            tenant_filter(tenant, {"parent_type": "job_work_material_inward", "status": "posted",
                                    "links.ref_voucher_id": ch["id"]}),
             {"_id": 0},
         ).to_list(5000)
@@ -495,12 +815,12 @@ async def itc04_data(tenant: str, from_date: str, to_date: str) -> dict:
     """ITC-04 dataset: goods sent to job workers (challans) and received back
     (inwards) within a period. Reporting-grade extract, not the filed return."""
     challans = await db[VOUCHERS].find(
-        tenant_filter(tenant, {"parent_type": "job_work_challan", "status": "approved",
+        tenant_filter(tenant, {"parent_type": "job_work_challan", "status": "posted",
                                "date": {"$gte": from_date, "$lte": to_date}}),
         {"_id": 0},
     ).to_list(10000)
     inwards = await db[VOUCHERS].find(
-        tenant_filter(tenant, {"parent_type": "job_work_material_inward", "status": "approved",
+        tenant_filter(tenant, {"parent_type": "job_work_material_inward", "status": "posted",
                                "date": {"$gte": from_date, "$lte": to_date}}),
         {"_id": 0},
     ).to_list(10000)
