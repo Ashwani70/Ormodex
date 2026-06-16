@@ -65,6 +65,7 @@ import PurchaseOrdersV2 from "@/pages/PurchaseOrdersV2";
 import GRNs from "@/pages/GRNs";
 import PurchaseBills from "@/pages/PurchaseBills";
 import PurchaseReturns from "@/pages/PurchaseReturns";
+import MastersPage from "@/pages/MastersPage";
 
 
 
@@ -135,6 +136,8 @@ function App() {
               <Route path="/grns" element={<GRNs />} />
               <Route path="/purchase-bills" element={<PurchaseBills />} />
               <Route path="/purchase-returns" element={<PurchaseReturns />} />
+              {/* Masters subsystem (config-driven) */}
+              <Route path="/masters/:key" element={<MastersPage />} />
               <Route path="/customers" element={<Customers />} />
               <Route path="/leads" element={<Leads />} />
               <Route path="/quotations" element={<Quotations />} />

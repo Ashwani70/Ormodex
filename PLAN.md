@@ -182,9 +182,13 @@ service, 7 audit, 6 purchase-bill posting, 9 RBAC guards).
 
 Carried forward and explicitly deferred from this phase:
 
-1. **Multi-tenancy & tenant isolation — FUTURE ENHANCEMENT.**
-   The app is single-tenant on MongoDB today. Closing the DoD "tenant isolation"
-   item requires, as a cross-cutting change:
+1. **Multi-tenancy & tenant isolation — PARTIALLY DONE (Masters), rest FUTURE.**
+   The **Masters subsystem is now tenant-scoped** (`core/tenant.py` +
+   `core/masters_crud.py`): every masters doc carries `tenant_id`, every query is
+   filtered by it, compound `(tenant_id, id)` indexes exist, and a real
+   tenant-isolation test passes (`test_masters.py`). Today the tenant resolves to
+   a `"default"` sentinel via `resolve_tenant()` until auth carries a tenant.
+   Remaining (app-wide) work to fully close the DoD item:
    - a `tenant_id` on every business collection and on `audit_logs`;
    - tenant context threaded through auth (JWT claim → request scope) and
      injected into every `crud_*` / query filter so no read or write can cross

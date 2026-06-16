@@ -1,5 +1,125 @@
 # Changelog
 
+## Unified Voucher engine (skeleton + accounting posting)
+
+A single `vouchers_v2` collection + posting-rules engine for the full ~35
+parent_type catalog, with maker-checker. **Scope this phase (agreed with user):**
+accounting types post for real; inventory/order/payroll types are catalogued and
+validated but posting is deferred (gated, never silently no-op). Coexists with the
+legacy `/vouchers` router; existing stock_ledger / job_work / payroll modules
+remain the source of truth for their domains until those handlers ship.
+
+### Added — backend
+- `core/voucher_models.py`: unified Voucher document — accounting_lines,
+  inventory_lines, links (order→delivery→invoice chain), statutory blocks
+  (gst/tds/tcs/eway/einvoice{irn,ack_no}), attachments. Pydantic v2, tenant-ready.
+- `core/voucher_engine.py`: 34-type `CATALOG` (category + posts_to_books /
+  posts_to_stock / implemented flags); validation (balanced Dr=Cr, contra-no-GST);
+  posting-rules registry with handlers. Accounting handlers post a balanced,
+  idempotent journal entry from accounting_lines. `memorandum` never posts;
+  `reversing_journal` posts a reports-only entry + `auto_reverse_due()` sweep that
+  mirrors it on the effective date. `post_voucher()` raises **501** for
+  not-yet-implemented types so they can't be approved-as-posted.
+- `routers/voucher_engine_router.py`: `/voucher-engine` — maker-checker lifecycle
+  (create→draft, submit→pending, approve→approved+POST, cancel→soft-cancel),
+  list/get/types, `run-reversing-journals`. Approval requires a distinct approver
+  privilege; approved vouchers are immutable (must be reversed, not edited/cancelled).
+  Tenant-scoped, audited; compound `(tenant_id, ...)` indexes; wired into server.
+
+### Tests (10) — `test_voucher_engine.py`, all pass
+- Accounting voucher posts a balanced, tenant-stamped journal entry; posting is
+  idempotent (no double-post on re-approval).
+- `memorandum` never posts; unbalanced lines rejected; contra rejects GST.
+- `reversing_journal` posts reports-only and auto-reverses exactly once on due
+  date (mirror swaps Dr/Cr).
+- Not-implemented types are gated (501); posted entries carry the right tenant.
+
+### Deferred (clearly flagged, not faked)
+- Inventory/order/payroll posting handlers (delivery_note, GRN, stock_journal,
+  job_work_challan §143/ITC-04, interunit transfer, payroll PF/ESI/PT/TDS, order
+  fulfilment tracking). Each is in the catalog as `implemented=False`.
+- Statutory automation (live e-invoice IRN generation, e-way bill API, GSTR
+  filing) — the document carries the fields; integrations are later phases.
+- No frontend for the voucher engine yet (backend + engine only this turn).
+
+---
+
+## Statutory Masters & Details
+
+Extends the Masters subsystem with Indian statutory masters, reusing the same
+tenant-scoped / audited / soft-delete foundation.
+
+### Added — backend
+- `core/masters_models.py`: list masters — GstRegistration, GstClassification,
+  TdsNatureOfPayment, TcsNatureOfGoods; singletons — CompanyGstDetails,
+  TdsDetails, TcsDetails, PanCinDetails.
+- `core/masters_crud.py`: `singleton_get()` / `singleton_upsert()` — one document
+  per tenant, get + upsert only (no list, no delete), partial-merge, audited.
+- `routers/masters.py`: CRUD for the 4 statutory list masters + get/upsert for
+  the 4 singletons (24 new endpoints, 64 total). New collections indexed with
+  compound `(tenant_id, id)`; singletons indexed unique on `tenant_id` alone.
+
+### Added — frontend
+- `config/mastersConfig.js`: configs for the 4 list masters + a `SINGLETONS` map.
+- `components/SingletonMaster.jsx`: single-form get+upsert screen (no list).
+- `pages/MastersPage.jsx` dispatches list vs singleton by route key; new
+  STATUTORY sidebar section (8 links).
+
+### Tests (5 new, 14 in test_masters.py) — all pass
+- Singleton: empty-get, upsert creates, idempotent partial-merge (one doc per
+  tenant), tenant isolation, audited.
+- Statutory list master: create + cross-tenant isolation.
+
+---
+
+## Masters & Voucher Types subsystem
+
+Implements the Tally-style Masters subsystem (10 entities) on the repo's real
+stack (FastAPI + MongoDB + CRA/JSX), adapted from a prompt that assumed
+Next.js/TS/React-Query (absent here) and app-wide multi-tenancy (does not exist).
+Frontend stack and tenancy approach chosen with the user.
+
+### Added — backend
+- `core/tenant.py`: single-source tenant resolution + `tenant_filter()` /
+  `stamp_tenant()`. Masters are **tenant-ready**: every doc carries `tenant_id`,
+  every read/write is scoped, defaulting to a `"default"` tenant until real
+  multi-tenant auth lands (only `resolve_tenant()` changes then).
+- `core/masters_crud.py`: shared CRUD enforcing the four non-negotiables —
+  `tenant_id` on every doc, audit on every create/update/delete (reuses
+  `log_audit`), **soft-delete only** (`is_deleted`/`deleted_at`, never hard
+  delete), and tree-parent validation (same-tenant, no self/cycle).
+- `core/masters_models.py`: Pydantic v2 models for Group, Ledger, Currency,
+  RateOfExchange, VoucherType, StockGroup, StockCategory, StockItem, Unit,
+  Location (+ partial *Update models).
+- `routers/masters.py`: 40 endpoints (10 entities × CRUD) under `/masters`,
+  RBAC-guarded; cross-reference + base-currency + compound-unit validation;
+  `create_masters_indexes()` builds compound **(tenant_id, id)** unique indexes
+  (tenant_id first) on every masters collection, wired into server startup.
+
+### Added — frontend (CRA + JSX, reuses ui-kit)
+- `components/MasterScreen.jsx`: one generic, config-driven list/create/edit/
+  soft-delete screen (search, refs, conditional fields, offline-aware).
+- `config/mastersConfig.js`: declarative field/column config for all 10 masters.
+- `pages/MastersPage.jsx` + route `/masters/:key`; new MASTERS sidebar section.
+
+### Tests (9, all pass) — `test_masters.py`
+- **Tenant isolation** — a query as tenant A returns zero tenant-B rows; cross-
+  tenant get returns 404. (Closes the DoD tenant-isolation gap for Masters.)
+- Soft-delete sets the flag + hides from lists (doc never physically removed);
+  cannot delete a parent with children.
+- Audit written on create/update/delete (before/after captured).
+- Tree validation: parent must exist in same tenant; self-parent rejected;
+  unique name enforced per-tenant (same name allowed across tenants).
+
+### Notes / still deferred
+- Tenancy is enforced for **Masters collections only**; app-wide multi-tenancy
+  (tenant_id on all legacy collections + auth-injected tenant context) remains a
+  future enhancement. `resolve_tenant()` defaults to `"default"` today.
+- Frontend verified by `craco build`, not click-tested against a live backend.
+
+---
+
+
 ## Phase 1 — Foundation: Inventory + Purchase + Audit (adapted to FastAPI/MongoDB)
 
 The work order assumed NestJS/Postgres/RLS; this repo is **FastAPI + MongoDB,

@@ -111,6 +111,32 @@ const INSIGHTS_NAV = [
   { to: "/ai-assistant", label: "Gravity AI", icon: Bot, roles: ["admin", "accountant", "hr"] },
 ];
 
+const MASTERS_NAV = [
+  { section: "MASTERS", roles: ["admin", "accountant"] },
+  { to: "/masters/groups", label: "Account Groups", icon: BookOpen, roles: ["admin", "accountant"] },
+  { to: "/masters/ledgers", label: "Ledgers", icon: Landmark, roles: ["admin", "accountant"] },
+  { to: "/masters/currencies", label: "Currencies", icon: IndianRupee, roles: ["admin", "accountant"] },
+  { to: "/masters/rates", label: "Rates of Exchange", icon: Scale, roles: ["admin", "accountant"] },
+  { to: "/masters/voucher-types", label: "Voucher Types", icon: FileText, roles: ["admin", "accountant"] },
+  { to: "/masters/stock-groups", label: "Stock Groups", icon: Boxes, roles: ["admin", "accountant"] },
+  { to: "/masters/stock-categories", label: "Stock Categories", icon: Tags, roles: ["admin", "accountant"] },
+  { to: "/masters/stock-items", label: "Stock Items", icon: PackageSearch, roles: ["admin", "accountant"] },
+  { to: "/masters/units", label: "Units of Measure", icon: Scale, roles: ["admin", "accountant"] },
+  { to: "/masters/locations", label: "Locations / Godowns", icon: Warehouse, roles: ["admin", "accountant"] },
+];
+
+const STATUTORY_NAV = [
+  { section: "STATUTORY", roles: ["admin", "accountant"] },
+  { to: "/masters/gst-registrations", label: "GST Registrations", icon: Shield, roles: ["admin", "accountant"] },
+  { to: "/masters/gst-classifications", label: "GST Classifications", icon: FileSpreadsheet, roles: ["admin", "accountant"] },
+  { to: "/masters/tds-nature-of-payment", label: "TDS Nature of Payment", icon: Scale, roles: ["admin", "accountant"] },
+  { to: "/masters/tcs-nature-of-goods", label: "TCS Nature of Goods", icon: Scale, roles: ["admin", "accountant"] },
+  { to: "/masters/company-gst-details", label: "Company GST Details", icon: Building2, roles: ["admin", "accountant"] },
+  { to: "/masters/tds-details", label: "TDS Details", icon: Fingerprint, roles: ["admin", "accountant"] },
+  { to: "/masters/tcs-details", label: "TCS Details", icon: Fingerprint, roles: ["admin", "accountant"] },
+  { to: "/masters/pan-cin-details", label: "PAN / CIN Details", icon: Fingerprint, roles: ["admin", "accountant"] },
+];
+
 const SYSTEM_NAV = [
   { section: "SYSTEM", roles: ["admin"] },
   { to: "/users", label: "Users", icon: Users, roles: ["admin"] },
@@ -126,7 +152,7 @@ const EMPLOYEE_NAV = [
   { to: "/my-portal", label: "My Portal", icon: UserCircle, roles: ["employee"] },
 ];
 
-const ALL = [...ERP_NAV, ...FINANCE_NAV, ...HR_NAV, ...INSIGHTS_NAV, ...EMPLOYEE_NAV, ...SYSTEM_NAV];
+const ALL = [...ERP_NAV, ...MASTERS_NAV, ...STATUTORY_NAV, ...FINANCE_NAV, ...HR_NAV, ...INSIGHTS_NAV, ...EMPLOYEE_NAV, ...SYSTEM_NAV];
 
 
 function visible(item, role) {

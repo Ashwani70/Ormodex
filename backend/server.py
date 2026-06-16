@@ -58,6 +58,8 @@ from routers.branches import router as branches_router
 from routers.audit import router as audit_router
 from routers.inventory_v2 import router as inventory_v2_router
 from routers.purchase_v2 import router as purchase_v2_router
+from routers.masters import router as masters_router, create_masters_indexes
+from routers.voucher_engine_router import router as voucher_engine_router, create_voucher_engine_indexes
 from migrations.migration_001_manufacturing_deep import run as _run_migration_001
 from migrations.migration_002_fixed_assets import run as _run_migration_002
 from migrations.migration_003_payroll import run as _run_migration_003
@@ -144,6 +146,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Migration 012 skipped or failed (non-fatal): {e}")
     try:
+        await create_masters_indexes(db)
+        logger.info("Masters compound (tenant_id, ...) indexes ensured")
+    except Exception as e:
+        logger.warning(f"Masters index creation skipped or failed (non-fatal): {e}")
+    try:
+        await create_voucher_engine_indexes(db)
+        logger.info("Voucher engine compound (tenant_id, ...) indexes ensured")
+    except Exception as e:
+        logger.warning(f"Voucher engine index creation skipped or failed (non-fatal): {e}")
+    try:
         init_storage()
         logger.info("Object storage initialised")
     except Exception as e:
@@ -223,6 +235,8 @@ api_router.include_router(branches_router)
 api_router.include_router(audit_router)
 api_router.include_router(inventory_v2_router)
 api_router.include_router(purchase_v2_router)
+api_router.include_router(masters_router)
+api_router.include_router(voucher_engine_router)
 
 
 app.include_router(api_router)
