@@ -1,5 +1,80 @@
 # Changelog
 
+## Voucher engine — manufacturing, transfers, reconciliation, concurrency proof
+
+Four milestones over the posting engine (each its own commit):
+
+- **stock_journal (BOM)** — consume components (outward, engine-priced) → produce
+  finished goods with cost rolled up from consumed value / produced qty; supports
+  inter-godown moves. `core/voucher_engine._post_stock_journal`.
+- **Inter-unit transfers** — `stock_transfer_interunit` / `_material_interunit`:
+  stock out of source + in to destination, cost carried at the outward rate;
+  `taxable_supply` flagged when `statutory.gst` present (different GSTIN), internal
+  at cost otherwise. `InventoryLine.to_location_id` / `role` added.
+- **Automated reconciliation engine** — `run_reconciliation(rules?)` advances
+  posted → reconciled: `order_fulfilment` (order fully fulfilled by posted
+  downstream docs) and `grn_to_bill` (receipt matched by a posted purchase bill).
+  Idempotent, evidence recorded per match. `POST /run-reconciliation`.
+- **Real-DB concurrency tests** — `test_concurrency_integration.py` runs against a
+  live MongoDB: 20 racing inserts of the same movement key → exactly 1 survives
+  (unique index `uniq_voucher_stock_movement`), and a concurrent engine post yields
+  a single movement. Skips cleanly when no DB is reachable.
+
+All 13 inventory parent_types now post; only payroll remains gated (deferred to
+routers/payroll.py). Documented gap: transactional write+audit *rollback* needs a
+replica set (local Mongo is standalone) — covered by app-level compensation + the
+unique index, not a server transaction.
+
+Maintained unit subset + integration: 102 passing.
+
+---
+
+## Voucher engine — document posting lifecycle + inventory/order handlers
+
+Enables the operational flows: inventory posting, order fulfilment, job-work
+issue→receipt→reconciliation, reversal, all on the unified voucher engine.
+
+### Lifecycle
+- States: draft → pending → approved → **posted** → **reconciled**, with
+  **cancelled** as the reversal terminal. Approval now posts then advances to
+  `posted` when movements/journal were written (orders that post nothing stay
+  `approved`). New endpoints: `/{id}/reconcile`, `/{id}/reverse`.
+
+### Inventory posting handlers (now `implemented=True`)
+- receipt_note / material_in / rejections_in → **stock in**; delivery_note /
+  material_out / rejections_out / non_returnable_gate_pass → **stock out**;
+  job_work_challan → **WIP out**; job_work_material_inward → **WIP/FG in**;
+  physical_stock → **signed adjustment**. Each posts signed StockLedgerEntry rows
+  via the existing stock ledger (FIFO/WA valuation reused).
+- Still deferred (gated 501): stock_journal (BOM), interunit transfers, payroll.
+
+### Non-negotiables
+- **Idempotent**: posting dedups on (source_doc_type='voucher', source_doc_id);
+  re-posting is a no-op. Backed by a unique index `uniq_voucher_stock_movement`
+  so duplicate inventory movements are impossible even under concurrent posting.
+- **Reversible**: `reverse_posting()` posts opposite-sign stock movements +
+  mirrors the journal (Dr↔Cr), idempotent, audited, with a reversal reference.
+- **Auditable**: `voucher_journal_entry_id` doc→voucher ref; every post/reverse
+  writes an audit record.
+- **Posted-only**: order fulfilment and job-work reconciliation count only
+  `posted` documents; inventory valuation reads posted movements only.
+
+### Order fulfilment
+- `order_fulfilment()` now reports `pending_qty`, `backorder_qty`,
+  `over_fulfilled_qty`, `has_backorder` — partial fulfilment + backorder, SO
+  dispatch / PO receipt tracking via the links chain.
+
+### Tests (11) — `test_voucher_posting_lifecycle.py`, all pass
+- receipt→stock-in, dispatch→stock-out; repeated + concurrent post idempotent
+  (single movement); reversal nets stock back + mirrors JE (idempotent);
+  job-work issue→receipt→reconciliation closed; partial fulfilment + backorder;
+  fulfilment/recon ignore un-posted docs; valuation uses posted movements only.
+- Updated cross-cutting + engine tests to the posted-only lifecycle.
+
+Backend suite: 88 passing.
+
+---
+
 ## Voucher engine — cross-cutting rules
 
 Adds the cross-cutting behaviours over the unified voucher engine.
