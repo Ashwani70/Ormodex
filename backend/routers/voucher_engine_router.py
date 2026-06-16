@@ -16,8 +16,10 @@ from core.db import db
 from core.tenant import stamp_tenant, tenant_ctx, tenant_filter
 from core.utils import log_audit, new_id, now_iso
 from core.voucher_engine import (
-    CATALOG, auto_reverse_due, post_voucher, spec_for, validate_voucher,
+    CATALOG, auto_reverse_due, itc04_data, job_work_reconciliation,
+    order_fulfilment, post_voucher, spec_for, validate_voucher,
 )
+from core.voucher_numbering import create_numbering_indexes, generate_voucher_no
 from core.voucher_models import VoucherCreate, VoucherUpdate
 
 router = APIRouter(prefix="/voucher-engine", tags=["Voucher Engine"])
@@ -42,21 +44,6 @@ def _require_approver(user: dict) -> dict:
     if "approve_vouchers" in perms or "approver" in perms:
         return user
     raise HTTPException(403, "Approver privilege required to approve vouchers")
-
-
-async def _next_voucher_no(parent_type: str, voucher_type_id: Optional[str], tenant: str) -> str:
-    """Auto number: prefer the linked VoucherType master's prefix, else parent_type."""
-    fy = await db.fiscal_years.find_one({"is_active": True})
-    fy_name = fy["name"] if fy else date.today().strftime("%Y-%y")
-    prefix = parent_type[:3].upper()
-    if voucher_type_id:
-        vt = await db["master_voucher_types"].find_one(
-            tenant_filter(tenant, {"id": voucher_type_id}), {"_id": 0, "prefix": 1})
-        if vt and vt.get("prefix"):
-            prefix = vt["prefix"]
-    count = await db[COLL].count_documents(
-        tenant_filter(tenant, {"parent_type": parent_type, "fiscal_year": fy_name}, include_deleted=True))
-    return f"{prefix}/{fy_name}/{str(count + 1).zfill(5)}"
 
 
 @router.get("/types")
@@ -124,8 +111,16 @@ async def create_voucher(payload: VoucherCreate, tenant: str = Depends(tenant_ct
     doc["id"] = new_id()
     stamp_tenant(doc, tenant)
     fy = await db.fiscal_years.find_one({"is_active": True})
-    doc["fiscal_year"] = fy["name"] if fy else date.today().strftime("%Y-%y")
-    doc["voucher_no"] = await _next_voucher_no(payload.parent_type, payload.voucher_type_id, tenant)
+    fy_name = fy["name"] if fy else date.today().strftime("%Y-%y")
+    doc["fiscal_year"] = fy_name
+    doc["voucher_no"] = await generate_voucher_no(
+        tenant=tenant,
+        parent_type=payload.parent_type,
+        voucher_type_id=payload.voucher_type_id,
+        fy=fy_name,
+        voucher_date=payload.date,
+        manual_no=payload.voucher_no,
+    )
     doc["status"] = "draft"
     doc["is_deleted"] = False
     doc["created_by"] = user["id"]
@@ -219,6 +214,28 @@ async def cancel_voucher(voucher_id: str, tenant: str = Depends(tenant_ctx), use
     return {"ok": True, "status": "cancelled"}
 
 
+@router.get("/orders/{order_id}/fulfilment")
+async def order_fulfilment_status(order_id: str, tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+    """Fulfilled vs pending qty for an order, computed from the links chain."""
+    _require_voucher(user)
+    return await order_fulfilment(order_id, tenant)
+
+
+@router.get("/job-work/reconciliation")
+async def job_work_recon(as_of: Optional[str] = None, tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+    """Out-challan vs material-inward reconciliation with §143 return-window alerts."""
+    _require_voucher(user)
+    return await job_work_reconciliation(tenant, as_of)
+
+
+@router.get("/job-work/itc-04")
+async def job_work_itc04(from_date: str = Query(...), to_date: str = Query(...),
+                         tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+    """ITC-04 dataset (goods sent / received back) for a period."""
+    _require_voucher(user)
+    return await itc04_data(tenant, from_date, to_date)
+
+
 @router.post("/run-reversing-journals")
 async def run_reversing_journals(as_of: Optional[str] = None, tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
     """Post the mirror of any reversing journal whose effective date has arrived."""
@@ -232,3 +249,6 @@ async def create_voucher_engine_indexes(database):
     await database[COLL].create_index([("tenant_id", 1), ("id", 1)], unique=True)
     await database[COLL].create_index([("tenant_id", 1), ("parent_type", 1), ("status", 1)])
     await database[COLL].create_index([("tenant_id", 1), ("date", 1)])
+    await database[COLL].create_index([("tenant_id", 1), ("effective_date", 1)])
+    # Numbering uniqueness per (tenant, voucher_type_id, FY, voucher_no).
+    await create_numbering_indexes(database)

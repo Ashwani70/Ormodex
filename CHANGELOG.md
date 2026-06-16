@@ -1,5 +1,43 @@
 # Changelog
 
+## Voucher engine — cross-cutting rules
+
+Adds the cross-cutting behaviours over the unified voucher engine.
+
+### Added — backend
+- `core/voucher_numbering.py`: voucher_no generated per VoucherType config —
+  honours `numbering_method` (auto / manual / none), `prefix`/`suffix`, and
+  `restart_rule` (never / yearly / monthly). Sequences are allocated atomically
+  via a per-key counter (db.voucher_counters, find_one_and_update), unique per
+  **(tenant_id, voucher_type_id, financial_year[, period])**; manual numbers are
+  uniqueness-checked (409 on dup); a unique DB index backstops it. Wired into
+  voucher create (replaces the old count-based numbering).
+- `core/voucher_engine.py` cross-cutting helpers:
+  - `order_fulfilment()` — fulfilled vs pending qty per item from the links chain
+    (delivery/GRN/invoice reference their order); `fully_fulfilled` flag.
+  - `job_work_reconciliation()` — out-challan vs material-inward pending qty with
+    §143 return-window alerts (inputs 1yr / capital goods 3yr → `deemed_supply` /
+    `due_soon` / `open` / `closed`); `itc04_data()` extract (goods sent/received).
+  - `statutory_je_filter()` / `management_je_filter()` — statutory reports (trial
+    balance, GST ledgers) exclude reversing + memorandum (reports_only / tag);
+    management reports include them. `reporting_date()` + cutoff use
+    `effective_date` when set, else `date`.
+- `routers/voucher_engine_router.py`: endpoints `/orders/{id}/fulfilment`,
+  `/job-work/reconciliation`, `/job-work/itc-04`; numbering unique index +
+  effective_date index in startup.
+- `core/voucher_models.py`: `VoucherCreate.voucher_no` (for manual numbering).
+
+### Tests (13) — `test_voucher_cross_cutting.py`, all pass
+- Numbering: sequential+unique, yearly/monthly restart, manual required+dedup
+  (409), method "none" → no number, tenant-isolated counters.
+- Order fulfilment pending-qty (partial + complete).
+- Job-work return window: breach → deemed_supply; recent+returned → closed.
+- Statutory filter excludes reversing/memorandum; effective_date drives cutoff.
+
+Backend suite: 77 passing.
+
+---
+
 ## Unified Voucher engine (skeleton + accounting posting)
 
 A single `vouchers_v2` collection + posting-rules engine for the full ~35

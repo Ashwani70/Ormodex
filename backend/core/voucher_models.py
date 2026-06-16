@@ -73,6 +73,7 @@ class TdsBlock(BaseModel):
     section_code: Optional[str] = None
     rate: float = 0.0
     amount: float = 0.0
+    base_amount: Optional[float] = None
 
 
 class TcsBlock(BaseModel):
@@ -113,6 +114,7 @@ class Attachment(BaseModel):
 class VoucherCreate(BaseModel):
     voucher_type_id: Optional[str] = None       # FK to master_voucher_types (optional)
     parent_type: ParentType
+    voucher_no: Optional[str] = None            # supplied only when numbering_method == "manual"
     date: str
     effective_date: Optional[str] = None
     narration: Optional[str] = None
