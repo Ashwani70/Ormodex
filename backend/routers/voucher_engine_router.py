@@ -17,7 +17,8 @@ from core.tenant import stamp_tenant, tenant_ctx, tenant_filter
 from core.utils import log_audit, new_id, now_iso
 from core.voucher_engine import (
     CATALOG, auto_reverse_due, itc04_data, job_work_reconciliation,
-    order_fulfilment, post_voucher, reverse_posting, spec_for, validate_voucher,
+    order_fulfilment, post_voucher, reverse_posting, run_reconciliation,
+    spec_for, validate_voucher,
 )
 from core.voucher_numbering import create_numbering_indexes, generate_voucher_no
 from core.voucher_models import VoucherCreate, VoucherUpdate
@@ -286,6 +287,16 @@ async def run_reversing_journals(as_of: Optional[str] = None, tenant: str = Depe
     _require_voucher(user)
     reversed_count = await auto_reverse_due(tenant, as_of, user)
     return {"ok": True, "reversed": reversed_count}
+
+
+@router.post("/run-reconciliation")
+async def run_reconciliation_endpoint(rules: Optional[list[str]] = None,
+                                      tenant: str = Depends(tenant_ctx),
+                                      user: dict = Depends(get_current_user)):
+    """Auto-reconcile posted documents (orders fully fulfilled, GRNs matched to a
+    purchase bill) and advance them posted → reconciled. Idempotent."""
+    _require_voucher(user)
+    return await run_reconciliation(tenant, user, rules)
 
 
 async def create_voucher_engine_indexes(database):

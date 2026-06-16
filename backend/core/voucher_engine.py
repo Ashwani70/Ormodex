@@ -868,3 +868,94 @@ def management_je_filter(tenant: str, *, as_of: Optional[str] = None,
 def reporting_date(voucher: dict) -> Optional[str]:
     """The date a voucher counts on in reports: effective_date when set, else date."""
     return voucher.get("effective_date") or voucher.get("date")
+
+
+# ═══════════════════════ Automated reconciliation engine ═══════════════════════
+#
+# Reconciliation matches *posted* documents and auto-advances them posted →
+# reconciled, replacing the purely-manual /reconcile transition. It is conservative:
+# a document is reconciled only when its match condition is fully met, and the run
+# is idempotent (already-reconciled docs are skipped). Each match writes the
+# evidence onto the document for audit.
+
+ORDER_TYPES = {"sales_order", "purchase_order", "job_work_in_order", "job_work_out_order"}
+
+
+async def _mark_reconciled(voucher_id: str, tenant: str, user: dict, evidence: dict):
+    old = await db[VOUCHERS].find_one(tenant_filter(tenant, {"id": voucher_id}), {"_id": 0})
+    if not old or old.get("status") == "reconciled":
+        return False
+    await db[VOUCHERS].update_one(
+        tenant_filter(tenant, {"id": voucher_id}),
+        {"$set": {"status": "reconciled", "reconciled_by": user.get("id", "system"),
+                  "reconciled_at": now_iso(), "reconciliation": evidence, "updated_at": now_iso()}},
+    )
+    await log_audit("UPDATE", VOUCHERS, voucher_id, user,
+                    old_values=old, new_values={**old, "status": "reconciled", "reconciliation": evidence})
+    return True
+
+
+async def reconcile_orders(tenant: str, user: dict) -> dict:
+    """Auto-reconcile orders that are fully fulfilled by posted downstream docs.
+
+    A posted order whose every line's pending_qty == 0 → reconciled, with the
+    fulfilling voucher ids recorded as evidence. Partially fulfilled or back-
+    ordered orders are left as-is."""
+    orders = await db[VOUCHERS].find(
+        tenant_filter(tenant, {"parent_type": {"$in": list(ORDER_TYPES)}, "status": "posted"}),
+        {"_id": 0},
+    ).to_list(5000)
+    reconciled = []
+    for o in orders:
+        ff = await order_fulfilment(o["id"], tenant)
+        if ff["fully_fulfilled"]:
+            if await _mark_reconciled(o["id"], tenant, user,
+                                      {"rule": "order_fully_fulfilled",
+                                       "by": ff["fulfilling_voucher_ids"]}):
+                reconciled.append(o["id"])
+    return {"rule": "order_fulfilment", "reconciled": reconciled, "count": len(reconciled)}
+
+
+async def reconcile_receipts_to_bills(tenant: str, user: dict) -> dict:
+    """Auto-reconcile posted goods-receipts once a posted purchase bill links them.
+
+    Matches receipt_note ← purchase voucher via the bill's links chain (3-way
+    match readiness). The receipt is reconciled; the bill is the evidence."""
+    bills = await db[VOUCHERS].find(
+        tenant_filter(tenant, {"parent_type": "purchase", "status": {"$in": ["posted", "reconciled"]}}),
+        {"_id": 0},
+    ).to_list(5000)
+    receipt_to_bill: dict[str, str] = {}
+    for b in bills:
+        for lk in b.get("links", []):
+            if lk.get("ref_type") in ("receipt_note", "grn"):
+                receipt_to_bill[lk["ref_voucher_id"]] = b["id"]
+
+    reconciled = []
+    for receipt_id, bill_id in receipt_to_bill.items():
+        rc = await db[VOUCHERS].find_one(
+            tenant_filter(tenant, {"id": receipt_id, "parent_type": "receipt_note", "status": "posted"}),
+            {"_id": 0})
+        if rc and await _mark_reconciled(receipt_id, tenant, user,
+                                         {"rule": "matched_purchase_bill", "bill_id": bill_id}):
+            reconciled.append(receipt_id)
+    return {"rule": "grn_to_bill", "reconciled": reconciled, "count": len(reconciled)}
+
+
+async def run_reconciliation(tenant: str, user: dict, rules: Optional[list[str]] = None) -> dict:
+    """Run the reconciliation rules (all by default). Idempotent."""
+    available = {
+        "order_fulfilment": reconcile_orders,
+        "grn_to_bill": reconcile_receipts_to_bills,
+    }
+    selected = rules or list(available)
+    results = []
+    total = 0
+    for name in selected:
+        fn = available.get(name)
+        if not fn:
+            raise HTTPException(400, f"Unknown reconciliation rule '{name}'. Known: {sorted(available)}")
+        res = await fn(tenant, user)
+        results.append(res)
+        total += res["count"]
+    return {"ok": True, "total_reconciled": total, "rules": results}
