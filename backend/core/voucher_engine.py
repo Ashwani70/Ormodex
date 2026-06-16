@@ -79,9 +79,11 @@ CATALOG: dict[str, TypeSpec] = {
     "sales_order": TypeSpec("order", note="Dispatch tracking via links chain"),
     "job_work_in_order": TypeSpec("order"),
     "job_work_out_order": TypeSpec("order"),
-    # ----- Payroll (deferred: existing payroll router remains source of truth) -----
-    "attendance": TypeSpec("payroll", implemented=False),
-    "payroll": TypeSpec("payroll", posts_to_books=True, implemented=False, note="PF/ESI/PT/TDS: see routers/payroll.py"),
+    # ----- Payroll -----
+    # attendance is a source document (payable days / piece-rate input) — like an
+    # order, it posts nothing; payroll posts the salary journal.
+    "attendance": TypeSpec("payroll", note="Payable days / piece-rate; no books/stock posting"),
+    "payroll": TypeSpec("payroll", posts_to_books=True, note="Dr Salaries; Cr PF/ESI/PT/TDS/Net payables"),
 }
 
 
@@ -200,6 +202,19 @@ async def _post_journal_from_lines(voucher: dict, tenant: str, user: dict, *, re
     "service_invoice", "purchase_expenses", "job_work_expenses",
 )
 async def _post_accounting(voucher: dict, user: dict, tenant: str):
+    return await _post_journal_from_lines(voucher, tenant, user)
+
+
+@handler("payroll")
+async def _post_payroll(voucher: dict, user: dict, tenant: str):
+    """Payroll run → salary journal. Posts a balanced entry from accounting_lines:
+        Dr 5003 Salaries & Wages        (gross / employer cost)
+            Cr 2006 TDS Payable
+            Cr <PF / ESI / PT payables>
+            Cr 2300 Salary Payable      (net pay)
+    The caller builds the lines (computed by the payroll module); the engine just
+    posts them as a balanced, idempotent JE — same primitive as other accounting
+    types, tagged PAYROLL."""
     return await _post_journal_from_lines(voucher, tenant, user)
 
 

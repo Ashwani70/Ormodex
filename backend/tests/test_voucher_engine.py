@@ -131,14 +131,18 @@ def test_memorandum_never_posts():
     assert len(db.journal_entries.docs) == 0
 
 
-def test_not_implemented_type_is_gated():
+def test_all_catalog_types_implemented():
+    # Every parent_type now has posting (or is an explicit no-post source doc).
+    # Nothing should remain gated as not-implemented.
+    assert [k for k, s in ve.CATALOG.items() if not s.implemented] == []
+
+
+def test_unknown_parent_type_rejected():
     _setup()
-    # payroll posting is still deferred (routers/payroll.py remains source of
-    # truth) — must stay gated so it can't be silently approved-as-posted.
-    v = _voucher("payroll", [])
+    v = _voucher("not_a_real_type", [])
     with pytest.raises(HTTPException) as exc:
         asyncio.run(ve.post_voucher(v, USER, TENANT))
-    assert exc.value.status_code == 501
+    assert exc.value.status_code == 400
 
 
 # ───────────────────────── validation ─────────────────────────
