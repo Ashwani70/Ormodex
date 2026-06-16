@@ -275,3 +275,42 @@ def test_logs_and_dashboard(admin_session):
     assert "active_gst" in dashboard
     assert "invalid_gst" in dashboard
     assert "recent_verifications" in dashboard
+
+
+def test_ai_provider_settings_flow(admin_session):
+    # 1. Get current settings and verify openai/gemini fields are present
+    r = admin_session.get(f"{BASE_URL}/api/verifications/settings")
+    assert r.status_code == 200
+    settings = r.json()
+    assert "openai_api_key" in settings
+    assert "gemini_api_key" in settings
+
+    # 2. Save settings with new openai and gemini key values
+    payload = {
+        "gst_api_key": settings.get("gst_api_key", ""),
+        "gst_api_enabled": settings.get("gst_api_enabled", True),
+        "pan_api_key": settings.get("pan_api_key", ""),
+        "pan_api_enabled": settings.get("pan_api_enabled", True),
+        "aadhaar_api_key": settings.get("aadhaar_api_key", ""),
+        "aadhaar_api_enabled": settings.get("aadhaar_api_enabled", True),
+        "openai_api_key": "sk-proj-test-save-openai-key",
+        "gemini_api_key": "AIzaSy-test-save-gemini-key",
+    }
+    r = admin_session.post(f"{BASE_URL}/api/verifications/settings", json=payload)
+    assert r.status_code == 200
+    updated = r.json()
+    assert updated["openai_api_key"] == "sk-proj-test-save-openai-key"
+    assert updated["gemini_api_key"] == "AIzaSy-test-save-gemini-key"
+
+    # 3. Check /providers endpoint to see if they show up as configured
+    r = admin_session.get(f"{BASE_URL}/api/ai/providers")
+    assert r.status_code == 200
+    providers = r.json()
+    assert providers["configured"]["openai"] is True
+    assert providers["configured"]["gemini"] is True
+
+    # 4. Restore settings back to empty or fallback values
+    payload["openai_api_key"] = ""
+    payload["gemini_api_key"] = ""
+    r = admin_session.post(f"{BASE_URL}/api/verifications/settings", json=payload)
+    assert r.status_code == 200

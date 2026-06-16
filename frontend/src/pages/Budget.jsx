@@ -191,7 +191,7 @@ function BudgetsTab() {
         api.get("/budget/cost-centers?is_active=true"),
       ]);
       setBudgets(bRes.data || []);
-      setCoa(coaRes || []);
+      setCoa(coaRes.data || []);
       setCenters(ccRes.data || []);
     } catch { toast.error("Failed to load budgets"); }
     finally { setLoading(false); }

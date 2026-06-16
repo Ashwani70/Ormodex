@@ -127,7 +127,7 @@ export default function Ledger() {
     if (tab === "outstanding") loadOutstanding();
     if (tab === "ageing") loadAgeing();
     if (tab === "reconciliation") {
-      api.get("/accounting/chart-of-accounts").then(r => setCoa(r || []));
+      api.get("/accounting/chart-of-accounts").then(r => setCoa(r.data || []));
       api.get("/banking/statements").then(r => setStmts(r.data?.items || []));
     }
     if (tab === "cheques") api.get("/banking/cheques").then(r => setCheques(r.data?.items || []));

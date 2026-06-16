@@ -20,7 +20,7 @@ from core.purchase_models import (
     GRNV2, PurchaseBill, PurchaseOrderV2, PurchaseReturn, Vendor, VendorUpdate,
 )
 from core.stock_ledger import post_entry
-from core.utils import crud_create, crud_get, crud_list, crud_update, next_doc_number, now_iso
+from core.utils import crud_create, crud_get, crud_list, crud_update, log_audit, next_doc_number, now_iso
 
 router = APIRouter(prefix="/purchase/v2", tags=["Purchase v2"])
 
@@ -226,19 +226,27 @@ async def create_bill(payload: PurchaseBill, user: dict = Depends(get_current_us
     data["vendor_name"] = data.get("vendor_name") or vendor.get("name")
     if not data.get("bill_number"):
         data["bill_number"] = await next_doc_number("BILL", "purchase_bills")
-
+ 
     # Validate any linked GRNs exist (traceability for three-way match).
     for gid in data.get("grn_ids", []):
         await crud_get("goods_receipt_notes_v2", gid)
     if data.get("purchase_order_id"):
         await crud_get("purchase_orders_v2", data["purchase_order_id"])
-
-    data["taxable"] = round(sum(float(l["qty"]) * float(l["rate"]) for l in data["lines"]), 2)
+ 
+    taxable = round(sum(float(l["qty"]) * float(l["rate"]) for l in data["lines"]), 2)
+    gst_amount = round(sum(float(l["qty"]) * float(l["rate"]) * float(l.get("gst_rate", 0)) / 100.0 for l in data["lines"]), 2)
+    total = round(taxable + gst_amount, 2)
+    
+    data["taxable"] = taxable
+    data["total"] = total
+    data["payment_received"] = 0.0
+    data["status"] = "UNPAID"
+    
     bill = await crud_create("purchase_bills", data, user=user)
-
+ 
     journal = await post_purchase_bill_journal(
         db, bill_id=bill["id"], bill_number=bill["bill_number"],
-        vendor_id=data["vendor_id"], vendor_name=data["vendor_name"],
+        vendor_id=data["vendor_id"], vendor_name=data.get("vendor_name") or "Vendor",
         lines=data["lines"], tds_rate=float(data.get("tds_rate", 0)),
         user=user, entry_date=data.get("vendor_invoice_date"),
     )
@@ -246,6 +254,39 @@ async def create_bill(payload: PurchaseBill, user: dict = Depends(get_current_us
                       {"journal_entry_id": journal["id"] if journal else None}, user=user)
     bill["journal_entry_id"] = journal["id"] if journal else None
     return bill
+
+
+@router.post("/bills/{bill_id}/payment")
+async def record_bill_payment(bill_id: str, amount: float = Query(...), user: dict = Depends(get_current_user)):
+    _require_purchase(user)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Payment amount must be positive")
+    
+    bill = await crud_get("purchase_bills", bill_id)
+    
+    taxable = float(bill.get("taxable") or 0.0)
+    total = bill.get("total")
+    if total is None:
+        gst_amount = sum(float(l["qty"]) * float(l["rate"]) * float(l.get("gst_rate", 0)) / 100.0 for l in bill.get("lines", []))
+        total = taxable + gst_amount
+    total = round(total, 2)
+    
+    tds_rate = float(bill.get("tds_rate", 0.0))
+    tds = round(taxable * tds_rate / 100.0, 2)
+    payable = round(total - tds, 2)
+    
+    already_paid = float(bill.get("payment_received", 0.0))
+    received = min(already_paid + amount, payable)
+    status = "PAID" if received >= payable else ("PARTIAL" if received > 0 else "UNPAID")
+
+    old_values = await db.purchase_bills.find_one({"id": bill_id}, {"_id": 0})
+    await db.purchase_bills.update_one(
+        {"id": bill_id},
+        {"$set": {"payment_received": round(received, 2), "status": status, "updated_at": now_iso()}},
+    )
+    new_values = await db.purchase_bills.find_one({"id": bill_id}, {"_id": 0})
+    await log_audit("UPDATE", "purchase_bills", bill_id, user, old_values=old_values or {}, new_values=new_values or {})
+    return new_values
 
 
 @router.get("/bills/{bill_id}/match")
@@ -317,7 +358,7 @@ async def create_return(payload: PurchaseReturn, user: dict = Depends(get_curren
 
     journal = await post_purchase_return_journal(
         db, return_id=ret["id"], return_number=ret["debit_note_number"],
-        vendor_id=data["vendor_id"], vendor_name=data["vendor_name"],
+        vendor_id=data["vendor_id"], vendor_name=data.get("vendor_name") or "Vendor",
         lines=data["lines"], user=user, entry_date=data["return_date"],
     )
     await crud_update("purchase_returns", ret["id"],

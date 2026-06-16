@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import api from "@/lib/api";
 import {
   PageHeader,
@@ -43,8 +44,47 @@ const TABS = [
 
 const ACCOUNT_TYPES = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"];
 
+function Pagination({ currentPage, totalPages, onPageChange }) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex justify-between items-center mt-4 pt-4 border-t border-zinc-800 font-mono text-xs">
+      <span className="text-zinc-500">
+        Page {currentPage} of {totalPages}
+      </span>
+      <div className="flex gap-2">
+        <SecondaryButton
+          disabled={currentPage === 1}
+          onClick={() => onPageChange(currentPage - 1)}
+          className="h-8 !px-3"
+        >
+          Previous
+        </SecondaryButton>
+        <SecondaryButton
+          disabled={currentPage === totalPages}
+          onClick={() => onPageChange(currentPage + 1)}
+          className="h-8 !px-3"
+        >
+          Next
+        </SecondaryButton>
+      </div>
+    </div>
+  );
+}
+
 export default function Accounting() {
-  const [tab, setTab] = useState("coa");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = searchParams.get("tab") || "coa";
+  
+  const [fromDate, setFromDate] = useState(searchParams.get("from") || "");
+  const [toDate, setToDate] = useState(searchParams.get("to") || "");
+  
+  const setTab = (newTab) => {
+    const params = { tab: newTab };
+    if (fromDate) params.from = fromDate;
+    if (toDate) params.to = toDate;
+    setSearchParams(params);
+  };
+
   const [accounts, setAccounts] = useState([]);
   const [journalEntries, setJournalEntries] = useState([]);
   const [trialBalance, setTrialBalance] = useState(null);
@@ -57,8 +97,19 @@ export default function Accounting() {
   const [loading, setLoading] = useState(false);
   const [showCoaModal, setShowCoaModal] = useState(false);
   const [showJeModal, setShowJeModal] = useState(false);
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
+  const [page, setPage] = useState(1);
+
+  // Sync state with URL search params (e.g. back button / history navigation)
+  useEffect(() => {
+    const urlFrom = searchParams.get("from") || "";
+    const urlTo = searchParams.get("to") || "";
+    if (urlFrom !== fromDate) setFromDate(urlFrom);
+    if (urlTo !== toDate) setToDate(urlTo);
+  }, [searchParams]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [tab, fromDate, toDate]);
 
   // COA form
   const [coaForm, setCoaForm] = useState({ code: "", name: "", account_type: "ASSET", opening_balance: 0, currency: "INR" });
@@ -66,8 +117,13 @@ export default function Accounting() {
   const [jeForm, setJeForm] = useState({ date: new Date().toISOString().split("T")[0], narration: "", lines: [{ account_code: "", account_name: "", debit: 0, credit: 0 }] });
 
   const loadAccounts = useCallback(async () => {
-    const r = await api.get("/accounting/chart-of-accounts");
-    setAccounts(r.data);
+    setLoading(true);
+    try {
+      const r = await api.get("/accounting/chart-of-accounts");
+      setAccounts(r.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load Chart of Accounts");
+    } finally { setLoading(false); }
   }, []);
 
   const loadJournalEntries = useCallback(async () => {
@@ -78,6 +134,8 @@ export default function Accounting() {
       if (toDate) params.to_date = toDate;
       const r = await api.get("/accounting/journal-entries", { params });
       setJournalEntries(r.data.items || []);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load Journal Entries");
     } finally { setLoading(false); }
   }, [fromDate, toDate]);
 
@@ -89,6 +147,8 @@ export default function Accounting() {
       if (toDate) params.to_date = toDate;
       const r = await api.get("/accounting/trial-balance", { params });
       setTrialBalance(r.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load Trial Balance");
     } finally { setLoading(false); }
   }, [fromDate, toDate]);
 
@@ -100,6 +160,8 @@ export default function Accounting() {
       if (toDate) params.to_date = toDate;
       const r = await api.get("/accounting/profit-loss", { params });
       setPl(r.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load Profit & Loss Statement");
     } finally { setLoading(false); }
   }, [fromDate, toDate]);
 
@@ -110,6 +172,8 @@ export default function Accounting() {
       if (toDate) params.as_of_date = toDate;
       const r = await api.get("/accounting/balance-sheet", { params });
       setBs(r.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load Balance Sheet");
     } finally { setLoading(false); }
   }, [toDate]);
 
@@ -117,10 +181,12 @@ export default function Accounting() {
     setLoading(true);
     try {
       const params = {};
-      if (fromDate) params.from_date = fromDate;
-      if (toDate) params.to_date = toDate;
+      if (fromDate) params.from = fromDate;
+      if (toDate) params.to = toDate;
       const r = await api.get("/accounting/day-book", { params });
       setDayBook(r.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load Day Book data");
     } finally { setLoading(false); }
   }, [fromDate, toDate]);
 
@@ -128,10 +194,12 @@ export default function Accounting() {
     setLoading(true);
     try {
       const params = {};
-      if (fromDate) params.from_date = fromDate;
-      if (toDate) params.to_date = toDate;
+      if (fromDate) params.from = fromDate;
+      if (toDate) params.to = toDate;
       const r = await api.get("/accounting/cash-flow", { params });
       setCashFlow(r.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load Cash Flow data");
     } finally { setLoading(false); }
   }, [fromDate, toDate]);
 
@@ -139,11 +207,14 @@ export default function Accounting() {
     setLoading(true);
     try {
       const params = { annual_rate: interestRate };
-      if (toDate) params.as_of_date = toDate;
-      const r = await api.get("/accounting/interest-on-outstanding", { params });
+      if (fromDate) params.from = fromDate;
+      if (toDate) params.to = toDate;
+      const r = await api.get("/accounting/interest-outstanding", { params });
       setInterest(r.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load Interest Outstanding data");
     } finally { setLoading(false); }
-  }, [interestRate, toDate]);
+  }, [fromDate, toDate, interestRate]);
 
   useEffect(() => {
     if (tab === "coa") loadAccounts();
@@ -208,6 +279,20 @@ export default function Accounting() {
     return acc;
   }, {});
 
+  const ITEMS_PER_PAGE = 50;
+
+  const dayBookEntries = dayBook?.entries || [];
+  const totalDayBookPages = Math.ceil(dayBookEntries.length / ITEMS_PER_PAGE);
+  const paginatedDayBookEntries = dayBookEntries.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
+
+  const cashFlowTransactions = cashFlow?.transactions || [];
+  const totalCashFlowPages = Math.ceil(cashFlowTransactions.length / ITEMS_PER_PAGE);
+  const paginatedCashFlowTransactions = cashFlowTransactions.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
+
+  const interestInvoices = interest?.invoices || [];
+  const totalInterestPages = Math.ceil(interestInvoices.length / ITEMS_PER_PAGE);
+  const paginatedInterestInvoices = interestInvoices.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
+
   const typeColors = {
     ASSET: "text-blue-400 border-blue-900 bg-blue-950",
     LIABILITY: "text-red-400 border-red-900 bg-red-950",
@@ -254,6 +339,11 @@ export default function Accounting() {
           <Input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="w-36" />
         </div>
         <SecondaryButton icon={RefreshCw} onClick={() => {
+          const params = { tab };
+          if (fromDate) params.from = fromDate;
+          if (toDate) params.to = toDate;
+          setSearchParams(params);
+
           if (tab === "journal") loadJournalEntries();
           if (tab === "trial") loadTrialBalance();
           if (tab === "pl") loadPL();
@@ -532,36 +622,44 @@ export default function Accounting() {
       {tab === "daybook" && (
         <div className="space-y-6">
           {loading ? (
-            <div className="text-zinc-500 font-mono text-xs uppercase p-8 text-center">Loading...</div>
+            <div className="text-zinc-500 font-mono text-xs uppercase p-8 text-center animate-pulse">Loading...</div>
           ) : dayBook ? (
             <>
-              <div className="flex gap-3 mb-4">
-                <StatTile label="Journal Entries" value={dayBook.journal_entries?.length || 0} />
-                <StatTile label="Vouchers" value={dayBook.vouchers?.length || 0} />
-                <StatTile label="Total Records" value={dayBook.total_entries || 0} accent />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <StatTile label="Journal Entries" value={dayBook.journal_entries_count || 0} />
+                <StatTile label="Vouchers" value={dayBook.vouchers_count || 0} />
+                <StatTile label="Total Records" value={dayBook.total_records || 0} accent />
               </div>
-              {(dayBook.journal_entries?.length > 0) && (
+              {dayBookEntries.length > 0 ? (
                 <div>
-                  <SectionTitle>Journal Entries</SectionTitle>
                   <table className="w-full text-sm border border-zinc-800">
-                    <thead><tr className="label-overline border-b border-zinc-800 bg-zinc-900">
-                      <th className="text-left px-4 py-2">Entry No</th>
-                      <th className="text-left px-4 py-2">Narration</th>
-                      <th className="text-right px-4 py-2">Debit</th>
-                      <th className="text-right px-4 py-2">Credit</th>
-                    </tr></thead>
+                    <thead>
+                      <tr className="label-overline border-b border-zinc-800 bg-zinc-900">
+                        <th className="text-left px-4 py-2">Date</th>
+                        <th className="text-left px-4 py-2">Voucher Number</th>
+                        <th className="text-left px-4 py-2">Account Name</th>
+                        <th className="text-left px-4 py-2">Description</th>
+                        <th className="text-right px-4 py-2">Debit Amount</th>
+                        <th className="text-right px-4 py-2">Credit Amount</th>
+                      </tr>
+                    </thead>
                     <tbody>
-                      {dayBook.journal_entries.map(je => (
-                        <tr key={je.id} className="border-b border-zinc-900 hover:bg-zinc-900">
-                          <td className="px-4 py-2 font-mono text-yellow-400 text-xs">{je.entry_number}</td>
-                          <td className="px-4 py-2 text-white text-xs">{je.narration}</td>
-                          <td className="px-4 py-2 text-right tabular">₹{inr(je.total_debit)}</td>
-                          <td className="px-4 py-2 text-right tabular">₹{inr(je.total_credit)}</td>
+                      {paginatedDayBookEntries.map((row, idx) => (
+                        <tr key={idx} className={`border-b border-zinc-900 hover:bg-zinc-900/50 ${idx % 2 === 1 ? "bg-zinc-900/30" : ""}`}>
+                          <td className="px-4 py-2 text-zinc-400 font-mono text-xs">{row.date}</td>
+                          <td className="px-4 py-2 font-mono text-yellow-400 text-xs">{row.voucher_number}</td>
+                          <td className="px-4 py-2 text-white font-medium">{row.account_name}</td>
+                          <td className="px-4 py-2 text-zinc-400 text-xs max-w-xs truncate" title={row.description}>{row.description}</td>
+                          <td className="px-4 py-2 text-right tabular text-zinc-300">{row.debit_amount > 0 ? `₹${inr(row.debit_amount)}` : "—"}</td>
+                          <td className="px-4 py-2 text-right tabular text-zinc-300">{row.credit_amount > 0 ? `₹${inr(row.credit_amount)}` : "—"}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                  <Pagination currentPage={page} totalPages={totalDayBookPages} onPageChange={setPage} />
                 </div>
+              ) : (
+                <EmptyState message="No day book entries available for the period" />
               )}
             </>
           ) : (
@@ -574,103 +672,48 @@ export default function Accounting() {
       {tab === "cashflow" && (
         <div className="space-y-6">
           {loading ? (
-            <div className="text-zinc-500 font-mono text-xs uppercase p-8 text-center">Loading...</div>
+            <div className="text-zinc-500 font-mono text-xs uppercase p-8 text-center animate-pulse">Loading...</div>
           ) : cashFlow ? (
-            <div className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                <StatTile label="Operating Cash Flow" value={`₹${inr(cashFlow.operating_activities?.net_operating_cash_flow)}`} accent={cashFlow.operating_activities?.net_operating_cash_flow >= 0} />
-                <StatTile label="Investing Cash Flow" value={`₹${inr(cashFlow.investing_activities?.net_investing_cash_flow)}`} />
-                <StatTile label="Financing Cash Flow" value={`₹${inr(cashFlow.financing_activities?.net_financing_cash_flow)}`} />
-                <StatTile label="Net Cash Change" value={`₹${inr(cashFlow.net_cash_change)}`} accent={cashFlow.net_cash_change >= 0} />
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <StatTile label="Total Inflow" value={`₹${inr(cashFlow.total_inflow)}`} accent />
+                <StatTile label="Total Outflow" value={`₹${inr(cashFlow.total_outflow)}`} />
+                <StatTile label="Closing Balance" value={`₹${inr(cashFlow.closing_balance)}`} accent={cashFlow.closing_balance >= 0} />
               </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Operating Activities */}
-                <div className="bg-zinc-950 border border-zinc-800 p-4 space-y-4">
-                  <div className="font-mono text-xs uppercase text-yellow-400 border-b border-zinc-800 pb-2 font-bold">1. Operating Activities</div>
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-xs">
-                      <span className="text-zinc-400">Net Profit Before Tax</span>
-                      <span className={`font-mono ${cashFlow.operating_activities?.net_profit >= 0 ? "text-green-400" : "text-red-400"}`}>₹{inr(cashFlow.operating_activities?.net_profit)}</span>
-                    </div>
-                    {cashFlow.operating_activities?.working_capital_adjustments?.map((w, idx) => (
-                      <div key={idx} className="flex justify-between text-xs border-b border-zinc-900 pb-1">
-                        <span className="text-zinc-500">{w.label}</span>
-                        <span className={`font-mono ${w.amount >= 0 ? "text-green-500" : "text-red-500"}`}>
-                          {w.amount >= 0 ? "+" : ""}₹{inr(w.amount)}
-                        </span>
-                      </div>
-                    ))}
-                    <div className="flex justify-between text-xs pt-2 border-t border-zinc-800 font-bold">
-                      <span className="text-zinc-300">Working Capital Net</span>
-                      <span className="text-zinc-200">₹{inr(cashFlow.operating_activities?.working_capital_net)}</span>
-                    </div>
-                    <div className="flex justify-between text-xs pt-2 border-t border-zinc-700 font-bold text-yellow-400">
-                      <span>Net Cash from Operating</span>
-                      <span>₹{inr(cashFlow.operating_activities?.net_operating_cash_flow)}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Investing Activities */}
-                <div className="bg-zinc-950 border border-zinc-800 p-4 space-y-4">
-                  <div className="font-mono text-xs uppercase text-yellow-400 border-b border-zinc-800 pb-2 font-bold">2. Investing Activities</div>
-                  <div className="space-y-2">
-                    {cashFlow.investing_activities?.items?.length === 0 ? (
-                      <div className="text-xs text-zinc-600 font-mono italic">No investing activity logs</div>
-                    ) : (
-                      cashFlow.investing_activities?.items?.map((item, idx) => (
-                        <div key={idx} className="flex justify-between text-xs border-b border-zinc-900 pb-1">
-                          <span className="text-zinc-500">{item.label}</span>
-                          <span className={`font-mono ${item.amount >= 0 ? "text-green-500" : "text-red-500"}`}>
-                            {item.amount >= 0 ? "+" : ""}₹{inr(item.amount)}
-                          </span>
-                        </div>
-                      ))
-                    )}
-                    <div className="flex justify-between text-xs pt-2 border-t border-zinc-700 font-bold text-yellow-400">
-                      <span>Net Cash from Investing</span>
-                      <span>₹{inr(cashFlow.investing_activities?.net_investing_cash_flow)}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Financing Activities */}
-                <div className="bg-zinc-950 border border-zinc-800 p-4 space-y-4">
-                  <div className="font-mono text-xs uppercase text-yellow-400 border-b border-zinc-800 pb-2 font-bold">3. Financing Activities</div>
-                  <div className="space-y-2">
-                    {cashFlow.financing_activities?.items?.length === 0 ? (
-                      <div className="text-xs text-zinc-600 font-mono italic">No financing activity logs</div>
-                    ) : (
-                      cashFlow.financing_activities?.items?.map((item, idx) => (
-                        <div key={idx} className="flex justify-between text-xs border-b border-zinc-900 pb-1">
-                          <span className="text-zinc-500">{item.label}</span>
-                          <span className={`font-mono ${item.amount >= 0 ? "text-green-500" : "text-red-500"}`}>
-                            {item.amount >= 0 ? "+" : ""}₹{inr(item.amount)}
-                          </span>
-                        </div>
-                      ))
-                    )}
-                    <div className="flex justify-between text-xs pt-2 border-t border-zinc-700 font-bold text-yellow-400">
-                      <span>Net Cash from Financing</span>
-                      <span>₹{inr(cashFlow.financing_activities?.net_financing_cash_flow)}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="border border-zinc-800 bg-zinc-900/50 p-4 flex justify-between items-center">
+              {cashFlowTransactions.length > 0 ? (
                 <div>
-                  <div className="text-xs font-mono uppercase tracking-wider text-zinc-400">Net Increase/Decrease in Cash</div>
-                  <div className="text-xs text-zinc-600 font-mono">Indirect Method formula: Net Operating + Investing + Financing Cash Flow.</div>
+                  <table className="w-full text-sm border border-zinc-800">
+                    <thead>
+                      <tr className="label-overline border-b border-zinc-800 bg-zinc-900">
+                        <th className="text-left px-4 py-2">Date</th>
+                        <th className="text-left px-4 py-2">Transaction Reference</th>
+                        <th className="text-left px-4 py-2">Description</th>
+                        <th className="text-right px-4 py-2">Cash In</th>
+                        <th className="text-right px-4 py-2">Cash Out</th>
+                        <th className="text-right px-4 py-2">Running Balance</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paginatedCashFlowTransactions.map((row, idx) => (
+                        <tr key={idx} className={`border-b border-zinc-900 hover:bg-zinc-900/50 ${idx % 2 === 1 ? "bg-zinc-900/30" : ""}`}>
+                          <td className="px-4 py-2 text-zinc-400 font-mono text-xs">{row.date}</td>
+                          <td className="px-4 py-2 font-mono text-yellow-400 text-xs">{row.reference}</td>
+                          <td className="px-4 py-2 text-white text-xs max-w-xs truncate" title={row.description}>{row.description}</td>
+                          <td className="px-4 py-2 text-right tabular text-green-400 font-medium">{row.cash_in > 0 ? `₹${inr(row.cash_in)}` : "—"}</td>
+                          <td className="px-4 py-2 text-right tabular text-red-400 font-medium">{row.cash_out > 0 ? `₹${inr(row.cash_out)}` : "—"}</td>
+                          <td className="px-4 py-2 text-right tabular text-zinc-300 font-semibold">₹{inr(row.running_balance)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <Pagination currentPage={page} totalPages={totalCashFlowPages} onPageChange={setPage} />
                 </div>
-                <div className={`font-display font-black text-2xl tabular ${cashFlow.net_cash_change >= 0 ? "text-green-400" : "text-red-400"}`}>
-                  ₹{inr(cashFlow.net_cash_change)}
-                </div>
-              </div>
-            </div>
+              ) : (
+                <EmptyState message="No cash flow transactions available for the period" />
+              )}
+            </>
           ) : (
-            <EmptyState message="No cash flow data available for the period" />
+            <EmptyState message="No cash flow data available" />
           )}
         </div>
       )}
@@ -678,7 +721,7 @@ export default function Accounting() {
       {/* Interest Outstanding Tab */}
       {tab === "interest" && (
         <div className="space-y-6">
-          <div className="flex flex-wrap items-end gap-4 bg-zinc-950 border border-zinc-850 p-4">
+          <div className="flex flex-wrap items-end gap-4 bg-zinc-950 border border-zinc-850 p-4 font-mono">
             <div className="w-44">
               <span className="label-overline block mb-1">Interest Rate % (Annual)</span>
               <Input type="number" step="0.5" value={interestRate} onChange={e => setInterestRate(parseFloat(e.target.value) || 0)} className="!h-9" />
@@ -687,51 +730,52 @@ export default function Accounting() {
           </div>
 
           {loading ? (
-            <div className="text-zinc-500 font-mono text-xs uppercase p-8 text-center">Loading...</div>
+            <div className="text-zinc-500 font-mono text-xs uppercase p-8 text-center animate-pulse">Loading...</div>
           ) : interest ? (
-            <div className="space-y-6">
+            <>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <StatTile label="Total Outstanding" value={`₹${inr(interest.total_outstanding)}`} />
-                <StatTile label="Accrued Interest" value={`₹${inr(interest.total_interest)}`} accent />
-                <StatTile label="Total Due with Interest" value={`₹${inr(interest.total_due_with_interest)}`} />
+                <StatTile label="Total Interest Due" value={`₹${inr(interest.total_interest_due)}`} accent />
+                <StatTile label="Total Accounts" value={interest.total_accounts || 0} />
+                <StatTile label="Overdue Accounts" value={interest.overdue_accounts || 0} accent={interest.overdue_accounts > 0} />
               </div>
-
-              <div className="bg-zinc-950 border border-zinc-800">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="label-overline border-b border-zinc-800 bg-zinc-900 text-zinc-400">
-                      <th className="text-left px-4 py-2">Invoice No</th>
-                      <th className="text-left px-4 py-2">Customer</th>
-                      <th className="text-left px-4 py-2">Inv Date</th>
-                      <th className="text-right px-4 py-2">Outstanding</th>
-                      <th className="text-right px-4 py-2">Days Overdue</th>
-                      <th className="text-right px-4 py-2">Rate % (p.a.)</th>
-                      <th className="text-right px-4 py-2">Interest</th>
-                      <th className="text-right px-4 py-2">Total Due</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {interest.invoices?.length === 0 && (
-                      <tr>
-                        <td colSpan={8} className="px-4 py-8 text-center text-zinc-600 font-mono">No unpaid invoices to calculate interest.</td>
+              {interestInvoices.length > 0 ? (
+                <div>
+                  <table className="w-full text-sm border border-zinc-800">
+                    <thead>
+                      <tr className="label-overline border-b border-zinc-800 bg-zinc-900 text-zinc-400">
+                        <th className="text-left px-4 py-2">Customer Name</th>
+                        <th className="text-left px-4 py-2">Loan/Account Number</th>
+                        <th className="text-right px-4 py-2">Interest Amount</th>
+                        <th className="text-left px-4 py-2">Due Date</th>
+                        <th className="text-right px-4 py-2">Days Outstanding</th>
+                        <th className="text-left px-4 py-2">Status</th>
                       </tr>
-                    )}
-                    {interest.invoices?.map((inv, i) => (
-                      <tr key={inv.invoice_number} className={`border-b border-zinc-900 hover:bg-zinc-900 ${i % 2 === 1 ? "bg-zinc-900/30" : ""}`}>
-                        <td className="px-4 py-2 font-mono text-yellow-400">{inv.invoice_number}</td>
-                        <td className="px-4 py-2 text-white font-bold">{inv.customer_name}</td>
-                        <td className="px-4 py-2 text-zinc-400 font-mono">{inv.invoice_date}</td>
-                        <td className="px-4 py-2 text-right tabular">₹{inr(inv.amount_outstanding)}</td>
-                        <td className="px-4 py-2 text-right tabular text-red-400 font-semibold">{inv.days_overdue} days</td>
-                        <td className="px-4 py-2 text-right tabular text-zinc-500">{inv.interest_rate_pa}%</td>
-                        <td className="px-4 py-2 text-right tabular text-yellow-500 font-bold">₹{inr(inv.interest_amount)}</td>
-                        <td className="px-4 py-2 text-right tabular text-green-400 font-bold">₹{inr(inv.total_due_with_interest)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+                    </thead>
+                    <tbody>
+                      {paginatedInterestInvoices.map((row, idx) => (
+                        <tr key={idx} className={`border-b border-zinc-900 hover:bg-zinc-900/50 ${idx % 2 === 1 ? "bg-zinc-900/30" : ""}`}>
+                          <td className="px-4 py-2 text-white font-bold">{row.customer_name}</td>
+                          <td className="px-4 py-2 font-mono text-yellow-400 text-xs">{row.account_number}</td>
+                          <td className="px-4 py-2 text-right tabular text-yellow-500 font-bold">₹{inr(row.interest_amount)}</td>
+                          <td className="px-4 py-2 text-zinc-400 font-mono text-xs">{row.due_date}</td>
+                          <td className="px-4 py-2 text-right tabular text-red-400 font-semibold">{row.days_outstanding} days</td>
+                          <td className="px-4 py-2">
+                            <span className={`text-[10px] font-mono uppercase px-2 py-0.5 border ${
+                              row.status === "OVERDUE" ? "border-red-900 bg-red-950 text-red-400" : "border-zinc-700 bg-zinc-800 text-zinc-500"
+                            }`}>
+                              {row.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <Pagination currentPage={page} totalPages={totalInterestPages} onPageChange={setPage} />
+                </div>
+              ) : (
+                <EmptyState message="No outstanding interest records available" />
+              )}
+            </>
           ) : (
             <EmptyState message="No interest report available" />
           )}

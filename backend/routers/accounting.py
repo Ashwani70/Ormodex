@@ -418,28 +418,76 @@ async def day_book(
     day: Optional[str] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    from_alias: Optional[str] = Query(None, alias="from"),
+    to_alias: Optional[str] = Query(None, alias="to"),
     user=Depends(get_current_user)
 ):
     _require_accounting(user)
-    q = {}
+    from fastapi.params import Query as FastAPIQuery
+    if isinstance(from_alias, FastAPIQuery):
+        from_alias = None
+    if isinstance(to_alias, FastAPIQuery):
+        to_alias = None
+
+    fd = from_date or from_alias
+    td = to_date or to_alias
+    if not fd:
+        fd = None
+    if not td:
+        td = None
+
+    q: dict[str, Any] = {}
     if day:
         q["date"] = day
-    elif from_date or to_date:
+    elif fd or td:
         q["date"] = {}
-        if from_date:
-            q["date"]["$gte"] = from_date
-        if to_date:
-            q["date"]["$lte"] = to_date
+        if fd:
+            q["date"]["$gte"] = fd
+        if td:
+            q["date"]["$lte"] = td
     else:
         q["date"] = date.today().isoformat()
 
-    entries = await db.journal_entries.find(q, {"_id": 0}).sort("date", 1).to_list(500)
-    vouchers = await db.vouchers.find(q, {"_id": 0}).sort("date", 1).to_list(500)
+    journal_entries = await db.journal_entries.find(q, {"_id": 0}).sort("date", 1).to_list(5000)
+    vouchers = await db.vouchers.find(q, {"_id": 0}).sort("date", 1).to_list(5000)
+
+    rows = []
+    
+    # Process Journal Entries
+    for je in journal_entries:
+        for line in je.get("lines", []):
+            rows.append({
+                "date": je.get("date"),
+                "voucher_number": je.get("entry_number"),
+                "account_name": line.get("account_name"),
+                "description": je.get("narration"),
+                "debit_amount": line.get("debit", 0.0),
+                "credit_amount": line.get("credit", 0.0),
+                "type": "JOURNAL"
+            })
+            
+    # Process Vouchers
+    for v in vouchers:
+        v_type = v.get("voucher_type")
+        is_debit = v_type in ("PAYMENT", "CONTRA", "DEBIT_NOTE", "EXPENSE")
+        rows.append({
+            "date": v.get("date"),
+            "voucher_number": v.get("voucher_number"),
+            "account_name": v.get("party_name") or "Cash/Bank",
+            "description": v.get("narration"),
+            "debit_amount": v.get("amount", 0.0) if is_debit else 0.0,
+            "credit_amount": v.get("amount", 0.0) if not is_debit else 0.0,
+            "type": "VOUCHER"
+        })
+
+    # Sort rows by date chronologically
+    rows.sort(key=lambda x: x["date"])
 
     return {
-        "journal_entries": entries,
-        "vouchers": vouchers,
-        "total_entries": len(entries) + len(vouchers),
+        "journal_entries_count": len(journal_entries),
+        "vouchers_count": len(vouchers),
+        "total_records": len(rows),
+        "entries": rows
     }
 
 
@@ -512,131 +560,104 @@ async def seed_default_coa(user=Depends(require_admin)):
     return {"message": f"Seeded {len(docs)} accounts", "count": len(docs)}
 
 
-# ─────────────────────────── Cash Flow Statement (Indirect Method) ───────────────────────────
+# ─────────────────────────── Cash Flow Statement (Direct Method) ───────────────────────────
 
 @router.get("/cash-flow")
 async def cash_flow_statement(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    from_alias: Optional[str] = Query(None, alias="from"),
+    to_alias: Optional[str] = Query(None, alias="to"),
     user=Depends(get_current_user)
 ):
-    """Generate Cash Flow Statement using indirect method from journal entries."""
     _require_accounting(user)
+    from fastapi.params import Query as FastAPIQuery
+    if isinstance(from_alias, FastAPIQuery):
+        from_alias = None
+    if isinstance(to_alias, FastAPIQuery):
+        to_alias = None
+
+    fd = from_date or from_alias
+    td = to_date or to_alias
+    if not fd:
+        fd = None
+    if not td:
+        td = None
+
+    cash_codes = {"1001", "1002", "1003"}  # Cash in Hand, Bank, Petty Cash
+    opening_balance = 0.0
+    
+    coa = await db.chart_of_accounts.find({"code": {"$in": list(cash_codes)}}).to_list(10)
+    for c in coa:
+        opening_balance += float(c.get("opening_balance", 0.0))
+        
+    effective_from = fd or date.today().isoformat()
+    
+    # Calculate net cash flow before the period's start date
+    pre_q = {"status": "POSTED", "date": {"$lt": effective_from}}
+    pre_entries = await db.journal_entries.find(pre_q).to_list(10000)
+    for je in pre_entries:
+        for line in je.get("lines", []):
+            if line.get("account_code") in cash_codes:
+                opening_balance += float(line.get("debit", 0.0)) - float(line.get("credit", 0.0))
 
     q: dict[str, Any] = {"status": "POSTED"}
-    if from_date or to_date:
+    if fd or td:
         q["date"] = {}
-        if from_date:
-            q["date"]["$gte"] = from_date
-        if to_date:
-            q["date"]["$lte"] = to_date
-
-    entries = await db.journal_entries.find(q, {"_id": 0}).to_list(10000)
-    accounts = {a["code"]: a for a in await db.chart_of_accounts.find({}, {"_id": 0}).to_list(500)}
-
-    # Net income from P&L
-    income_total = 0.0
-    expense_total = 0.0
-
-    # Balance sheet movements
-    asset_changes: dict = {}
-    liability_changes: dict = {}
-
-    for e in entries:
-        for line in e.get("lines", []):
-            code = line["account_code"]
-            acc = accounts.get(code, {})
-            acc_type = acc.get("account_type")
-            debit = line.get("debit", 0)
-            credit = line.get("credit", 0)
-
-            if acc_type == "INCOME":
-                income_total += credit - debit
-            elif acc_type == "EXPENSE":
-                expense_total += debit - credit
-            elif acc_type == "ASSET":
-                asset_changes[code] = asset_changes.get(code, 0) + debit - credit
-            elif acc_type == "LIABILITY":
-                liability_changes[code] = liability_changes.get(code, 0) + credit - debit
-
-    net_profit = round(income_total - expense_total, 2)
-
-    # Operating activities (working capital changes)
-    working_capital_items = []
-    cash_accounts = {"1001", "1002", "1003"}  # Cash/Bank accounts
-
-    # Receivables change (negative = increase in receivables = cash outflow)
-    receivables_change = round(sum(v for k, v in asset_changes.items() if k in ("1100",)), 2)
-    if receivables_change != 0:
-        working_capital_items.append({
-            "label": "Change in Accounts Receivable",
-            "amount": -receivables_change,
-            "type": "WORKING_CAPITAL"
-        })
-
-    # Inventory change
-    inventory_change = round(sum(v for k, v in asset_changes.items() if k in ("1200",)), 2)
-    if inventory_change != 0:
-        working_capital_items.append({
-            "label": "Change in Inventory",
-            "amount": -inventory_change,
-            "type": "WORKING_CAPITAL"
-        })
-
-    # Payables change (positive = increase in payables = cash inflow)
-    payables_change = round(sum(v for k, v in liability_changes.items() if k in ("2001",)), 2)
-    if payables_change != 0:
-        working_capital_items.append({
-            "label": "Change in Accounts Payable",
-            "amount": payables_change,
-            "type": "WORKING_CAPITAL"
-        })
-
-    working_capital_net = round(sum(w["amount"] for w in working_capital_items), 2)
-    operating_cash_flow = round(net_profit + working_capital_net, 2)
-
-    # Investing activities (Fixed asset changes)
-    investing_items = []
-    fixed_asset_change = round(sum(v for k, v in asset_changes.items() if k in ("1400", "1401", "1402")), 2)
-    if fixed_asset_change != 0:
-        investing_items.append({
-            "label": "Purchase/Sale of Fixed Assets",
-            "amount": -fixed_asset_change,
-            "type": "INVESTING"
-        })
-    investing_cash_flow = round(sum(i["amount"] for i in investing_items), 2)
-
-    # Financing activities (Equity/Loan changes)
-    financing_items = []
-    equity_change = round(sum(v for k, v in liability_changes.items() if k in ("3001", "3002", "2100", "2200")), 2)
-    if equity_change != 0:
-        financing_items.append({
-            "label": "Equity/Loan Changes",
-            "amount": equity_change,
-            "type": "FINANCING"
-        })
-    financing_cash_flow = round(sum(f["amount"] for f in financing_items), 2)
-
-    net_cash_change = round(operating_cash_flow + investing_cash_flow + financing_cash_flow, 2)
-
+        if fd:
+            q["date"]["$gte"] = fd
+        if td:
+            q["date"]["$lte"] = td
+    else:
+        q["date"] = date.today().isoformat()
+        
+    entries = await db.journal_entries.find(q).sort("date", 1).to_list(10000)
+    
+    transactions = []
+    total_inflow = 0.0
+    total_outflow = 0.0
+    
+    for je in entries:
+        cash_lines = [l for l in je.get("lines", []) if l.get("account_code") in cash_codes]
+        if not cash_lines:
+            continue
+        other_lines = [l for l in je.get("lines", []) if l.get("account_code") not in cash_codes]
+        other_party = other_lines[0].get("account_name") if other_lines else "General Entry"
+        
+        for line in cash_lines:
+            debit = float(line.get("debit", 0.0))
+            credit = float(line.get("credit", 0.0))
+            if debit > 0:
+                total_inflow += debit
+                transactions.append({
+                    "date": je.get("date"),
+                    "reference": je.get("entry_number"),
+                    "description": je.get("narration") or f"Inflow via {other_party}",
+                    "cash_in": debit,
+                    "cash_out": 0.0,
+                })
+            if credit > 0:
+                total_outflow += credit
+                transactions.append({
+                    "date": je.get("date"),
+                    "reference": je.get("entry_number"),
+                    "description": je.get("narration") or f"Outflow via {other_party}",
+                    "cash_in": 0.0,
+                    "cash_out": credit,
+                })
+            
+    transactions.sort(key=lambda x: x["date"])
+    
+    running = opening_balance
+    for tx in transactions:
+        running += tx["cash_in"] - tx["cash_out"]
+        tx["running_balance"] = round(running, 2)
+        
     return {
-        "from_date": from_date,
-        "to_date": to_date,
-        "operating_activities": {
-            "net_profit": net_profit,
-            "working_capital_adjustments": working_capital_items,
-            "working_capital_net": working_capital_net,
-            "net_operating_cash_flow": operating_cash_flow,
-        },
-        "investing_activities": {
-            "items": investing_items,
-            "net_investing_cash_flow": investing_cash_flow,
-        },
-        "financing_activities": {
-            "items": financing_items,
-            "net_financing_cash_flow": financing_cash_flow,
-        },
-        "net_cash_change": net_cash_change,
+        "total_inflow": round(total_inflow, 2),
+        "total_outflow": round(total_outflow, 2),
+        "closing_balance": round(running, 2),
+        "transactions": transactions
     }
 
 
@@ -704,3 +725,96 @@ async def interest_on_outstanding(
         "total_interest": round(total_interest, 2),
         "total_due_with_interest": round(total_outstanding + total_interest, 2),
     }
+
+
+# ─────────────────────────── Interest Outstanding (Enhanced) ───────────────────────────
+
+@router.get("/interest-outstanding")
+async def interest_outstanding_endpoint(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    from_alias: Optional[str] = Query(None, alias="from"),
+    to_alias: Optional[str] = Query(None, alias="to"),
+    annual_rate: float = Query(18.0),
+    user=Depends(get_current_user)
+):
+    _require_accounting(user)
+    from fastapi.params import Query as FastAPIQuery
+    if isinstance(from_alias, FastAPIQuery):
+        from_alias = None
+    if isinstance(to_alias, FastAPIQuery):
+        to_alias = None
+    if isinstance(annual_rate, FastAPIQuery):
+        annual_rate = annual_rate.default
+
+    fd = from_date or from_alias
+    td = to_date or to_alias
+    if not fd:
+        fd = None
+    if not td:
+        td = None
+    
+    today = date.fromisoformat(td) if td else date.today()
+    
+    q: dict[str, Any] = {"status": {"$in": ["UNPAID", "PARTIAL"]}}
+    if fd or td:
+        q["created_at"] = {}
+        if fd:
+            q["created_at"]["$gte"] = fd
+        if td:
+            q["created_at"]["$lte"] = f"{td}T23:59:59"
+
+    invoices = await db.invoices.find(q, {"_id": 0}).to_list(10000)
+    
+    results = []
+    total_interest_due = 0.0
+    overdue_accounts_count = 0
+    unique_customers = set()
+
+    for inv in invoices:
+        inv_total = float(inv.get("total", 0))
+        paid = float(inv.get("payment_received", 0))
+        outstanding = round(inv_total - paid, 2)
+        if outstanding <= 0:
+            continue
+            
+        inv_date_str = (inv.get("created_at") or "")[:10]
+        if not inv_date_str:
+            continue
+        try:
+            inv_date = date.fromisoformat(inv_date_str)
+        except ValueError:
+            continue
+            
+        days_overdue = max(0, (today - inv_date).days)
+        interest = round(outstanding * (annual_rate / 365 / 100) * days_overdue, 2)
+        
+        from datetime import timedelta
+        due_date = inv_date + timedelta(days=30)
+        due_date_str = due_date.isoformat()
+        
+        results.append({
+            "customer_name": inv.get("customer_name") or "Unknown Customer",
+            "account_number": inv.get("invoice_number") or "N/A",
+            "interest_amount": interest,
+            "due_date": due_date_str,
+            "days_outstanding": days_overdue,
+            "status": "OVERDUE" if days_overdue > 0 else "PENDING",
+            "amount_outstanding": outstanding,
+        })
+        
+        total_interest_due += interest
+        if days_overdue > 0:
+            overdue_accounts_count += 1
+        cust_id = inv.get("customer_id") or inv.get("customer_name") or "Unknown"
+        unique_customers.add(cust_id)
+
+    results.sort(key=lambda x: x["days_outstanding"], reverse=True)
+    
+    return {
+        "total_interest_due": round(total_interest_due, 2),
+        "total_accounts": len(unique_customers),
+        "overdue_accounts": overdue_accounts_count,
+        "invoices": results,
+    }
+

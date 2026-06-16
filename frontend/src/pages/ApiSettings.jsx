@@ -10,7 +10,7 @@ import {
   EmptyState,
 } from "@/components/ui-kit";
 import { toast } from "sonner";
-import { Settings, Save, ShieldAlert, CheckCircle, AlertTriangle, Eye, EyeOff } from "lucide-react";
+import { Settings, Save, ShieldAlert, CheckCircle, AlertTriangle, Eye, EyeOff, Sparkles } from "lucide-react";
 
 export default function ApiSettings() {
   const [form, setForm] = useState({
@@ -20,8 +20,10 @@ export default function ApiSettings() {
     pan_api_enabled: true,
     aadhaar_api_key: "",
     aadhaar_api_enabled: true,
+    openai_api_key: "",
+    gemini_api_key: "",
   });
-  const [showKeys, setShowKeys] = useState({ gst: false, pan: false, aadhaar: false });
+  const [showKeys, setShowKeys] = useState({ gst: false, pan: false, aadhaar: false, openai: false, gemini: false });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -191,6 +193,49 @@ export default function ApiSettings() {
                       className="p-2 border border-zinc-800 text-zinc-400 hover:text-white flex items-center justify-center"
                     >
                       {showKeys.aadhaar ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </Field>
+              </div>
+
+              {/* AI Copilot Settings */}
+              <div className="border border-zinc-900 bg-zinc-900/10 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-xs font-bold text-white flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-yellow-400" /> AI Copilot Integrations
+                  </span>
+                </div>
+                <Field label="OpenAI API Key (for GPT-4o & OCR)">
+                  <div className="flex gap-2">
+                    <Input
+                      type={showKeys.openai ? "text" : "password"}
+                      value={form.openai_api_key || ""}
+                      onChange={(e) => setForm({ ...form, openai_api_key: e.target.value })}
+                      placeholder="sk-proj-..."
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowKeys({ ...showKeys, openai: !showKeys.openai })}
+                      className="p-2 border border-zinc-800 text-zinc-400 hover:text-white flex items-center justify-center"
+                    >
+                      {showKeys.openai ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </Field>
+                <Field label="Gemini API Key (for Gemini 2.0)">
+                  <div className="flex gap-2">
+                    <Input
+                      type={showKeys.gemini ? "text" : "password"}
+                      value={form.gemini_api_key || ""}
+                      onChange={(e) => setForm({ ...form, gemini_api_key: e.target.value })}
+                      placeholder="AIzaSy..."
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowKeys({ ...showKeys, gemini: !showKeys.gemini })}
+                      className="p-2 border border-zinc-800 text-zinc-400 hover:text-white flex items-center justify-center"
+                    >
+                      {showKeys.gemini ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
                 </Field>

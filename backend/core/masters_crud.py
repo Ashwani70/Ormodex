@@ -43,10 +43,49 @@ async def masters_create(collection: str, doc: dict, tenant_id: str, user: dict,
 async def masters_list(collection: str, tenant_id: str, *, q: Optional[str] = None,
                        search_fields: Optional[list[str]] = None,
                        extra: Optional[dict] = None, sort_field: str = "name") -> list[dict]:
+    """Back-compat array list (unpaginated). Prefer masters_list_paginated for
+    list endpoints; this remains for internal callers that want every row."""
     filt = tenant_filter(tenant_id, extra)
     if q and search_fields:
         filt["$or"] = [{f: {"$regex": q, "$options": "i"}} for f in search_fields]
     return await db[collection].find(filt, {"_id": 0}).sort(sort_field, 1).to_list(5000)
+
+
+async def masters_list_paginated(collection: str, tenant_id: str, *, q: Optional[str] = None,
+                                 search_fields: Optional[list[str]] = None,
+                                 extra: Optional[dict] = None, sort_field: str = "name",
+                                 page: int = 1, limit: int = 50,
+                                 from_date: Optional[str] = None, to_date: Optional[str] = None,
+                                 date_field: str = "created_at") -> dict:
+    """Server-side paginated, filterable, searchable list.
+
+    Returns {items, total, page, limit, pages}. `extra` carries equality filters
+    (party/type/status etc.); `from_date`/`to_date` apply an inclusive range on
+    `date_field`. Never trusts client paging: page>=1, 1<=limit<=200.
+    """
+    page = max(1, int(page or 1))
+    limit = max(1, min(200, int(limit or 50)))
+    filt = tenant_filter(tenant_id, extra)
+    if q and search_fields:
+        filt["$or"] = [{f: {"$regex": q, "$options": "i"}} for f in search_fields]
+    if from_date or to_date:
+        rng: dict = {}
+        if from_date:
+            rng["$gte"] = from_date
+        if to_date:
+            rng["$lte"] = to_date
+        filt[date_field] = rng
+
+    total = await db[collection].count_documents(filt)
+    skip = (page - 1) * limit
+    items = await db[collection].find(filt, {"_id": 0}).sort(sort_field, 1).skip(skip).limit(limit).to_list(limit)
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit if limit else 0,
+    }
 
 
 async def masters_get(collection: str, item_id: str, tenant_id: str) -> dict:

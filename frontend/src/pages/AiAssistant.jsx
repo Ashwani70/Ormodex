@@ -13,7 +13,7 @@ import { toast } from "sonner";
 import {
   Bot, Send, RefreshCw, AlertTriangle, TrendingUp, Package,
   Users, Clock, Upload, Zap, Eye, BarChart2, Search,
-  Mic, MicOff, History, Plus, Trash2, Copy, CheckCheck,
+  History, Plus, Trash2, Copy, CheckCheck,
   ChevronRight, Globe, Star, Sparkles, MessageSquare,
   ArrowRight, Shield, DollarSign,
 } from "lucide-react";
@@ -30,11 +30,10 @@ const TABS = [
 
 const PROVIDER_LABELS = {
   auto: "Auto", openai: "GPT-4o", gemini: "Gemini 2.0",
-  claude: "Claude Sonnet", groq: "Groq Llama", fallback: "Built-in",
+  fallback: "Built-in",
 };
 const PROVIDER_COLORS = {
   openai: "text-green-400", gemini: "text-blue-400",
-  claude: "text-orange-400", groq: "text-purple-400",
   fallback: "text-zinc-500", auto: "text-yellow-400",
 };
 
@@ -114,12 +113,10 @@ export default function AiAssistant() {
   const [forecastMonths, setForecastMonths] = useState(3);
   const [sessions, setSessions] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
-  const [listening, setListening] = useState(false);
   const [copiedIdx, setCopiedIdx] = useState(null);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const inputRef = useRef(null);
-  const recognitionRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -182,19 +179,7 @@ export default function AiAssistant() {
     }
   }, [input, sending, sessionId, provider]);
 
-  const startListening = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) { toast.error("Voice not supported in this browser"); return; }
-    const recognition = new SpeechRecognition();
-    recognition.lang = "en-IN";
-    recognition.continuous = false;
-    recognition.onstart = () => setListening(true);
-    recognition.onend = () => setListening(false);
-    recognition.onerror = () => setListening(false);
-    recognition.onresult = (e) => sendMessage(e.results[0][0].transcript);
-    recognition.start();
-    recognitionRef.current = recognition;
-  };
+
 
   const copyMessage = (text, idx) => {
     navigator.clipboard.writeText(text);
@@ -265,7 +250,7 @@ export default function AiAssistant() {
             Gravity Copilot
           </h1>
           <p className="mt-2 text-sm text-zinc-400 max-w-xl">
-            Your AI-powered ERP assistant — natural language queries, business insights, fraud detection, document OCR, and voice commands in Hindi & English.
+            Your AI-powered ERP assistant — natural language queries, business insights, fraud detection, and document OCR in Hindi & English.
           </p>
         </div>
 
@@ -276,8 +261,6 @@ export default function AiAssistant() {
             {[
               { key: "openai", label: "OpenAI GPT-4o" },
               { key: "gemini", label: "Google Gemini" },
-              { key: "claude", label: "Anthropic Claude" },
-              { key: "groq", label: "Groq Llama" },
             ].map(p => (
               <div key={p.key} className="flex items-center justify-between">
                 <span className="text-xs text-zinc-400 font-mono">{p.label}</span>
@@ -298,7 +281,7 @@ export default function AiAssistant() {
               onChange={e => setProvider(e.target.value)}
               className="flex-1 bg-black border border-zinc-700 text-xs font-mono text-white px-2 py-1 focus:border-yellow-400 focus:outline-none"
             >
-              {["auto", "openai", "gemini", "claude", "groq"].map(p => (
+              {["auto", "openai", "gemini"].map(p => (
                 <option key={p} value={p}>{PROVIDER_LABELS[p]}</option>
               ))}
             </select>
@@ -468,12 +451,6 @@ export default function AiAssistant() {
 
             {/* Input */}
             <div className="flex-shrink-0 flex gap-2 p-3 border-t border-zinc-800">
-              {listening && (
-                <div className="absolute bottom-20 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 bg-red-950/60 border border-red-800 text-red-400 text-xs font-mono">
-                  <div className="w-2 h-2 bg-red-400 rounded-full animate-pulse" />
-                  Listening... speak now (Hindi / English)
-                </div>
-              )}
               <input
                 ref={inputRef}
                 type="text"
@@ -484,15 +461,6 @@ export default function AiAssistant() {
                 className="flex-1 bg-black border border-zinc-700 text-white text-sm px-3 py-2.5 placeholder:text-zinc-600 focus:border-yellow-400 focus:outline-none"
                 data-testid="chat-input"
               />
-              <button
-                onClick={listening ? () => { recognitionRef.current?.stop(); setListening(false); } : startListening}
-                className={`px-3 border transition-colors ${
-                  listening ? "border-red-500 bg-red-950/30 text-red-400 animate-pulse" : "border-zinc-700 text-zinc-500 hover:border-yellow-400 hover:text-yellow-400"
-                }`}
-                title="Voice input"
-              >
-                {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-              </button>
               <PrimaryButton onClick={() => sendMessage()} disabled={sending || !input.trim()} icon={Send} testid="send-btn">
                 {sending ? "..." : "Send"}
               </PrimaryButton>

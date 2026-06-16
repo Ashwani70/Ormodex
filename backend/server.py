@@ -241,6 +241,14 @@ api_router.include_router(voucher_engine_router)
 
 app.include_router(api_router)
 
+# Versioned API alias: masters + vouchers are also reachable under /api/v1/*
+# (spec convention) in addition to the existing /api/* paths. Same router
+# objects, so behaviour is identical — no duplication, no breakage of /api/*.
+v1_router = APIRouter(prefix="/api/v1")
+v1_router.include_router(masters_router)
+v1_router.include_router(voucher_engine_router)
+app.include_router(v1_router)
+
 
 
 

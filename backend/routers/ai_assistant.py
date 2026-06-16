@@ -49,6 +49,8 @@ _STATE_CODES = {
 
 router = APIRouter(prefix="/ai", tags=["AI Assistant"])
 logger = logging.getLogger(__name__)
+print("DEBUG RELOAD: OPENAI_API_KEY is", "SET" if os.environ.get("OPENAI_API_KEY") else "NOT SET")
+print("DEBUG RELOAD: GEMINI_API_KEY is", "SET" if os.environ.get("GEMINI_API_KEY") else "NOT SET")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pydantic models
@@ -90,8 +92,16 @@ def _require_ai(user: dict):
 # AI Provider clients
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _get_openai_client():
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+async def _get_openai_client():
+    api_key = ""
+    try:
+        settings = await db.verification_settings.find_one({"id": "global"})
+        if settings:
+            api_key = settings.get("openai_api_key", "")
+    except Exception as e:
+        logger.warning(f"Failed to fetch OpenAI API key from DB: {e}")
+    if not api_key:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key or api_key in ("your-key-here", ""):
         return None
     try:
@@ -101,8 +111,16 @@ def _get_openai_client():
         return None
 
 
-def _get_gemini_client():
-    api_key = os.environ.get("GEMINI_API_KEY", "")
+async def _get_gemini_client():
+    api_key = ""
+    try:
+        settings = await db.verification_settings.find_one({"id": "global"})
+        if settings:
+            api_key = settings.get("gemini_api_key", "")
+    except Exception as e:
+        logger.warning(f"Failed to fetch Gemini API key from DB: {e}")
+    if not api_key:
+        api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key or api_key in ("your-key-here", ""):
         return None
     try:
@@ -113,7 +131,7 @@ def _get_gemini_client():
         return None
 
 
-def _get_claude_client():
+async def _get_claude_client():
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key or api_key in ("your-key-here", ""):
         return None
@@ -124,7 +142,7 @@ def _get_claude_client():
         return None
 
 
-def _get_groq_client():
+async def _get_groq_client():
     api_key = os.environ.get("GROQ_API_KEY", "")
     if not api_key or api_key in ("your-key-here", ""):
         return None
@@ -135,15 +153,15 @@ def _get_groq_client():
         return None
 
 
-def _list_available_providers() -> List[str]:
+async def _list_available_providers() -> List[str]:
     available = []
-    if _get_openai_client():
+    if await _get_openai_client():
         available.append("openai")
-    if _get_gemini_client():
+    if await _get_gemini_client():
         available.append("gemini")
-    if _get_claude_client():
+    if await _get_claude_client():
         available.append("claude")
-    if _get_groq_client():
+    if await _get_groq_client():
         available.append("groq")
     return available
 
@@ -232,7 +250,7 @@ async def _call_ai(
     preferred = provider or "auto"
 
     async def try_openai():
-        client = _get_openai_client()
+        client = await _get_openai_client()
         if not client:
             return None
         try:
@@ -249,7 +267,7 @@ async def _call_ai(
             return None
 
     async def try_gemini():
-        genai = _get_gemini_client()
+        genai = await _get_gemini_client()
         if not genai:
             return None
         try:
@@ -270,7 +288,7 @@ async def _call_ai(
             return None
 
     async def try_claude():
-        client = _get_claude_client()
+        client = await _get_claude_client()
         if not client:
             return None
         try:
@@ -287,7 +305,7 @@ async def _call_ai(
             return None
 
     async def try_groq():
-        client = _get_groq_client()
+        client = await _get_groq_client()
         if not client:
             return None
         try:
@@ -675,13 +693,16 @@ async def _action_attendance_today(params: dict, user: dict, confirm: bool) -> d
 @router.get("/providers")
 async def get_providers(user=Depends(get_current_user)):
     """List all configured and available AI providers."""
-    available = _list_available_providers()
+    available = await _list_available_providers()
+    db_settings = await db.verification_settings.find_one({"id": "global"}) or {}
+    openai_configured = bool(os.environ.get("OPENAI_API_KEY", "")) or bool(db_settings.get("openai_api_key", ""))
+    gemini_configured = bool(os.environ.get("GEMINI_API_KEY", "")) or bool(db_settings.get("gemini_api_key", ""))
     return {
         "available": available,
         "default": "auto",
         "configured": {
-            "openai": bool(os.environ.get("OPENAI_API_KEY", "")),
-            "gemini": bool(os.environ.get("GEMINI_API_KEY", "")),
+            "openai": openai_configured,
+            "gemini": gemini_configured,
             "claude": bool(os.environ.get("ANTHROPIC_API_KEY", "")),
             "groq": bool(os.environ.get("GROQ_API_KEY", "")),
         }
@@ -1062,7 +1083,7 @@ async def parse_document(
     }
     await db.ocr_documents.insert_one(doc_record)
 
-    client = _get_openai_client()
+    client = await _get_openai_client()
     if client and not mime.startswith("application/pdf"):
         try:
             prompt = """Extract all fields from this invoice/document and return a JSON object with:

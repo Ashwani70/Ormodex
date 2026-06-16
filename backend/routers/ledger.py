@@ -202,17 +202,17 @@ async def party_ledger(
 
     vouchers = await db.vouchers.find(q, {"_id": 0}).sort("date", 1).to_list(2000)
 
-    # Also get invoices / purchase orders
+    # Also get invoices / purchase bills
     if party_type == "CUSTOMER":
         invoices = await db.invoices.find(
             {"customer_id": party_id} if party_id else {},
             {"_id": 0}
         ).sort("created_at", 1).to_list(1000)
     else:
-        invoices = await db.purchase_orders.find(
-            {"supplier_id": party_id} if party_id else {},
+        invoices = await db.purchase_bills.find(
+            {"vendor_id": party_id} if party_id else {},
             {"_id": 0}
-        ).sort("created_at", 1).to_list(1000)
+        ).sort("vendor_invoice_date", 1).to_list(1000)
 
     return {"vouchers": vouchers, "invoices": invoices}
 
@@ -228,9 +228,9 @@ async def party_outstanding(
         party_field = "customer_id"
         name_field = "customer_name"
     else:
-        collection = db.purchase_orders
-        party_field = "supplier_id"
-        name_field = "supplier_name"
+        collection = db.purchase_bills
+        party_field = "vendor_id"
+        name_field = "vendor_name"
 
     pipeline = [
         {"$group": {
@@ -262,15 +262,16 @@ async def ageing_report(
         collection = db.invoices
         q = {"status": {"$in": ["UNPAID", "PARTIAL"]}}
     else:
-        collection = db.purchase_orders
-        q = {"status": {"$in": ["SENT", "RECEIVED"]}}
+        collection = db.purchase_bills
+        q = {"status": {"$in": ["UNPAID", "PARTIAL"]}}
 
     docs = await collection.find(q, {"_id": 0}).to_list(2000)
 
     buckets = {"0-30": [], "31-60": [], "61-90": [], "90+": []}
     for doc in docs:
         try:
-            doc_date = date.fromisoformat(doc.get("created_at", "")[:10])
+            doc_date_str = doc.get("vendor_invoice_date") or doc.get("created_at", "")[:10]
+            doc_date = date.fromisoformat(doc_date_str)
             age = (today - doc_date).days
         except Exception:
             age = 0
@@ -278,9 +279,9 @@ async def ageing_report(
         outstanding = doc.get("total", 0) - doc.get("payment_received", 0)
         entry = {
             "id": doc.get("id"),
-            "party_name": doc.get("customer_name") or doc.get("supplier_name", ""),
-            "invoice_no": doc.get("invoice_number") or doc.get("po_number", ""),
-            "date": doc.get("created_at", "")[:10],
+            "party_name": doc.get("customer_name") or doc.get("vendor_name", ""),
+            "invoice_no": doc.get("invoice_number") or doc.get("bill_number") or doc.get("vendor_invoice_no", ""),
+            "date": doc.get("vendor_invoice_date") or doc.get("created_at", "")[:10],
             "age_days": age,
             "outstanding": round(outstanding, 2),
         }

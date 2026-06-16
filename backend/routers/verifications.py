@@ -19,6 +19,8 @@ class VerificationSettingsPayload(BaseModel):
     pan_api_enabled: bool
     aadhaar_api_key: str
     aadhaar_api_enabled: bool
+    openai_api_key: Optional[str] = ""
+    gemini_api_key: Optional[str] = ""
 
 class GstValidationRequest(BaseModel):
     gstin: str
@@ -53,7 +55,14 @@ async def get_verification_settings() -> dict:
             "pan_api_enabled": True,
             "aadhaar_api_key": "mock-aadhaar-key-123",
             "aadhaar_api_enabled": True,
+            "openai_api_key": "",
+            "gemini_api_key": "",
         }
+    else:
+        if "openai_api_key" not in settings:
+            settings["openai_api_key"] = ""
+        if "gemini_api_key" not in settings:
+            settings["gemini_api_key"] = ""
     return settings
 
 @router.get("/settings")
@@ -62,12 +71,18 @@ async def get_settings(user: dict = Depends(require_verification_access)):
 
 @router.post("/settings")
 async def update_settings(payload: VerificationSettingsPayload, user: dict = Depends(require_admin)):
-    settings_dict = payload.model_dump()
+    old_val = await db.verification_settings.find_one({"id": "global"}, {"_id": 0}) or {}
+    settings_dict = old_val.copy()
+    
+    payload_dict = payload.model_dump()
+    for field, val in payload_dict.items():
+        if field in payload.model_fields_set or field not in settings_dict:
+            settings_dict[field] = val
+            
     settings_dict["id"] = "global"
     settings_dict["updated_at"] = now_iso()
     settings_dict["updated_by"] = user["id"]
     
-    old_val = await db.verification_settings.find_one({"id": "global"}, {"_id": 0})
     await db.verification_settings.update_one(
         {"id": "global"},
         {"$set": settings_dict},

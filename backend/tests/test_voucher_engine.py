@@ -74,9 +74,9 @@ class _DB:
 
 def _setup():
     db = _DB()
-    core.db.db = db
-    utils.db = db
-    ve.db = db
+    core.db.db = db  # type: ignore
+    utils.db = db  # type: ignore
+    ve.db = db  # type: ignore
     asyncio.run(db.fiscal_years.insert_one({"id": "fy", "name": "2026-27", "is_active": True}))
     return db
 

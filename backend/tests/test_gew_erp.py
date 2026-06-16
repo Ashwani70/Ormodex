@@ -1,6 +1,7 @@
 """Comprehensive backend tests for Gravity Engineering Works ERP."""
 import os
 import time
+from typing import Any
 import pytest
 import requests
 
@@ -10,8 +11,8 @@ ADMIN_PASSWORD = "Admin@123"
 
 
 @pytest.fixture(scope="session")
-def admin_session():
-    s = requests.Session()
+def admin_session() -> Any:
+    s: Any = requests.Session()
     r = s.post(f"{BASE_URL}/api/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
     assert r.status_code == 200, f"Admin login failed: {r.status_code} {r.text}"
     data = r.json()

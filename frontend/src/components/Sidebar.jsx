@@ -1,4 +1,4 @@
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
   Boxes,
@@ -43,6 +43,7 @@ import {
   ScanLine,
   DatabaseZap,
   Network,
+  DollarSign,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
@@ -81,6 +82,9 @@ const ERP_NAV = [
 const FINANCE_NAV = [
   { section: "FINANCE & ACCOUNTING", roles: ["admin", "accountant"] },
   { to: "/accounting", label: "Accounting", icon: BookOpen, roles: ["admin", "accountant"] },
+  { to: "/accounting?tab=daybook", label: "Day Book", icon: BookOpen, roles: ["admin", "accountant"] },
+  { to: "/accounting?tab=cashflow", label: "Cash Flow", icon: DollarSign, roles: ["admin", "accountant"] },
+  { to: "/accounting?tab=interest", label: "Interest Outstanding", icon: Scale, roles: ["admin", "accountant"] },
   { to: "/gst", label: "GST Accounting", icon: Shield, roles: ["admin", "accountant"] },
   { to: "/verifications", label: "Verifications", icon: Fingerprint, roles: ["admin", "accountant", "hr"] },
   { to: "/expenses", label: "Expenses", icon: CreditCard, roles: ["admin", "accountant", "hr"] },
@@ -162,6 +166,7 @@ function visible(item, role) {
 export default function Sidebar({ open, onClose }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const role = user?.role || "employee";
 
   return (
@@ -201,15 +206,18 @@ export default function Sidebar({ open, onClose }) {
               key={item.to}
               to={item.to}
               end={item.exact}
-              data-testid={`nav-${item.to.replace(/^\//, "").replace(/\//g, "-") || "dashboard"}`}
+              data-testid={`nav-${item.to.replace(/^\//, "").replace(/\//g, "-").replace(/\?/, "-").replace(/=/, "-") || "dashboard"}`}
               onClick={onClose}
-              className={({ isActive }) =>
-                `relative flex items-center gap-3 px-5 py-2.5 text-sm font-medium transition-colors duration-100 ${
-                  isActive
+              className={({ isActive }) => {
+                const isItActive = item.to.includes("?")
+                  ? (location.pathname + location.search) === item.to
+                  : isActive && !location.search;
+                return `relative flex items-center gap-3 px-5 py-2.5 text-sm font-medium transition-colors duration-100 ${
+                  isItActive
                     ? "bg-primary/10 text-primary border-l-4 border-primary pl-4"
                     : "text-zinc-400 hover:text-zinc-50 hover:bg-primary/5 border-l-4 border-transparent"
-                }`
-              }
+                }`;
+              }}
             >
               <Icon className="w-4 h-4" strokeWidth={2} />
               <span>{item.label}</span>

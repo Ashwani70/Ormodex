@@ -55,7 +55,6 @@ const PROVIDER_LABELS = {
   openai: "GPT-4o",
   gemini: "Gemini",
   claude: "Claude",
-  groq: "Groq",
   fallback: "Built-in",
 };
 
@@ -63,7 +62,6 @@ const PROVIDER_COLORS = {
   openai: "text-green-400",
   gemini: "text-blue-400",
   claude: "text-orange-400",
-  groq: "text-purple-400",
   fallback: "text-zinc-500",
   auto: "text-yellow-400",
 };
@@ -271,7 +269,7 @@ export default function AiCopilotPanel({ isOpen, onClose }) {
                   </button>
                   {showProviders && (
                     <div className="absolute right-0 top-7 z-50 bg-zinc-900 border border-zinc-700 shadow-xl w-32">
-                      {["auto", "openai", "gemini", "claude", "groq"].map(p => (
+                      {["auto", "openai", "gemini", "claude"].map(p => (
                         <button
                           key={p}
                           onClick={() => { setProvider(p); setShowProviders(false); }}

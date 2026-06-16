@@ -14,8 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.auth_utils import get_current_user
 from core.db import db
 from core.masters_crud import (
-    masters_create, masters_list, masters_soft_delete, masters_update,
-    singleton_get, singleton_upsert,
+    masters_create, masters_list, masters_list_paginated, masters_soft_delete,
+    masters_update, singleton_get, singleton_upsert,
 )
 from core.masters_models import (
     CompanyGstDetails, Currency, CurrencyUpdate, Group, GroupUpdate,
@@ -72,12 +72,30 @@ def _clean(update_model) -> dict:
     return {k: v for k, v in update_model.model_dump(exclude_unset=True).items()}
 
 
+async def _list_response(collection, tenant, *, q=None, search_fields=None, extra=None,
+                         sort_field="name", page=None, limit=None,
+                         from_date=None, to_date=None):
+    """Shared list responder. When pagination params are supplied returns the
+    paginated envelope {items,total,page,limit,pages}; otherwise the plain array
+    (back-compat with the existing MasterScreen, which reads a bare list)."""
+    if page is not None or limit is not None or from_date or to_date:
+        return await masters_list_paginated(
+            collection, tenant, q=q, search_fields=search_fields, extra=extra,
+            sort_field=sort_field, page=page or 1, limit=limit or 50,
+            from_date=from_date, to_date=to_date)
+    return await masters_list(collection, tenant, q=q, search_fields=search_fields,
+                              extra=extra, sort_field=sort_field)
+
+
 # ════════════════════════ Accounting: Group (tree) ════════════════════════
 
 @router.get("/groups")
-async def list_groups(q: Optional[str] = None, tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+async def list_groups(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                      from_date: Optional[str] = None, to_date: Optional[str] = None,
+                      tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
     _require_masters(user)
-    return await masters_list(COLL["groups"], tenant, q=q, search_fields=["name", "nature"])
+    return await _list_response(COLL["groups"], tenant, q=q, search_fields=["name", "nature"],
+                                page=page, limit=limit, from_date=from_date, to_date=to_date)
 
 
 @router.post("/groups")
@@ -104,10 +122,13 @@ async def delete_group(item_id: str, tenant: str = Depends(tenant_ctx), user: di
 
 @router.get("/ledgers")
 async def list_ledgers(q: Optional[str] = None, group_id: Optional[str] = None,
+                       page: Optional[int] = None, limit: Optional[int] = None,
+                       from_date: Optional[str] = None, to_date: Optional[str] = None,
                        tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
     _require_masters(user)
     extra = {"group_id": group_id} if group_id else None
-    return await masters_list(COLL["ledgers"], tenant, q=q, search_fields=["name", "gstin", "pan"], extra=extra)
+    return await _list_response(COLL["ledgers"], tenant, q=q, search_fields=["name", "gstin", "pan"],
+                                extra=extra, page=page, limit=limit, from_date=from_date, to_date=to_date)
 
 
 @router.post("/ledgers")
@@ -223,9 +244,12 @@ async def delete_voucher_type(item_id: str, tenant: str = Depends(tenant_ctx), u
 # ════════════════════════ Inventory: Stock Group (tree) ════════════════════════
 
 @router.get("/stock-groups")
-async def list_stock_groups(q: Optional[str] = None, tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+async def list_stock_groups(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                            from_date: Optional[str] = None, to_date: Optional[str] = None,
+                            tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
     _require_masters(user)
-    return await masters_list(COLL["stock-groups"], tenant, q=q, search_fields=["name"])
+    return await _list_response(COLL["stock-groups"], tenant, q=q, search_fields=["name"],
+                                page=page, limit=limit, from_date=from_date, to_date=to_date)
 
 
 @router.post("/stock-groups")
@@ -251,9 +275,12 @@ async def delete_stock_group(item_id: str, tenant: str = Depends(tenant_ctx), us
 # ════════════════════════ Inventory: Stock Category (tree) ════════════════════════
 
 @router.get("/stock-categories")
-async def list_stock_categories(q: Optional[str] = None, tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+async def list_stock_categories(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                                from_date: Optional[str] = None, to_date: Optional[str] = None,
+                                tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
     _require_masters(user)
-    return await masters_list(COLL["stock-categories"], tenant, q=q, search_fields=["name"])
+    return await _list_response(COLL["stock-categories"], tenant, q=q, search_fields=["name"],
+                                page=page, limit=limit, from_date=from_date, to_date=to_date)
 
 
 @router.post("/stock-categories")
@@ -279,9 +306,12 @@ async def delete_stock_category(item_id: str, tenant: str = Depends(tenant_ctx),
 # ════════════════════════ Inventory: Unit ════════════════════════
 
 @router.get("/units")
-async def list_units(q: Optional[str] = None, tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+async def list_units(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                     from_date: Optional[str] = None, to_date: Optional[str] = None,
+                     tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
     _require_masters(user)
-    return await masters_list(COLL["units"], tenant, q=q, search_fields=["symbol", "formal_name"], sort_field="symbol")
+    return await _list_response(COLL["units"], tenant, q=q, search_fields=["symbol", "formal_name"],
+                                sort_field="symbol", page=page, limit=limit, from_date=from_date, to_date=to_date)
 
 
 @router.post("/units")
@@ -315,10 +345,13 @@ async def delete_unit(item_id: str, tenant: str = Depends(tenant_ctx), user: dic
 
 @router.get("/stock-items")
 async def list_stock_items(q: Optional[str] = None, stock_group_id: Optional[str] = None,
+                           page: Optional[int] = None, limit: Optional[int] = None,
+                           from_date: Optional[str] = None, to_date: Optional[str] = None,
                            tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
     _require_masters(user)
     extra = {"stock_group_id": stock_group_id} if stock_group_id else None
-    return await masters_list(COLL["stock-items"], tenant, q=q, search_fields=["name", "hsn_sac"], extra=extra)
+    return await _list_response(COLL["stock-items"], tenant, q=q, search_fields=["name", "hsn_sac"],
+                                extra=extra, page=page, limit=limit, from_date=from_date, to_date=to_date)
 
 
 @router.post("/stock-items")
@@ -357,9 +390,12 @@ async def delete_stock_item(item_id: str, tenant: str = Depends(tenant_ctx), use
 # ════════════════════════ Inventory: Location (tree) ════════════════════════
 
 @router.get("/locations")
-async def list_locations(q: Optional[str] = None, tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+async def list_locations(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                         from_date: Optional[str] = None, to_date: Optional[str] = None,
+                         tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
     _require_masters(user)
-    return await masters_list(COLL["locations"], tenant, q=q, search_fields=["name"])
+    return await _list_response(COLL["locations"], tenant, q=q, search_fields=["name"],
+                                page=page, limit=limit, from_date=from_date, to_date=to_date)
 
 
 @router.post("/locations")
@@ -411,9 +447,12 @@ async def delete_gst_registration(item_id: str, tenant: str = Depends(tenant_ctx
 # ════════════════════════ Statutory: GST Classification ════════════════════════
 
 @router.get("/gst-classifications")
-async def list_gst_classifications(q: Optional[str] = None, tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+async def list_gst_classifications(q: Optional[str] = None, page: Optional[int] = None, limit: Optional[int] = None,
+                                   from_date: Optional[str] = None, to_date: Optional[str] = None,
+                                   tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
     _require_masters(user)
-    return await masters_list(COLL["gst-classifications"], tenant, q=q, search_fields=["name", "hsn_sac"])
+    return await _list_response(COLL["gst-classifications"], tenant, q=q, search_fields=["name", "hsn_sac"],
+                                page=page, limit=limit, from_date=from_date, to_date=to_date)
 
 
 @router.post("/gst-classifications")

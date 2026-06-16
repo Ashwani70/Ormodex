@@ -43,7 +43,10 @@ export default function MasterScreen({ config }) {
     setLoading(true);
     try {
       const r = await api.get(config.endpoint);
-      setItems(Array.isArray(r.data) ? r.data : []);
+      // Tolerate both shapes: a bare array (default) or the paginated envelope
+      // {items,total,...} returned when page/limit are requested.
+      const rows = Array.isArray(r.data) ? r.data : (r.data?.items ?? []);
+      setItems(rows);
     } catch (e) {
       toast.error("Failed to load " + config.title);
       setItems([]);

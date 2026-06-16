@@ -109,6 +109,8 @@ class PurchaseBill(BaseModel):
     lines: List[BillLine]
     tds_rate: float = 0.0                       # % withheld, if applicable
     notes: Optional[str] = None
+    payment_received: float = 0.0
+    status: Literal["UNPAID", "PARTIAL", "PAID"] = "UNPAID"
 
 
 # ───────────────────────── Purchase Return / Debit Note ─────────────────────────

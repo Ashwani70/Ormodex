@@ -1,5 +1,33 @@
 # Changelog
 
+## API conventions — Phase 1 (foundation masters: pagination + /api/v1)
+
+Phase 1 of the API/frontend-conventions build. The 8 foundation masters (Group,
+Ledger, Unit, Location, StockGroup, StockCategory, StockItem, GstClassification)
+already had models + indexes + tenant-scoped CRUD + tests + a reusable CRA
+master scaffold; this phase adds the missing API conventions.
+
+- **Server-side pagination/filter/search** — `masters_list_paginated()` returns
+  `{items, total, page, limit, pages}` with search, equality filters, and an
+  inclusive date range; page/limit clamped (page≥1, 1≤limit≤200 — never trust the
+  client). Wired into all 8 Phase-1 list endpoints via optional `page`/`limit`/
+  `from_date`/`to_date` params. Back-compat: endpoints still return a bare array
+  when no paging is requested, so the existing MasterScreen keeps working (it now
+  also tolerates the `{items}` envelope).
+- **/api/v1 alias** — masters + vouchers are also mounted under `/api/v1/*` (same
+  router objects) in addition to the existing `/api/*` paths; nothing breaks.
+- Frontend: kept the existing CRA config-driven `MasterScreen` (covers all 8) per
+  the established stack — no Next.js. Zod mirroring deferred (documented).
+
+Tests: `test_masters.py` +5 — pagination envelope/slicing, untrusted-input
+clamping, tenant scoping, search filters total, soft-deleted excluded. Maintained
+subset 113 passing, 2 skipped (replica-set txn tests).
+
+Deferred to later phases (per the build plan, stop-after-each): Zod schemas,
+voucher entry screen with dynamic line grids, Phases 2–8.
+
+---
+
 ## Voucher engine — payroll posting + replica-set transactional tests
 
 - **Payroll posting** — `payroll` now posts a balanced salary journal (Dr
