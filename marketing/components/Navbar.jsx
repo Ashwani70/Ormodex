@@ -17,7 +17,7 @@ export default function Navbar() {
   const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 12);
+    const onScroll = () => setScrolled(window.scrollY > 8);
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
@@ -25,26 +25,26 @@ export default function Navbar() {
 
   return (
     <header
-      className={`sticky top-0 z-50 transition-all duration-300 ${
-        scrolled ? "border-b border-white/10 bg-ink/80 backdrop-blur-xl" : "bg-transparent"
+      className={`sticky top-0 z-50 bg-white/90 backdrop-blur transition-shadow ${
+        scrolled ? "shadow-soft" : ""
       }`}
     >
-      <nav className="mx-auto flex max-w-7xl items-center justify-between px-5 py-3.5">
+      <nav className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4">
         <Link href="/" className="flex items-center gap-2.5">
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-accent font-black text-white shadow-glow">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary font-black text-white">
             G
           </span>
-          <span className="text-lg font-extrabold tracking-tight text-white">
-            Gravity<span className="text-gradient">One</span>
+          <span className="text-xl font-bold tracking-tight text-ink">
+            Gravity<span className="text-primary">One</span>
           </span>
         </Link>
 
-        <div className="hidden items-center gap-7 lg:flex">
+        <div className="hidden items-center gap-8 lg:flex">
           {LINKS.map((l) => (
             <Link
               key={l.href}
               href={l.href}
-              className="text-sm font-medium text-slate-300 transition-colors hover:text-white"
+              className="text-sm font-medium text-body transition-colors hover:text-primary"
             >
               {l.label}
             </Link>
@@ -57,7 +57,7 @@ export default function Navbar() {
         </div>
 
         <button
-          className="text-white lg:hidden"
+          className="text-ink lg:hidden"
           aria-label="Toggle menu"
           onClick={() => setOpen((v) => !v)}
         >
@@ -68,13 +68,13 @@ export default function Navbar() {
       </nav>
 
       {open && (
-        <div className="border-t border-white/10 bg-ink/95 px-5 py-4 backdrop-blur-xl lg:hidden">
+        <div className="border-t border-slate-100 bg-white px-5 py-4 lg:hidden">
           <div className="flex flex-col gap-3">
             {LINKS.map((l) => (
               <Link
                 key={l.href}
                 href={l.href}
-                className="text-sm font-medium text-slate-200"
+                className="text-sm font-medium text-body"
                 onClick={() => setOpen(false)}
               >
                 {l.label}

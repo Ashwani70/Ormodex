@@ -6,8 +6,8 @@ const API_BASE = process.env.NEXT_PUBLIC_ERP_API_BASE || "http://localhost:8000/
 const INDUSTRIES = ["Manufacturing", "Forging & Casting", "Garments", "Trading", "Export Business", "Other"];
 
 const field =
-  "w-full rounded-lg border border-white/15 bg-white/5 px-3.5 py-2.5 text-sm text-white placeholder:text-slate-500 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/30 [&>option]:bg-ink";
-const labelCls = "mb-1 block text-xs font-semibold text-slate-300";
+  "w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-ink placeholder:text-slate-400 outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20";
+const labelCls = "mb-1 block text-xs font-semibold text-ink";
 
 export default function DemoForm() {
   const [form, setForm] = useState({
@@ -51,10 +51,10 @@ export default function DemoForm() {
 
   if (status === "ok") {
     return (
-      <div className="rounded-2xl border border-accent/30 bg-accent/10 p-8 text-center">
-        <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-accent text-white">✓</div>
-        <h3 className="text-lg font-bold text-white">Thank you!</h3>
-        <p className="mt-1 text-sm text-slate-300">
+      <div className="rounded-2xl border border-primary/30 bg-mint p-8 text-center">
+        <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-primary text-white">✓</div>
+        <h3 className="text-lg font-bold text-ink">Thank you!</h3>
+        <p className="mt-1 text-sm text-body">
           Your request has reached our team. We'll get in touch shortly to schedule your demo.
         </p>
       </div>
@@ -104,17 +104,17 @@ export default function DemoForm() {
       />
 
       {status === "error" && (
-        <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">{error}</p>
+        <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>
       )}
 
       <button
         type="submit"
         disabled={status === "sending"}
-        className="w-full rounded-xl bg-gradient-to-r from-primary to-violet px-5 py-3 text-sm font-semibold text-white shadow-glow transition hover:scale-[1.02] disabled:opacity-60"
+        className="w-full rounded-md bg-primary px-5 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-primary-dark disabled:opacity-60"
       >
         {status === "sending" ? "Sending…" : "Book a Demo"}
       </button>
-      <p className="text-center text-xs text-slate-500">We'll never share your details. Submissions go straight to our team.</p>
+      <p className="text-center text-xs text-slate-400">We'll never share your details. Submissions go straight to our team.</p>
     </form>
   );
 }

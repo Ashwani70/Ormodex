@@ -79,12 +79,12 @@ export default function DocsPage() {
       {/* search bar (visual; links to contact for now) */}
       <section className="mx-auto max-w-3xl px-5 pt-12">
         <Reveal>
-          <div className="ring-gradient flex items-center gap-3 rounded-2xl border border-white/10 bg-surface px-5 py-4">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-slate-500">
+          <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-soft">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-slate-400">
               <circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" />
             </svg>
             <input
-              className="w-full bg-transparent text-sm text-white placeholder:text-slate-500 outline-none"
+              className="w-full bg-transparent text-sm text-ink placeholder:text-slate-400 outline-none"
               placeholder="Search the docs — e.g. “e-Way Bill”, “add user”, “import items”"
             />
           </div>
@@ -94,24 +94,24 @@ export default function DocsPage() {
       {/* quickstart */}
       <section id="getting-started" className="mx-auto max-w-7xl px-5 py-16">
         <Reveal className="mx-auto max-w-2xl text-center">
-          <span className="inline-block rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-primary-light">
+          <span className="inline-block rounded-full bg-mint px-3 py-1 text-xs font-semibold uppercase tracking-wider text-primary-dark">
             Quickstart
           </span>
-          <h2 className="mt-4 text-3xl font-extrabold tracking-tight text-white">Go live in four steps</h2>
+          <h2 className="mt-4 text-3xl font-bold tracking-tight text-ink">Go live in four steps</h2>
         </Reveal>
         <div className="mt-12 grid gap-5 md:grid-cols-2 lg:grid-cols-4">
           {QUICKSTART.map(([t, d, href], i) => (
             <Reveal key={t} delay={i * 70}>
               <Link
                 href={href}
-                className="ring-gradient flex h-full flex-col rounded-2xl border border-white/10 bg-surface p-6 transition hover:bg-white/[0.04]"
+                className="flex h-full flex-col rounded-2xl border border-slate-100 bg-white p-6 shadow-soft transition hover:-translate-y-1 hover:shadow-card"
               >
-                <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-violet text-sm font-bold text-white shadow-glow">
+                <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-sm font-bold text-white">
                   {i + 1}
                 </div>
-                <h3 className="font-bold text-white">{t}</h3>
-                <p className="mt-1.5 flex-1 text-sm text-slate-400">{d}</p>
-                <span className="mt-3 text-xs font-semibold text-primary-light">Read guide →</span>
+                <h3 className="font-bold text-ink">{t}</h3>
+                <p className="mt-1.5 flex-1 text-sm text-body">{d}</p>
+                <span className="mt-3 text-xs font-semibold text-primary">Read guide →</span>
               </Link>
             </Reveal>
           ))}
@@ -119,22 +119,22 @@ export default function DocsPage() {
       </section>
 
       {/* doc sections */}
-      <section className="border-t border-white/10 bg-surface py-20">
+      <section className="bg-soft py-20">
         <div className="mx-auto max-w-7xl px-5">
           <Reveal className="mx-auto max-w-2xl text-center">
-            <h2 className="text-3xl font-extrabold tracking-tight text-white">Browse by topic</h2>
-            <p className="mt-3 text-slate-400">Module-by-module guides written for real operators, not engineers.</p>
+            <h2 className="text-3xl font-bold tracking-tight text-ink">Browse by topic</h2>
+            <p className="mt-3 text-body">Module-by-module guides written for real operators, not engineers.</p>
           </Reveal>
           <div className="mt-12 grid gap-5 md:grid-cols-2 lg:grid-cols-4">
             {SECTIONS.map((s, i) => (
               <Reveal key={s.id} delay={(i % 4) * 60}>
-                <div id={s.id} className="ring-gradient h-full scroll-mt-24 rounded-2xl border border-white/10 bg-ink p-6 transition hover:bg-white/[0.04]">
+                <div id={s.id} className="h-full scroll-mt-24 rounded-2xl border border-slate-100 bg-white p-6 shadow-soft transition hover:-translate-y-1 hover:shadow-card">
                   <div className="text-2xl">{s.icon}</div>
-                  <h3 className="mt-3 font-bold text-white">{s.title}</h3>
+                  <h3 className="mt-3 font-bold text-ink">{s.title}</h3>
                   <ul className="mt-3 space-y-1.5">
                     {s.items.map((it) => (
                       <li key={it}>
-                        <Link href="/contact" className="text-sm text-slate-400 transition hover:text-primary-light">
+                        <Link href="/contact" className="text-sm text-body transition hover:text-primary">
                           {it}
                         </Link>
                       </li>
@@ -150,16 +150,16 @@ export default function DocsPage() {
       {/* help CTA */}
       <section className="mx-auto max-w-4xl px-5 py-20">
         <Reveal>
-          <div className="ring-gradient relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-primary/15 to-violet/10 p-10 text-center">
-            <h2 className="text-2xl font-extrabold tracking-tight text-white sm:text-3xl">Still stuck? We're here.</h2>
-            <p className="mx-auto mt-3 max-w-lg text-slate-300">
+          <div className="relative overflow-hidden rounded-3xl border border-primary/20 bg-mint p-10 text-center">
+            <h2 className="text-2xl font-bold tracking-tight text-ink sm:text-3xl">Still stuck? We're here.</h2>
+            <p className="mx-auto mt-3 max-w-lg text-body">
               Get personalised help with setup, migration or any module. Our team responds fast — no call-center runaround.
             </p>
             <div className="mt-7 flex flex-wrap justify-center gap-3">
-              <Link href="/contact" className="rounded-xl bg-gradient-to-r from-primary to-violet px-6 py-3 text-sm font-semibold text-white shadow-glow transition hover:scale-[1.03]">
+              <Link href="/contact" className="rounded-md bg-primary px-6 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-primary-dark">
                 Contact Support
               </Link>
-              <Link href="/download" className="rounded-xl border border-white/15 px-6 py-3 text-sm font-semibold text-white transition hover:bg-white/5">
+              <Link href="/download" className="rounded-md border border-slate-200 bg-white px-6 py-3 text-sm font-semibold text-ink transition hover:border-primary/40 hover:text-primary">
                 Download the app
               </Link>
             </div>

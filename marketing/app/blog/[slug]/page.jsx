@@ -34,23 +34,23 @@ export default function BlogPost({ params }) {
   return (
     <article className="mx-auto max-w-3xl px-5 py-16">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
-      <Link href="/blog" className="text-sm font-medium text-primary-light hover:underline">← Back to blog</Link>
-      <h1 className="mt-4 text-3xl font-extrabold tracking-tight text-white sm:text-4xl">{post.title}</h1>
-      <p className="mt-2 text-sm text-slate-500">
+      <Link href="/blog" className="text-sm font-medium text-primary hover:underline">← Back to blog</Link>
+      <h1 className="mt-4 text-3xl font-bold tracking-tight text-ink sm:text-4xl">{post.title}</h1>
+      <p className="mt-2 text-sm text-slate-400">
         {new Date(post.date).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}
       </p>
       <div className="mt-8 space-y-8">
         {post.body.map((block, i) => (
           <section key={i}>
-            <h2 className="text-xl font-bold text-white">{block.h}</h2>
-            <p className="mt-2 leading-relaxed text-slate-300">{block.p}</p>
+            <h2 className="text-xl font-bold text-ink">{block.h}</h2>
+            <p className="mt-2 leading-relaxed text-body">{block.p}</p>
           </section>
         ))}
       </div>
-      <div className="ring-gradient mt-12 rounded-3xl border border-white/10 bg-gradient-to-br from-primary/15 to-violet/10 p-8 text-center text-white">
-        <h3 className="text-xl font-bold">See Gravity One ERP in action</h3>
-        <p className="mt-2 text-sm text-slate-300">Book a personalised demo for your industry.</p>
-        <Link href="/contact#demo" className="mt-5 inline-block rounded-xl bg-gradient-to-r from-primary to-violet px-6 py-3 text-sm font-semibold text-white shadow-glow transition hover:scale-[1.03]">Book a Demo</Link>
+      <div className="mt-12 rounded-3xl border border-primary/20 bg-mint p-8 text-center">
+        <h3 className="text-xl font-bold text-ink">See Gravity One ERP in action</h3>
+        <p className="mt-2 text-sm text-body">Book a personalised demo for your industry.</p>
+        <Link href="/contact#demo" className="mt-5 inline-block rounded-md bg-primary px-6 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-primary-dark">Book a Demo</Link>
       </div>
     </article>
   );

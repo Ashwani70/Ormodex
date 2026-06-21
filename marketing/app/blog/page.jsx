@@ -17,11 +17,11 @@ export default function BlogPage() {
         <div className="grid gap-6 md:grid-cols-2">
           {POSTS.map((post, i) => (
             <Reveal key={post.slug} delay={(i % 2) * 60}>
-              <Link href={`/blog/${post.slug}`} className="ring-gradient block h-full rounded-2xl border border-white/10 bg-surface p-6 transition hover:-translate-y-1 hover:bg-white/[0.04]">
-                <div className="text-xs font-medium text-primary-light">{post.keyword}</div>
-                <h2 className="mt-2 text-lg font-bold text-white">{post.title}</h2>
-                <p className="mt-2 text-sm text-slate-400">{post.description}</p>
-                <div className="mt-4 text-xs text-slate-500">{new Date(post.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</div>
+              <Link href={`/blog/${post.slug}`} className="block h-full rounded-2xl border border-slate-100 bg-white p-6 shadow-soft transition hover:-translate-y-1 hover:shadow-card">
+                <div className="text-xs font-medium text-primary">{post.keyword}</div>
+                <h2 className="mt-2 text-lg font-bold text-ink">{post.title}</h2>
+                <p className="mt-2 text-sm text-body">{post.description}</p>
+                <div className="mt-4 text-xs text-slate-400">{new Date(post.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</div>
               </Link>
             </Reveal>
           ))}

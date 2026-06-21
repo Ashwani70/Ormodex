@@ -45,26 +45,26 @@ export default function DownloadPage() {
         </Reveal>
 
         <div className="mt-8 text-center">
-          <span className="text-sm text-slate-400">Prefer no install? </span>
+          <span className="text-sm text-body">Prefer no install? </span>
           <AuthButton variant="nav" />
         </div>
       </section>
 
       {/* 3-step install */}
-      <section className="border-y border-white/10 bg-surface py-20">
+      <section className="bg-soft py-20">
         <div className="mx-auto max-w-7xl px-5">
           <Reveal className="mx-auto max-w-2xl text-center">
-            <h2 className="text-3xl font-extrabold tracking-tight text-white">Up and running in minutes</h2>
+            <h2 className="text-3xl font-bold tracking-tight text-ink">Up and running in minutes</h2>
           </Reveal>
           <div className="mt-12 grid gap-6 md:grid-cols-3">
             {STEPS.map(([t, d], i) => (
               <Reveal key={t} delay={i * 80}>
-                <div className="ring-gradient h-full rounded-2xl border border-white/10 bg-ink p-7">
-                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-violet font-bold text-white shadow-glow">
+                <div className="h-full rounded-2xl border border-slate-100 bg-white p-7 shadow-soft">
+                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-primary font-bold text-white">
                     {i + 1}
                   </div>
-                  <h3 className="text-lg font-bold text-white">{t}</h3>
-                  <p className="mt-2 text-sm text-slate-400">{d}</p>
+                  <h3 className="text-lg font-bold text-ink">{t}</h3>
+                  <p className="mt-2 text-sm text-body">{d}</p>
                 </div>
               </Reveal>
             ))}
@@ -75,18 +75,18 @@ export default function DownloadPage() {
       {/* system requirements */}
       <section className="mx-auto max-w-7xl px-5 py-20">
         <Reveal className="mx-auto max-w-2xl text-center">
-          <h2 className="text-3xl font-extrabold tracking-tight text-white">System requirements</h2>
+          <h2 className="text-3xl font-bold tracking-tight text-ink">System requirements</h2>
         </Reveal>
         <div className="mt-12 grid gap-5 md:grid-cols-3">
           {REQUIREMENTS.map(([os, icon, req]) => (
             <Reveal key={os}>
-              <div className="flex h-full items-start gap-4 rounded-2xl border border-white/10 bg-surface p-6">
-                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/10 text-white">
+              <div className="flex h-full items-start gap-4 rounded-2xl border border-slate-100 bg-white p-6 shadow-soft">
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-mint text-primary">
                   <OSIcon name={icon} className="h-6 w-6" />
                 </span>
                 <div>
-                  <h3 className="font-bold text-white">{os}</h3>
-                  <p className="mt-1 text-sm text-slate-400">{req}</p>
+                  <h3 className="font-bold text-ink">{os}</h3>
+                  <p className="mt-1 text-sm text-body">{req}</p>
                 </div>
               </div>
             </Reveal>
@@ -95,26 +95,26 @@ export default function DownloadPage() {
       </section>
 
       {/* download FAQ */}
-      <section className="border-t border-white/10 bg-surface py-20">
+      <section className="bg-soft py-20">
         <div className="mx-auto max-w-3xl px-5">
           <Reveal className="text-center">
-            <h2 className="text-3xl font-extrabold tracking-tight text-white">Download FAQ</h2>
+            <h2 className="text-3xl font-bold tracking-tight text-ink">Download FAQ</h2>
           </Reveal>
           <div className="mt-10 space-y-3">
             {FAQ.map(([q, a], i) => (
               <Reveal key={q} delay={i * 40}>
-                <details className="group rounded-2xl border border-white/10 bg-ink p-5 [&_summary]:cursor-pointer">
-                  <summary className="flex items-center justify-between font-semibold text-white marker:content-['']">
+                <details className="group rounded-2xl border border-slate-100 bg-white p-5 shadow-soft [&_summary]:cursor-pointer">
+                  <summary className="flex items-center justify-between font-semibold text-ink marker:content-['']">
                     {q}
-                    <span className="ml-4 text-primary-light transition group-open:rotate-45">+</span>
+                    <span className="ml-4 text-primary transition group-open:rotate-45">+</span>
                   </summary>
-                  <p className="mt-3 text-sm leading-relaxed text-slate-400">{a}</p>
+                  <p className="mt-3 text-sm leading-relaxed text-body">{a}</p>
                 </details>
               </Reveal>
             ))}
           </div>
           <div className="mt-10 text-center">
-            <Link href="/docs" className="text-sm font-semibold text-primary-light hover:text-white">
+            <Link href="/docs" className="text-sm font-semibold text-primary hover:text-primary-dark">
               Read the documentation →
             </Link>
           </div>
