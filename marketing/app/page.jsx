@@ -1,6 +1,6 @@
 import Link from "next/link";
 import Reveal from "@/components/Reveal";
-import DashboardMockup from "@/components/DashboardMockup";
+import HeroIllustration from "@/components/HeroIllustration";
 import DemoForm from "@/components/DemoForm";
 import AuroraBackground from "@/components/AuroraBackground";
 import OSDownload from "@/components/OSDownload";
@@ -147,7 +147,7 @@ export default function Home() {
           </div>
 
           <div className="animate-float lg:pl-6">
-            <DashboardMockup />
+            <HeroIllustration className="mx-auto w-full max-w-xl drop-shadow-[0_20px_40px_rgba(38,50,56,0.12)]" />
           </div>
         </div>
 

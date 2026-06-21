@@ -40,25 +40,25 @@ const COLS = [
 
 export default function Footer() {
   return (
-    <footer className="bg-ink text-slate-300">
+    <footer className="border-t border-slate-100 bg-soft text-body">
       <div className="mx-auto grid max-w-7xl gap-10 px-5 py-16 md:grid-cols-2 lg:grid-cols-6">
         <div className="lg:col-span-2">
           <div className="flex items-center gap-2.5">
             <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary font-black text-white">
               G
             </span>
-            <span className="text-xl font-bold tracking-tight text-white">
-              Gravity<span className="text-primary-light">One</span>
+            <span className="text-xl font-bold tracking-tight text-ink">
+              Gravity<span className="text-primary">One</span>
             </span>
           </div>
-          <p className="mt-4 max-w-sm text-sm leading-relaxed text-slate-400">
+          <p className="mt-4 max-w-sm text-sm leading-relaxed text-body">
             The intelligent ERP for modern enterprise operations — sales, inventory,
             accounting, GST, production and HR on one platform. Available on Windows,
             macOS, Linux and the web.
           </p>
           <div className="mt-5 flex gap-2">
             {["Windows", "macOS", "Linux"].map((p) => (
-              <span key={p} className="rounded-full border border-white/15 px-3 py-1 text-xs text-slate-400">
+              <span key={p} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-body">
                 {p}
               </span>
             ))}
@@ -66,11 +66,11 @@ export default function Footer() {
         </div>
         {COLS.map((c) => (
           <div key={c.title}>
-            <h4 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">{c.title}</h4>
+            <h4 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink">{c.title}</h4>
             <ul className="space-y-2">
               {c.links.map(([label, href]) => (
                 <li key={label}>
-                  <Link href={href} className="text-sm text-slate-400 transition-colors hover:text-primary-light">
+                  <Link href={href} className="text-sm text-body transition-colors hover:text-primary">
                     {label}
                   </Link>
                 </li>
@@ -79,8 +79,8 @@ export default function Footer() {
           </div>
         ))}
       </div>
-      <div className="border-t border-white/10">
-        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-2 px-5 py-5 text-xs text-slate-500 sm:flex-row">
+      <div className="border-t border-slate-200">
+        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-2 px-5 py-5 text-xs text-slate-400 sm:flex-row">
           <span>© {new Date().getFullYear()} Gravity One ERP. All rights reserved.</span>
           <span>GST-compliant · ISO-grade security · Made in India</span>
         </div>
