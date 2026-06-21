@@ -1,0 +1,123 @@
+name: Desktop Release
+
+# Builds the Gravity One ERP desktop installers for Windows, macOS and Linux and
+# uploads them to a GitHub Release. Trigger by pushing a tag like `v2.4.0`, or run
+# manually from the Actions tab (workflow_dispatch) for a dry run.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to create/upload the GitHub Release
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win
+          - os: macos-latest
+            target: mac
+          - os: ubuntu-latest
+            target: linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # ── Frontend deps (CRA app that gets wrapped) ──────────────────
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # ── Desktop deps + icon tooling ────────────────────────────────
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Install icon tooling
+        working-directory: desktop
+        run: npm i --no-save sharp png-to-ico
+
+      - name: Generate icons
+        working-directory: desktop
+        run: node scripts/gen-icons.js
+
+      # ── Build the React UI into desktop/app ────────────────────────
+      - name: Build frontend for desktop
+        working-directory: desktop
+        run: npm run build:frontend
+
+      # ── Package installers ─────────────────────────────────────────
+      # Build only (no auto-publish) so we can add stable-named copies before
+      # uploading. Unsigned for now: warnings on first run are expected.
+      - name: Build installer
+        working-directory: desktop
+        env:
+          # Disable signing explicitly so CI never blocks on missing certs.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --${{ matrix.target }}
+
+      # Make version-less aliases of each installer so the website's download
+      # links (releases/latest/download/<stable-name>) never 404 on version drift.
+      # Both the versioned file and the stable alias are uploaded to the Release.
+      - name: Create stable-named aliases
+        shell: bash
+        working-directory: desktop/release
+        run: |
+          shopt -s nullglob
+          declare -A STABLE=(
+            [exe]="GravityOne-ERP-Setup.exe"
+            [dmg]="GravityOne-ERP.dmg"
+            [AppImage]="GravityOne-ERP.AppImage"
+            [deb]="GravityOne-ERP.deb"
+          )
+          for ext in exe AppImage deb; do
+            for f in *."$ext"; do
+              cp -f "$f" "${STABLE[$ext]}"
+              echo "alias: $f -> ${STABLE[$ext]}"
+            done
+          done
+          # macOS produces per-arch dmgs; alias the arm64 one (Apple Silicon default).
+          for f in *arm64.dmg; do
+            cp -f "$f" "${STABLE[dmg]}"
+            echo "alias: $f -> ${STABLE[dmg]}"
+          done
+
+      # Always keep the raw artifacts even if the Release step is skipped
+      # (e.g. on a manual dispatch without a tag).
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.target }}
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.dmg
+            desktop/release/*.AppImage
+            desktop/release/*.deb
+          if-no-files-found: ignore
+
+      # Upload versioned + stable-named installers to the Release for this tag.
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/release/*.exe
+            desktop/release/*.dmg
+            desktop/release/*.AppImage
+            desktop/release/*.deb
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

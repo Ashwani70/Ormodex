@@ -1,0 +1,85 @@
+{
+  "name": "gravityone-desktop",
+  "productName": "Gravity One ERP",
+  "version": "2.4.0",
+  "description": "Gravity One ERP desktop app — Windows, macOS & Linux.",
+  "author": {
+    "name": "Gravity One",
+    "email": "support@gravityone.com"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main.js",
+  "homepage": "./",
+  "scripts": {
+    "build:frontend": "node scripts/build-frontend.js",
+    "gen:icons": "node scripts/gen-icons.js",
+    "smoke": "electron scripts/smoke-test.js",
+    "start": "electron .",
+    "pack": "npm run build:frontend && electron-builder --dir",
+    "dist": "npm run build:frontend && electron-builder",
+    "dist:win": "npm run build:frontend && electron-builder --win",
+    "dist:mac": "npm run build:frontend && electron-builder --mac",
+    "dist:linux": "npm run build:frontend && electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^31.3.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.gravityone.erp",
+    "productName": "Gravity One ERP",
+    "copyright": "Copyright © 2026 Gravity One",
+    "directories": {
+      "output": "release",
+      "buildResources": "build-resources"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "menu.js",
+      "app/**/*",
+      "build-resources/icon.*"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Ashwani70",
+        "repo": "Gravity-engineering-works-ERP"
+      }
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "icon": "build-resources/icon.ico",
+      "artifactName": "GravityOne-ERP-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Gravity One ERP"
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] }
+      ],
+      "icon": "build-resources/icon.icns",
+      "category": "public.app-category.business",
+      "artifactName": "GravityOne-ERP-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "title": "Gravity One ERP ${version}"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "icon": "build-resources/icon.png",
+      "category": "Office",
+      "maintainer": "Gravity One <support@gravityone.com>",
+      "artifactName": "GravityOne-ERP-${version}.${ext}"
+    }
+  }
+}

@@ -1,7 +1,7 @@
 import "@/App.css";
 import { useEffect } from "react";
 import api from "@/lib/api";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, HashRouter, Routes, Route } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AuthProvider } from "@/context/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
@@ -88,10 +88,17 @@ function App() {
       .catch(() => {});
   }, []);
 
+  // Under file:// (the Electron desktop build) BrowserRouter can't manipulate the
+  // path, so fall back to HashRouter. The web build keeps clean BrowserRouter URLs.
+  const Router =
+    typeof window !== "undefined" && window.location.protocol === "file:"
+      ? HashRouter
+      : BrowserRouter;
+
   return (
     <div className="App">
       <AuthProvider>
-        <BrowserRouter>
+        <Router>
           <Toaster
             position="top-right"
             theme="dark"
@@ -209,7 +216,7 @@ function App() {
 
             </Route>
           </Routes>
-        </BrowserRouter>
+        </Router>
       </AuthProvider>
     </div>
   );

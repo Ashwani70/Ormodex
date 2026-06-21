@@ -1,0 +1,7 @@
+node_modules/
+app/
+release/
+build-resources/icon.png
+build-resources/icon.ico
+build-resources/icon.icns
+*.log
