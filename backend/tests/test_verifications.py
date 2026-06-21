@@ -16,7 +16,7 @@ def admin_session():
     assert r.status_code == 200, f"Admin login failed: {r.status_code} {r.text}"
     data = r.json()
     s.headers.update({"Authorization": f"Bearer {data['access_token']}"})
-    s.user = data["user"]
+    s.user = data["user"]  # type: ignore
     return s
 
 @pytest.fixture(scope="module")
@@ -81,7 +81,35 @@ def test_verification_settings_flow(admin_session, employee_session, anon_sessio
         }
     )
     assert r.status_code == 200
-    assert r.json()["gst_api_key"] == "test-gst-key"
+    assert r.json()["gst_api_key"] == "••••••••-key"
+
+    # Verify that submitting "********" or masked keys preserves the existing key in the database
+    # Let's post "••••••••-key" and a new PAN key, and make sure it keeps "test-gst-key"
+    r = admin_session.post(
+        f"{BASE_URL}/api/verifications/settings",
+        json={
+            "gst_api_key": "••••••••-key",
+            "gst_api_enabled": True,
+            "pan_api_key": "new-test-pan-key",
+            "pan_api_enabled": True,
+            "aadhaar_api_key": "••••••••-key",
+            "aadhaar_api_enabled": True,
+        }
+    )
+    assert r.status_code == 200
+    assert r.json()["gst_api_key"] == "••••••••-key"
+    assert r.json()["pan_api_key"] == "••••••••-key"
+
+    # Direct DB verification to prove the keys were preserved / updated in the database
+    import pymongo
+    import os
+    client = pymongo.MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
+    db_val = client[os.environ.get("DB_NAME", "gravity_erp")].verification_settings.find_one({"id": "global"})
+    assert db_val is not None, "verification_settings 'global' document not found in DB"
+    assert db_val["gst_api_key"] == "test-gst-key"
+    assert db_val["pan_api_key"] == "new-test-pan-key"
+    assert db_val["aadhaar_api_key"] == "test-aadhaar-key"
+    client.close()
 
     # 5. Non-admin updates settings -> 403
     r = employee_session.post(
@@ -253,6 +281,48 @@ def test_aadhaar_validation_and_link(admin_session):
     # Clean up supplier
     admin_session.delete(f"{BASE_URL}/api/suppliers/{supp_id}")
 
+def test_fetch_gstin_endpoint(admin_session, employee_session, anon_session):
+    GSTIN = "27AAFCT1234A1Z5"
+    NORM_FIELDS = {"company_name", "trade_name", "address", "state", "pincode", "status"}
+
+    # 1. Unauthenticated -> 401
+    r = anon_session.post(f"{BASE_URL}/api/customers/fetch-gstin", json={"gstin": GSTIN})
+    assert r.status_code == 401
+
+    # 2. Invalid GSTIN format -> 400 (no provider call made)
+    r = admin_session.post(
+        f"{BASE_URL}/api/customers/fetch-gstin", json={"gstin": "NOPE"}
+    )
+    assert r.status_code == 400
+    assert "invalid gstin" in r.json()["detail"].lower()
+
+    # 3. Valid GSTIN -> 200 with the full normalised shape.
+    r = admin_session.post(
+        f"{BASE_URL}/api/customers/fetch-gstin", json={"gstin": GSTIN}
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert NORM_FIELDS.issubset(data.keys())
+    assert data["company_name"]  # legal name is always populated
+    # The response must not carry a "source" of credentials — only public
+    # registry fields (plus a cached flag and an optional demo notice).
+    allowed = NORM_FIELDS | {"cached", "notice"}
+    assert set(data.keys()).issubset(allowed), f"unexpected fields: {set(data) - allowed}"
+
+    # 4. A regular employee can also fetch (it's part of the customer workflow).
+    r = employee_session.post(
+        f"{BASE_URL}/api/customers/fetch-gstin", json={"gstin": GSTIN}
+    )
+    assert r.status_code == 200
+
+    # 5. Second call for the same GSTIN is served from the DB cache.
+    r = admin_session.post(
+        f"{BASE_URL}/api/customers/fetch-gstin", json={"gstin": GSTIN}
+    )
+    assert r.status_code == 200
+    assert r.json().get("cached") is True
+
+
 def test_logs_and_dashboard(admin_session):
     # Get logs
     r = admin_session.get(f"{BASE_URL}/api/verifications/logs")
@@ -299,8 +369,8 @@ def test_ai_provider_settings_flow(admin_session):
     r = admin_session.post(f"{BASE_URL}/api/verifications/settings", json=payload)
     assert r.status_code == 200
     updated = r.json()
-    assert updated["openai_api_key"] == "sk-proj-test-save-openai-key"
-    assert updated["gemini_api_key"] == "AIzaSy-test-save-gemini-key"
+    assert updated["openai_api_key"] == "••••••••-key"
+    assert updated["gemini_api_key"] == "••••••••-key"
 
     # 3. Check /providers endpoint to see if they show up as configured
     r = admin_session.get(f"{BASE_URL}/api/ai/providers")
@@ -314,3 +384,112 @@ def test_ai_provider_settings_flow(admin_session):
     payload["gemini_api_key"] = ""
     r = admin_session.post(f"{BASE_URL}/api/verifications/settings", json=payload)
     assert r.status_code == 200
+
+
+def test_gstverify_mock_search_endpoint(admin_session):
+    # The endpoint returns mock results only when GSTVERIFY_API_KEY is not
+    # configured. When a real key is present (e.g. loaded from .env), the
+    # endpoint attempts a live lookup which may legitimately return 502 if the
+    # upstream provider is unreachable. Assert accordingly for both states.
+    from core import gstverify_gst
+
+    r = admin_session.post(
+        f"{BASE_URL}/api/verifications/gst/search-by-name",
+        json={"query": "Reliance"}
+    )
+    if gstverify_gst.is_configured():
+        # Live provider path: 200 with results, or 502 when upstream is down.
+        assert r.status_code in (200, 502)
+        if r.status_code == 200:
+            assert isinstance(r.json(), list)
+    else:
+        # Mock path: deterministic results filtered by query.
+        assert r.status_code == 200
+        data = r.json()
+        assert isinstance(data, list)
+        assert len(data) > 0
+        assert "gstin" in data[0]
+        assert "RELIANCE" in data[0]["company_name"].upper()
+
+    # Test query length < 3 (validated before any provider call, so it is
+    # always a 400 regardless of configuration state).
+    r = admin_session.post(
+        f"{BASE_URL}/api/verifications/gst/search-by-name",
+        json={"query": "Re"}
+    )
+    assert r.status_code == 400
+    assert "at least 3 characters" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_gstverify_provider_unit_logic(monkeypatch):
+    from core import gstverify_gst
+    import httpx
+
+    # Set mock API key
+    monkeypatch.setenv("GSTVERIFY_API_KEY", "test-key-123")
+    assert gstverify_gst.is_configured() is True
+
+    # 1. Mock verify success response
+    async def mock_get_verify_success(self, url, **kwargs):
+        class MockResponse:
+            status_code = 200
+            def json(self):
+                return {
+                    "success": True,
+                    "data": {
+                        "gstin": "27AAAAA0000A1Z5",
+                        "legal_name": "TEST COMPANY PRIVATE LIMITED",
+                        "trade_name": "Test Co",
+                        "status": "Active",
+                        "constitution": "Private Limited Company",
+                        "taxpayer_type": "Regular",
+                        "registration_date": "01/07/2017",
+                        "state": "Maharashtra",
+                        "pan": "AAAAA0000A",
+                        "address": "123 Business Road, Mumbai — 400001"
+                    }
+                }
+            def raise_for_status(self):
+                pass
+        return MockResponse()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get_verify_success)
+    res = await gstverify_gst.lookup_gstin("27AAAAA0000A1Z5")
+    assert res["company_name"] == "TEST COMPANY PRIVATE LIMITED"
+    assert res["trade_name"] == "Test Co"
+    assert res["pincode"] == "400001"
+    assert res["source"] == "gstverify"
+
+    # 2. Mock search success response
+    async def mock_get_search_success(self, url, **kwargs):
+        class MockResponse:
+            status_code = 200
+            def json(self):
+                return {
+                    "success": True,
+                    "data": [
+                        {
+                            "gstin": "27AAACR5055K1ZT",
+                            "legal_name": "RELIANCE INDUSTRIES LIMITED",
+                            "trade_name": "Reliance",
+                            "status": "Active",
+                            "constitution": "Public Limited Company",
+                            "state": "Maharashtra",
+                            "pan": "AAACR5055K",
+                            "registration_date": "01/07/2017",
+                            "address": "Maker Chambers IV, Nariman Point, Mumbai 400021"
+                        }
+                    ]
+                }
+            def raise_for_status(self):
+                pass
+        return MockResponse()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get_search_success)
+    search_res = await gstverify_gst.search_by_name("Reliance")
+    assert len(search_res) == 1
+    assert search_res[0]["gstin"] == "27AAACR5055K1ZT"
+    assert search_res[0]["company_name"] == "RELIANCE INDUSTRIES LIMITED"
+    assert search_res[0]["pincode"] == "400021"
+

@@ -1,6 +1,11 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+// `window.__GRAVITYONE_BACKEND_URL__` lets the desktop (Electron) build override
+// the backend at runtime — the web build never sets it, so behaviour is unchanged.
+const BACKEND_URL =
+  (typeof window !== "undefined" && window.__GRAVITYONE_BACKEND_URL__) ||
+  process.env.REACT_APP_BACKEND_URL ||
+  "http://localhost:8000";
 export const API = `${BACKEND_URL}/api`;
 
 const api = axios.create({
