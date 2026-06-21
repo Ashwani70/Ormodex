@@ -24,18 +24,18 @@ export default function IndustriesPage() {
         <div className="grid gap-6 md:grid-cols-2">
           {INDUSTRIES.map(([id, t, d], i) => (
             <Reveal key={id} delay={(i % 2) * 70}>
-              <div id={id} className="ring-gradient h-full overflow-hidden rounded-2xl border border-white/10 bg-surface transition hover:bg-white/[0.04] scroll-mt-24">
-                <div className="h-1.5 bg-gradient-to-r from-primary via-accent to-violet" />
+              <div id={id} className="h-full overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-soft transition hover:-translate-y-1 hover:shadow-card scroll-mt-24">
+                <div className="h-1.5 bg-primary" />
                 <div className="p-6">
-                  <h3 className="text-lg font-bold text-white">{t}</h3>
-                  <p className="mt-2 text-sm text-slate-400">{d}</p>
+                  <h3 className="text-lg font-bold text-ink">{t}</h3>
+                  <p className="mt-2 text-sm text-body">{d}</p>
                 </div>
               </div>
             </Reveal>
           ))}
         </div>
         <div className="mt-12 text-center">
-          <Link href="/contact#demo" className="rounded-xl bg-gradient-to-r from-primary to-violet px-6 py-3 text-sm font-semibold text-white shadow-glow transition hover:scale-[1.03]">Talk to an expert</Link>
+          <Link href="/contact#demo" className="rounded-md bg-primary px-6 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-primary-dark">Talk to an expert</Link>
         </div>
       </section>
     </>

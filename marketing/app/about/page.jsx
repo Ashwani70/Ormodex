@@ -16,13 +16,13 @@ export default function AboutPage() {
         subtitle="We're on a mission to replace spreadsheets and disconnected tools with one intelligent platform." />
       <section className="mx-auto max-w-3xl px-5 py-16">
         <Reveal>
-          <p className="text-lg leading-relaxed text-slate-300">
+          <p className="text-lg leading-relaxed text-body">
             Gravity One ERP was built for businesses that make and move real things —
             manufacturers, forging and casting units, garment makers, traders and exporters.
             We saw teams losing hours to duplicate data entry, stock mismatches and last-minute
             GST scrambles, and we set out to fix it with a single, connected system.
           </p>
-          <p className="mt-4 text-lg leading-relaxed text-slate-300">
+          <p className="mt-4 text-lg leading-relaxed text-body">
             Today, sales, inventory, accounting, GST, e-Invoicing, e-Way Bills, production and HR
             all live in one place — with real-time reporting and role-based access, so everyone
             sees exactly what they should.
@@ -30,14 +30,14 @@ export default function AboutPage() {
         </Reveal>
         <div className="mt-12 grid grid-cols-2 gap-4 sm:grid-cols-4">
           {STATS.map(([big, small]) => (
-            <div key={small} className="rounded-2xl border border-white/10 bg-surface p-5 text-center">
-              <div className="text-2xl font-extrabold text-gradient">{big}</div>
+            <div key={small} className="rounded-2xl border border-slate-100 bg-white p-5 text-center shadow-soft">
+              <div className="text-2xl font-bold text-primary">{big}</div>
               <div className="mt-1 text-xs uppercase tracking-wide text-slate-500">{small}</div>
             </div>
           ))}
         </div>
         <div className="mt-12 text-center">
-          <Link href="/contact#demo" className="rounded-xl bg-gradient-to-r from-primary to-violet px-6 py-3 text-sm font-semibold text-white shadow-glow transition hover:scale-[1.03]">Book a Demo</Link>
+          <Link href="/contact#demo" className="rounded-md bg-primary px-6 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-primary-dark">Book a Demo</Link>
         </div>
       </section>
     </>

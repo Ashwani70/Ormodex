@@ -34,7 +34,7 @@ export const metadata = {
 };
 
 export const viewport = {
-  themeColor: "#070912",
+  themeColor: "#ffffff",
 };
 
 // Organization + SoftwareApplication schema for rich SEO results.
@@ -51,8 +51,8 @@ const jsonLd = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en" className={`${inter.variable} dark`}>
-      <body className="bg-canvas font-sans text-slate-200 antialiased">
+    <html lang="en" className={inter.variable}>
+      <body className="bg-white font-sans text-body antialiased">
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
         <Navbar />
         <main>{children}</main>

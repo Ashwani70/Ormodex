@@ -40,16 +40,15 @@ const COLS = [
 
 export default function Footer() {
   return (
-    <footer className="relative overflow-hidden border-t border-white/10 bg-ink text-slate-300">
-      <div className="pointer-events-none absolute -top-24 left-1/2 h-64 w-[40rem] -translate-x-1/2 rounded-full bg-primary/15 blur-[120px]" />
-      <div className="relative mx-auto grid max-w-7xl gap-10 px-5 py-16 md:grid-cols-2 lg:grid-cols-6">
+    <footer className="bg-ink text-slate-300">
+      <div className="mx-auto grid max-w-7xl gap-10 px-5 py-16 md:grid-cols-2 lg:grid-cols-6">
         <div className="lg:col-span-2">
           <div className="flex items-center gap-2.5">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-accent font-black text-white">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary font-black text-white">
               G
             </span>
-            <span className="text-lg font-extrabold tracking-tight text-white">
-              Gravity<span className="text-gradient">One</span>
+            <span className="text-xl font-bold tracking-tight text-white">
+              Gravity<span className="text-primary-light">One</span>
             </span>
           </div>
           <p className="mt-4 max-w-sm text-sm leading-relaxed text-slate-400">
@@ -59,7 +58,7 @@ export default function Footer() {
           </p>
           <div className="mt-5 flex gap-2">
             {["Windows", "macOS", "Linux"].map((p) => (
-              <span key={p} className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-400">
+              <span key={p} className="rounded-full border border-white/15 px-3 py-1 text-xs text-slate-400">
                 {p}
               </span>
             ))}
@@ -71,7 +70,7 @@ export default function Footer() {
             <ul className="space-y-2">
               {c.links.map(([label, href]) => (
                 <li key={label}>
-                  <Link href={href} className="text-sm text-slate-400 transition-colors hover:text-white">
+                  <Link href={href} className="text-sm text-slate-400 transition-colors hover:text-primary-light">
                     {label}
                   </Link>
                 </li>
@@ -80,7 +79,7 @@ export default function Footer() {
           </div>
         ))}
       </div>
-      <div className="relative border-t border-white/10">
+      <div className="border-t border-white/10">
         <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-2 px-5 py-5 text-xs text-slate-500 sm:flex-row">
           <span>© {new Date().getFullYear()} Gravity One ERP. All rights reserved.</span>
           <span>GST-compliant · ISO-grade security · Made in India</span>

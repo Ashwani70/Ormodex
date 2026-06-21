@@ -29,16 +29,16 @@ export default function FeaturesPage() {
         <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
           {FEATURES.map(([t, d], i) => (
             <Reveal key={t} delay={(i % 3) * 60}>
-              <div className="ring-gradient h-full rounded-2xl border border-white/10 bg-surface p-6 transition hover:-translate-y-1 hover:bg-white/[0.04]">
-                <div className="mb-3 h-10 w-10 rounded-xl bg-gradient-to-br from-primary to-accent" />
-                <h3 className="font-bold text-white">{t}</h3>
-                <p className="mt-2 text-sm text-slate-400">{d}</p>
+              <div className="h-full rounded-2xl border border-slate-100 bg-white p-6 shadow-soft transition hover:-translate-y-1 hover:shadow-card">
+                <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-mint text-primary">✦</div>
+                <h3 className="font-bold text-ink">{t}</h3>
+                <p className="mt-2 text-sm text-body">{d}</p>
               </div>
             </Reveal>
           ))}
         </div>
         <div className="mt-12 text-center">
-          <Link href="/contact#demo" className="rounded-xl bg-gradient-to-r from-primary to-violet px-6 py-3 text-sm font-semibold text-white shadow-glow transition hover:scale-[1.03]">Book a Demo</Link>
+          <Link href="/contact#demo" className="rounded-md bg-primary px-6 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-primary-dark">Book a Demo</Link>
         </div>
       </section>
     </>
