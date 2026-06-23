@@ -4,7 +4,7 @@ import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
 ADMIN_EMAIL = "admin@gravityone.com"
-ADMIN_PASSWORD = "Admin@123"
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Admin@123456")
 
 @pytest.fixture(scope="module")
 def admin_session():
@@ -23,7 +23,7 @@ def admin_session():
 def employee_session(admin_session):
     # Create employee user if not exists, then login
     email = "test_emp_ver@gravity-test.com"
-    password = "EmpPass@123"
+    password = "EmpPass@1234"
     
     # Check if exists, or delete/create
     admin_session.post(
@@ -348,14 +348,13 @@ def test_logs_and_dashboard(admin_session):
 
 
 def test_ai_provider_settings_flow(admin_session):
-    # 1. Get current settings and verify openai/gemini fields are present
+    # 1. Get current settings and verify gemini fields are present
     r = admin_session.get(f"{BASE_URL}/api/verifications/settings")
     assert r.status_code == 200
     settings = r.json()
-    assert "openai_api_key" in settings
     assert "gemini_api_key" in settings
 
-    # 2. Save settings with new openai and gemini key values
+    # 2. Save settings with new gemini key values
     payload = {
         "gst_api_key": settings.get("gst_api_key", ""),
         "gst_api_enabled": settings.get("gst_api_enabled", True),
@@ -363,32 +362,28 @@ def test_ai_provider_settings_flow(admin_session):
         "pan_api_enabled": settings.get("pan_api_enabled", True),
         "aadhaar_api_key": settings.get("aadhaar_api_key", ""),
         "aadhaar_api_enabled": settings.get("aadhaar_api_enabled", True),
-        "openai_api_key": "sk-proj-test-save-openai-key",
         "gemini_api_key": "AIzaSy-test-save-gemini-key",
     }
     r = admin_session.post(f"{BASE_URL}/api/verifications/settings", json=payload)
     assert r.status_code == 200
     updated = r.json()
-    assert updated["openai_api_key"] == "••••••••-key"
     assert updated["gemini_api_key"] == "••••••••-key"
 
     # 3. Check /providers endpoint to see if they show up as configured
     r = admin_session.get(f"{BASE_URL}/api/ai/providers")
     assert r.status_code == 200
     providers = r.json()
-    assert providers["configured"]["openai"] is True
     assert providers["configured"]["gemini"] is True
 
     # 4. Restore settings back to empty or fallback values
-    payload["openai_api_key"] = ""
     payload["gemini_api_key"] = ""
     r = admin_session.post(f"{BASE_URL}/api/verifications/settings", json=payload)
     assert r.status_code == 200
 
 
 def test_gstverify_mock_search_endpoint(admin_session):
-    # The endpoint returns mock results only when GSTVERIFY_API_KEY is not
-    # configured. When a real key is present (e.g. loaded from .env), the
+    # The endpoint returns mock results when no GSTVerify API key is
+    # configured in Settings. When a real key is saved in the Settings UI, the
     # endpoint attempts a live lookup which may legitimately return 502 if the
     # upstream provider is unreachable. Assert accordingly for both states.
     from core import gstverify_gst
@@ -426,9 +421,8 @@ async def test_gstverify_provider_unit_logic(monkeypatch):
     from core import gstverify_gst
     import httpx
 
-    # Set mock API key
-    monkeypatch.setenv("GSTVERIFY_API_KEY", "test-key-123")
-    assert gstverify_gst.is_configured() is True
+    # Pass key directly (no env var fallback anymore)
+    assert gstverify_gst.is_configured("test-key-123") is True
 
     # 1. Mock verify success response
     async def mock_get_verify_success(self, url, **kwargs):
@@ -455,7 +449,7 @@ async def test_gstverify_provider_unit_logic(monkeypatch):
         return MockResponse()
 
     monkeypatch.setattr(httpx.AsyncClient, "get", mock_get_verify_success)
-    res = await gstverify_gst.lookup_gstin("27AAAAA0000A1Z5")
+    res = await gstverify_gst.lookup_gstin("27AAAAA0000A1Z5", api_key="test-key-123")
     assert res["company_name"] == "TEST COMPANY PRIVATE LIMITED"
     assert res["trade_name"] == "Test Co"
     assert res["pincode"] == "400001"
@@ -487,9 +481,249 @@ async def test_gstverify_provider_unit_logic(monkeypatch):
         return MockResponse()
 
     monkeypatch.setattr(httpx.AsyncClient, "get", mock_get_search_success)
-    search_res = await gstverify_gst.search_by_name("Reliance")
+    search_res = await gstverify_gst.search_by_name("Reliance", api_key="test-key-123")
     assert len(search_res) == 1
     assert search_res[0]["gstin"] == "27AAACR5055K1ZT"
     assert search_res[0]["company_name"] == "RELIANCE INDUSTRIES LIMITED"
     assert search_res[0]["pincode"] == "400021"
+
+
+@pytest.mark.asyncio
+async def test_rapidapi_gst_parses_live_envelope(monkeypatch):
+    """The gst-return-status RapidAPI returns {'flag': true, 'data': {lgnm,
+    tradeNam, pradr...}} — make sure the extractor reads those real field names
+    (regression: name/trade name came back blank when only GSTVerify-style keys
+    like 'tradeName' were read)."""
+    from core import rapidapi_gst
+    import httpx
+
+    async def mock_get(self, url, **kwargs):
+        class MockResponse:
+            status_code = 200
+            def json(self):
+                return {
+                    "flag": True,
+                    "data": {
+                        "gstin": "27AAACR5055K1ZT",
+                        "lgnm": "RELIANCE INDUSTRIES LIMITED",
+                        "tradeNam": "Reliance",
+                        "sts": "Active",
+                        "ctb": "Public Limited Company",
+                        "rgdt": "01/07/2017",
+                        "pradr": {
+                            "adr": "Maker Chambers IV, Nariman Point, Mumbai 400021",
+                            "addr": {"pncd": "400021"},
+                        },
+                    },
+                }
+            def raise_for_status(self):
+                pass
+        return MockResponse()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+    res = await rapidapi_gst.lookup_gstin("27AAACR5055K1ZT", api_key="rapid-key-123")
+    assert res["company_name"] == "RELIANCE INDUSTRIES LIMITED"
+    assert res["trade_name"] == "Reliance"
+    assert res["address"].startswith("Maker Chambers IV")
+    assert res["pincode"] == "400021"
+    assert res["status"] == "ACTIVE"
+    assert res["taxpayer_type"] == "Public Limited Company"
+    assert res["source"] == "rapidapi"
+
+
+@pytest.mark.asyncio
+async def test_rapidapi_gst_checksum_failure_maps_to_not_found(monkeypatch):
+    """The gst-return-status RapidAPI validates the GSTIN check digit *before*
+    looking it up and returns a checksum failure as HTTP 503 with body
+    {'success': false, 'message': 'GSTIN checksum failed'}. That's a permanent
+    input error, not a transient outage — it must map to GstinNotFound so the
+    user sees "invalid GSTIN" (and the provider fallback doesn't burn a second
+    credit retrying it), not "service unavailable"."""
+    from core import rapidapi_gst
+    import httpx
+
+    async def mock_get(self, url, **kwargs):
+        class MockResponse:
+            status_code = 503
+            text = '{"success": false, "message": "GSTIN checksum failed"}'
+            def json(self):
+                return {"success": False, "message": "GSTIN checksum failed"}
+            def raise_for_status(self):
+                pass
+        return MockResponse()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+    with pytest.raises(rapidapi_gst.GstinNotFound):
+        await rapidapi_gst.lookup_gstin("27AAACR5055K1ZX", api_key="rapid-key-123")
+
+
+@pytest.mark.asyncio
+async def test_rapidapi_gst_genuine_5xx_is_unavailable(monkeypatch):
+    """A real upstream 5xx (no input-related message) must still surface as a
+    transient GstProviderUnavailable, not get swallowed as 'not found'."""
+    from core import rapidapi_gst
+    import httpx
+
+    async def mock_get(self, url, **kwargs):
+        class MockResponse:
+            status_code = 502
+            text = "Bad Gateway"
+            def json(self):
+                raise ValueError("not json")
+            def raise_for_status(self):
+                pass
+        return MockResponse()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+    with pytest.raises(rapidapi_gst.GstProviderUnavailable):
+        await rapidapi_gst.lookup_gstin("27AAACR5055K1Z7", api_key="rapid-key-123")
+
+
+@pytest.mark.asyncio
+async def test_gst_lookup_falls_back_to_other_provider_on_auth_error(monkeypatch):
+    """A RapidAPI key saved while the provider dropdown is still on the
+    GSTVerify default used to surface a misleading "authentication failed". The
+    dispatcher must retry the same key against the alternate provider on a hard
+    auth error and return that provider's result instead.
+
+    Here the (default) GSTVerify provider rejects the key with a 401, and the
+    lookup must transparently fall through to RapidAPI and succeed."""
+    from routers import verifications
+    from core import gstverify_gst, rapidapi_gst
+
+    async def gstverify_rejects(gstin, api_key=None):
+        raise gstverify_gst.GstProviderAuthError()
+
+    async def rapidapi_succeeds(gstin, api_key=None):
+        assert api_key == "rapid-key-123"  # same key, routed to the other provider
+        return {
+            "company_name": "RELIANCE INDUSTRIES LIMITED",
+            "trade_name": "Reliance",
+            "address": "Maker Chambers IV, Nariman Point, Mumbai 400021",
+            "state": "Maharashtra",
+            "pincode": "400021",
+            "status": "ACTIVE",
+            "state_code": "27",
+            "pan": "AAACR5055K",
+            "taxpayer_type": "Regular",
+            "registration_date": "01/07/2017",
+            "source": "rapidapi",
+        }
+
+    monkeypatch.setattr(gstverify_gst, "lookup_gstin", gstverify_rejects)
+    monkeypatch.setattr(rapidapi_gst, "lookup_gstin", rapidapi_succeeds)
+
+    # Provider selector left on the default ("gstverify") but the key is RapidAPI's.
+    res = await verifications._lookup_gst_with_fallback(
+        "27AAACR5055K1ZT", "rapid-key-123", "gstverify"
+    )
+    assert res["company_name"] == "RELIANCE INDUSTRIES LIMITED"
+    assert res["trade_name"] == "Reliance"
+    assert res["source"] == "rapidapi"
+
+
+@pytest.mark.asyncio
+async def test_gst_lookup_raises_auth_error_when_both_providers_reject(monkeypatch):
+    """If the key is invalid for *both* providers, the auth error stands."""
+    from routers import verifications
+    from core import gstverify_gst, rapidapi_gst
+
+    async def reject_gstverify(gstin, api_key=None):
+        raise gstverify_gst.GstProviderAuthError()
+
+    async def reject_rapidapi(gstin, api_key=None):
+        raise rapidapi_gst.GstProviderAuthError()
+
+    monkeypatch.setattr(gstverify_gst, "lookup_gstin", reject_gstverify)
+    monkeypatch.setattr(rapidapi_gst, "lookup_gstin", reject_rapidapi)
+
+    # Provider "rapidapi" is tried first, so its auth error is the one re-raised.
+    with pytest.raises(rapidapi_gst.GstProviderAuthError):
+        await verifications._lookup_gst_with_fallback(
+            "27AAACR5055K1ZT", "bad-key", "rapidapi"
+        )
+
+
+@pytest.mark.asyncio
+async def test_gst_lookup_falls_through_not_found_to_other_provider(monkeypatch):
+    """A "not found" on the selected provider's limited free-tier dataset must
+    fall through to the other provider, which may have the record. This is the
+    vendor-form case: RapidAPI's free GSTIN endpoint returned no data, so we
+    re-check GSTVerify before telling the user the GSTIN doesn't exist."""
+    from routers import verifications
+    from core import gstverify_gst, rapidapi_gst
+
+    async def rapidapi_no_record(gstin, api_key=None):
+        raise rapidapi_gst.GstinNotFound()
+
+    async def gstverify_has_record(gstin, api_key=None):
+        return {
+            "company_name": "ACME PRIVATE LIMITED",
+            "trade_name": "Acme",
+            "address": "1 Industrial Area, Pune 411018",
+            "state": "Maharashtra",
+            "pincode": "411018",
+            "status": "ACTIVE",
+            "state_code": "27",
+            "pan": "AAACA1111A",
+            "taxpayer_type": "Regular",
+            "registration_date": "01/07/2017",
+            "source": "gstverify",
+        }
+
+    monkeypatch.setattr(rapidapi_gst, "lookup_gstin", rapidapi_no_record)
+    monkeypatch.setattr(gstverify_gst, "lookup_gstin", gstverify_has_record)
+
+    # Provider selected = rapidapi (tried first, returns nothing) -> GSTVerify wins.
+    res = await verifications._lookup_gst_with_fallback(
+        "27AAACA1111A1Z5", "some-key", "rapidapi"
+    )
+    assert res["company_name"] == "ACME PRIVATE LIMITED"
+    assert res["source"] == "gstverify"
+
+
+@pytest.mark.asyncio
+async def test_gst_health_probe_interprets_provider_outcomes(monkeypatch):
+    """The /gst/health live probe must map provider outcomes correctly:
+    a real auth failure -> authenticated False; a "not found" or a transient
+    provider error -> authenticated True (the key itself was accepted)."""
+    from routers import verifications
+    from core import gstverify_gst
+
+    async def fake_settings():
+        return {"gst_provider": "rapidapi", "gst_api_key": "rapid-key-123"}
+
+    monkeypatch.setattr(verifications, "get_verification_settings", fake_settings)
+    # resolve_gst_key reads the raw key; with no encryption it returns it as-is.
+
+    # 1. Auth rejected by both providers -> not authenticated.
+    async def reject(gstin, key, provider):
+        raise gstverify_gst.GstProviderAuthError()
+    monkeypatch.setattr(verifications, "_lookup_gst_with_fallback", reject)
+    res = await verifications.gst_health(user={"id": "u", "name": "admin"})
+    assert res["configured"] is True
+    assert res["authenticated"] is False
+
+    # 2. Probe GSTIN simply not found -> key authenticates fine.
+    async def not_found(gstin, key, provider):
+        raise gstverify_gst.GstinNotFound()
+    monkeypatch.setattr(verifications, "_lookup_gst_with_fallback", not_found)
+    res = await verifications.gst_health(user={"id": "u", "name": "admin"})
+    assert res["authenticated"] is True
+
+    # 3. Transient provider error (rate limit / outage) -> authenticated, warned.
+    async def unavailable(gstin, key, provider):
+        raise gstverify_gst.GstProviderUnavailable("Rate limit exceeded.")
+    monkeypatch.setattr(verifications, "_lookup_gst_with_fallback", unavailable)
+    res = await verifications.gst_health(user={"id": "u", "name": "admin"})
+    assert res["authenticated"] is True
+    assert "warning" in res
+
+    # 4. Clean success -> authenticated, no warning.
+    async def ok(gstin, key, provider):
+        return {"company_name": "X", "trade_name": "X", "source": "rapidapi"}
+    monkeypatch.setattr(verifications, "_lookup_gst_with_fallback", ok)
+    res = await verifications.gst_health(user={"id": "u", "name": "admin"})
+    assert res["authenticated"] is True
+    assert res.get("warning") is None
 
