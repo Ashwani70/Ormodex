@@ -1,3 +1,9 @@
+"""Temporary script — run once to write auth_utils.py, then delete."""
+import os
+
+path = os.path.join(os.path.dirname(__file__), "auth_utils.py")
+
+CONTENT = '''\
 import os
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -153,3 +159,9 @@ async def require_payroll_role(user: dict = Depends(get_current_user)) -> dict:
     if user.get("role") not in ("admin", "hr", "accountant"):
         raise HTTPException(status_code=403, detail="HR/Accountant/Admin access required")
     return user
+'''
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(CONTENT)
+
+print(f"Written {len(CONTENT)} chars")

@@ -1,3 +1,9 @@
+"""Temporary script — run once to write db.py, then delete."""
+import os
+
+path = os.path.join(os.path.dirname(__file__), "db.py")
+
+CONTENT = '''\
 """SQLAlchemy async engine, session factory, and declarative Base for PostgreSQL."""
 import os
 from contextlib import asynccontextmanager
@@ -42,13 +48,9 @@ async def get_session():
 
 async def close_db():
     await engine.dispose()
+'''
 
+with open(path, "w", encoding="utf-8") as f:
+    f.write(CONTENT)
 
-# Compatibility shim: `from core.db import db` keeps working in all routers
-# while core/ is fully migrated to SQLAlchemy.  Import lazily to avoid
-# circular-import at module parse time (compat needs schema, schema needs Base).
-def __getattr__(name):
-    if name == "db":
-        from ._mongo_compat import db as _db
-        return _db
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+print(f"Written db.py: {len(CONTENT)} chars")

@@ -1,3 +1,9 @@
+"""Temporary script — run once to write seed.py, then delete."""
+import os
+
+path = os.path.join(os.path.dirname(__file__), "seed.py")
+
+CONTENT = '''\
 import os
 from datetime import datetime, timezone, timedelta
 
@@ -111,3 +117,9 @@ async def seed_demo_data():
                 Lead(id=new_id(), company_name="Reliance Industries", contact_person="Anil Patel", country="India", email="anil@ril.in", phone="+919898989898", source="Cold Call", interested_in="Custom scaffolding for refinery", estimated_value=6700000, status="WON", notes="Order confirmed", created_at=now, updated_at=now),
             ]:
                 session.add(lead)
+'''
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(CONTENT)
+
+print(f"Written {len(CONTENT)} chars")

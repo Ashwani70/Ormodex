@@ -1,3 +1,9 @@
+"""Temporary script — write utils.py v2 with lazy schema imports to break circular deps."""
+import os
+
+path = os.path.join(os.path.dirname(__file__), "utils.py")
+
+CONTENT = '''\
 from typing import Optional
 import uuid
 from datetime import datetime, timezone
@@ -265,19 +271,6 @@ async def crud_get(collection: str, doc_id: str) -> Optional[dict]:
         return _row_to_dict(row)
 
 
-async def get_active_company() -> dict:
-    """Active company profile used for PDF branding (name, address, logo).
-
-    Returns an empty dict if none is configured; the PDF builders fall back to
-    their default branding in that case. Reads the first row of the `company`
-    table (single-company today).
-    """
-    Model = _table("company")
-    async with get_session() as session:
-        row = (await session.execute(select(Model).limit(1))).scalars().first()
-        return _row_to_dict(row) or {}
-
-
 async def crud_update(
     collection: str, doc_id: str, updates: dict, user: Optional[dict] = None
 ) -> Optional[dict]:
@@ -410,3 +403,9 @@ def _diff_fields(old: Optional[dict], new: Optional[dict]) -> list[str]:
     new = new or {}
     keys = (set(old) | set(new)) - _AUDIT_IGNORED_FIELDS
     return sorted(k for k in keys if old.get(k) != new.get(k))
+'''
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(CONTENT)
+
+print(f"Written utils.py v2: {len(CONTENT)} chars")

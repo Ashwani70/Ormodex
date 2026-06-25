@@ -73,8 +73,11 @@ class JournalEntry(BaseModel):
 
 
 class JournalEntryUpdate(BaseModel):
-    status: Optional[Literal["DRAFT", "APPROVED", "POSTED"]] = None
+    date: Optional[str] = None
     narration: Optional[str] = None
+    lines: Optional[List[JournalLine]] = None
+    reference: Optional[str] = None
+    status: Optional[Literal["DRAFT", "APPROVED", "POSTED"]] = None
 
 
 # ─────────────────────────── Vouchers ───────────────────────────
@@ -116,8 +119,16 @@ class Voucher(BaseModel):
 
 
 class VoucherUpdate(BaseModel):
-    status: Optional[Literal["DRAFT", "PENDING", "APPROVED", "CANCELLED"]] = None
+    voucher_type: Optional[VoucherType] = None
+    date: Optional[str] = None
+    party_type: Optional[Literal["CUSTOMER", "SUPPLIER", "BANK", "CASH"]] = None
+    party_id: Optional[str] = None
+    party_name: Optional[str] = None
+    amount: Optional[float] = None
     narration: Optional[str] = None
+    payment_mode: Optional[Literal["CASH", "CHEQUE", "NEFT", "RTGS", "UPI", "OTHER"]] = None
+    reference_number: Optional[str] = None
+    status: Optional[Literal["DRAFT", "PENDING", "APPROVED", "CANCELLED"]] = None
 
 
 # ─────────────────────────── Bank & Cash ───────────────────────────

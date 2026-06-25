@@ -1,3 +1,10 @@
+"""Temporary script — patch email.py with missing functions and add calc_totals to utils.py."""
+import os
+
+BASE = os.path.dirname(__file__)
+
+# ── Full email.py replacement ─────────────────────────────────────────────────
+EMAIL = '''\
 """Resend email helper — sends transactional emails and logs to email_logs."""
 import base64
 import os
@@ -70,7 +77,7 @@ def render_doc_email_html(
     intro: Optional[str] = None,
 ) -> str:
     intro_html = (
-        f'<p style="color:#3f3f46;line-height:1.6;font-size:14px;margin:18px 0;">{intro}</p>'
+        f\'<p style="color:#3f3f46;line-height:1.6;font-size:14px;margin:18px 0;">{intro}</p>\'
         if intro else ""
     )
     return f"""<!doctype html>
@@ -84,7 +91,7 @@ def render_doc_email_html(
         <tr><td style="background:#facc15;height:4px;"></td></tr>
         <tr><td style="padding:28px;color:#0a0a0a;">
           <h1 style="margin:6px 0 18px 0;font-size:22px;">{doc_label} {doc_number}</h1>
-          <p>Dear {recipient_name or 'Sir/Madam'},</p>
+          <p>Dear {recipient_name or \'Sir/Madam\'},</p>
           <p>Please find attached the {doc_label.lower()} <b>{doc_number}</b>.</p>
           {intro_html}
           <p>Regards,<br><b>Ormodex ERP</b></p>
@@ -121,3 +128,42 @@ def render_password_reset_html(*, reset_link: str, expires_minutes: int = 30) ->
     </td></tr>
   </table>
 </body></html>"""
+'''
+
+email_path = os.path.join(BASE, "email.py")
+with open(email_path, "w", encoding="utf-8") as f:
+    f.write(EMAIL)
+print(f"Written email.py: {len(EMAIL)} chars")
+
+# ── Append calc_totals and _diff_fields to utils.py ──────────────────────────
+ADDITIONS = '''
+
+# ── helpers imported by routers ────────────────────────────────────────────────
+_AUDIT_IGNORED_FIELDS = frozenset({"_id", "updated_at", "created_at"})
+
+
+def calc_totals(items: list) -> dict:
+    sub = 0.0
+    gst = 0.0
+    for it in items:
+        line = float(it.get("quantity", 0)) * float(it.get("unit_price", 0))
+        sub += line
+        gst += line * float(it.get("gst_rate", 0)) / 100.0
+    return {
+        "subtotal": round(sub, 2),
+        "gst_amount": round(gst, 2),
+        "total": round(sub + gst, 2),
+    }
+
+
+def _diff_fields(old: dict | None, new: dict | None) -> list[str]:
+    old = old or {}
+    new = new or {}
+    keys = (set(old) | set(new)) - _AUDIT_IGNORED_FIELDS
+    return sorted(k for k in keys if old.get(k) != new.get(k))
+'''
+
+utils_path = os.path.join(BASE, "utils.py")
+with open(utils_path, "a", encoding="utf-8") as f:
+    f.write(ADDITIONS)
+print(f"Appended calc_totals + _diff_fields to utils.py")

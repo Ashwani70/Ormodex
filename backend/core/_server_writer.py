@@ -1,3 +1,10 @@
+﻿"""Temporary script — run once to write server.py, then delete."""
+import os
+
+path = os.path.join(os.path.dirname(__file__), "..", "server.py")
+path = os.path.normpath(path)
+
+CONTENT = '''\
 """Slim FastAPI entry point. All business logic lives in routers/ and core/."""
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -209,3 +216,9 @@ v1_router.include_router(pos_router)
 v1_router.include_router(company_router)
 v1_router.include_router(theme_settings_router)
 app.include_router(v1_router)
+'''
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(CONTENT)
+
+print(f"Written server.py: {len(CONTENT)} chars to {path}")

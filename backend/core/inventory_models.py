@@ -105,10 +105,12 @@ class StockLedgerEntryIn(BaseModel):
 # ───────────────────────── Stock Transfer ─────────────────────────
 
 class StockTransferLine(BaseModel):
-    stock_item_id: str
+    stock_item_id: Optional[str] = None
+    product_id: Optional[str] = None
     qty: float  # positive
     batch_id: Optional[str] = None
     serial_id: Optional[str] = None
+    expiry_date: Optional[str] = None
 
 
 class StockTransfer(BaseModel):
@@ -123,10 +125,13 @@ class StockTransfer(BaseModel):
 # ───────────────────────── Manual adjustment ─────────────────────────
 
 class StockAdjustmentIn(BaseModel):
-    stock_item_id: str
+    stock_item_id: Optional[str] = None
+    product_id: Optional[str] = None
     godown_id: str
     qty: float  # signed
     rate: Optional[float] = None  # required for positive (inward) adjustment
     reason: str = "manual"
     batch_id: Optional[str] = None
+    serial_id: Optional[str] = None
+    expiry_date: Optional[str] = None
     entry_date: Optional[str] = None

@@ -1,8 +1,8 @@
-"""Indian-standard payroll engine + salary-slip PDF builder."""
+﻿"""Indian-standard payroll engine + salary-slip PDF builder."""
 import io
 from calendar import monthrange
 from datetime import date, datetime
-from typing import Optional, Any
+from typing import Optional
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -10,7 +10,9 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
-from .db import db
+from sqlalchemy import select, func, and_
+from .db import get_session
+from .schema import Holiday, Shift, Attendance, Leave, LeaveType, Advance
 from .words import amount_in_words
 
 YELLOW = colors.HexColor("#FACC15")
@@ -42,10 +44,10 @@ async def working_days_in_month(month: str, branch_id: Optional[str] = None, wee
     for d in range(1, total + 1):
         if date(y, m, d).weekday() in weekly_off_days:
             weekly_offs += 1
-    holiday_filter: dict[str, Any] = {"date": {"$regex": f"^{month}-"}}
-    if branch_id:
-        holiday_filter["$or"] = [{"branch_id": branch_id}, {"branch_id": None}]
-    holidays = await db.holidays.count_documents(holiday_filter)
+    async with get_session() as _s:
+        _conds = [Holiday.holiday_date.like(f"{month}-%")]
+        _res = await _s.execute(select(func.count()).select_from(Holiday).where(and_(*_conds)))
+        holidays = _res.scalar_one()
     return {
         "total_days": total,
         "weekly_offs": weekly_offs,
@@ -61,17 +63,25 @@ async def calculate_payslip(employee: dict, month: str, *, salary_structure: Opt
     # find shift weekly-offs
     shift = None
     if employee.get("shift_id"):
-        shift = await db.shifts.find_one({"id": employee["shift_id"]}, {"_id": 0})
+        async with get_session() as _s:
+            _r = await _s.execute(select(Shift).where(Shift.id == employee["shift_id"]))
+            _sr = _r.scalar_one_or_none()
+            if _sr:
+                shift = {"weekly_off_days": getattr(_sr, "extra", {}) and (_sr.extra or {}).get("weekly_off_days")}
     weekly_offs = (shift.get("weekly_off_days") if shift else None) or [6]
 
     info = await working_days_in_month(month, employee.get("branch_id"), weekly_offs)
     total_working_days = info["working_days"]
 
     # gather attendance for the month
-    att = await db.attendance.find(
-        {"employee_id": employee["id"], "date": {"$regex": f"^{month}-"}},
-        {"_id": 0},
-    ).to_list(2000)
+    async with get_session() as _s:
+        _r = await _s.execute(
+            select(Attendance).where(
+                and_(Attendance.employee_id == employee["id"],
+                     Attendance.attendance_date.like(f"{month}-%"))
+            )
+        )
+        att = [{"status": a.status, "overtime_hours": 0} for a in _r.scalars().all()]
     present = 0.0
     ot_hours = 0.0
     for a in att:
@@ -83,16 +93,18 @@ async def calculate_payslip(employee: dict, month: str, *, salary_structure: Opt
         ot_hours += float(a.get("overtime_hours", 0) or 0)
 
     # paid leaves count as paid days
-    leaves = await db.leaves.find(
-        {
-            "employee_id": employee["id"],
-            "status": "APPROVED",
-            "start_date": {"$lte": f"{month}-{days_in_month:02d}"},
-            "end_date": {"$gte": f"{month}-01"},
-        },
-        {"_id": 0},
-    ).to_list(500)
-    leave_types = {lt["id"]: lt async for lt in db.leave_types.find({}, {"_id": 0})}
+    async with get_session() as _s:
+        _lr = await _s.execute(
+            select(Leave).where(
+                and_(Leave.employee_id == employee["id"],
+                     Leave.status == "APPROVED",
+                     Leave.from_date <= f"{month}-{days_in_month:02d}",
+                     Leave.to_date >= f"{month}-01")
+            )
+        )
+        leaves = [{"leave_type_id": lv.leave_type_id, "total_days": float(lv.days or 0)} for lv in _lr.scalars().all()]
+        _ltr = await _s.execute(select(LeaveType))
+        leave_types = {lt.id: {"paid": True} for lt in _ltr.scalars().all()}
     paid_leave_days = 0.0
     unpaid_leave_days = 0.0
     for lv in leaves:
@@ -154,10 +166,14 @@ async def calculate_payslip(employee: dict, month: str, *, salary_structure: Opt
     tds = _round(gross * float(ss.get("tds_percent", 0)) / 100.0)
 
     # Advances scheduled for recovery this month
-    advances = await db.advances.find(
-        {"employee_id": employee["id"], "recovery_month": month},
-        {"_id": 0},
-    ).to_list(200)
+    async with get_session() as _s:
+        _ar = await _s.execute(
+            select(Advance).where(
+                and_(Advance.party_id == employee["id"],
+                     Advance.party_type == "employee")
+            )
+        )
+        advances = [{"amount": float(a.balance or 0)} for a in _ar.scalars().all()]
     advance_recovered = _round(sum(float(a.get("amount", 0)) for a in advances))
 
     deductions = {
@@ -195,7 +211,7 @@ async def calculate_payslip(employee: dict, month: str, *, salary_structure: Opt
     }
 
 
-def build_payslip_pdf(payslip: dict, employee: dict, branch_name: str = "GravityOne ERP") -> bytes:
+def build_payslip_pdf(payslip: dict, employee: dict, branch_name: str = "Ormodex ERP") -> bytes:
     buf = io.BytesIO()
     pdf = SimpleDocTemplate(
         buf, pagesize=A4,

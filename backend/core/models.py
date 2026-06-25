@@ -1,7 +1,7 @@
 """Pydantic models shared across routers."""
 from typing import List, Optional, Literal
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 
 
 # ---------------- Auth & Users ----------------
@@ -13,17 +13,36 @@ class LoginIn(BaseModel):
 class UserCreate(BaseModel):
     name: str
     email: EmailStr
+    username: Optional[str] = None
     phone: Optional[str] = None
     role: Literal["admin", "hr", "accountant", "employee"] = "employee"
     permissions: Optional[dict] = None
+    module_permissions: Optional[List[str]] = None
     password: str
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, v: str) -> str:
+        from core.password_policy import validate_password
+        return validate_password(v)
 
 
 class UserUpdate(BaseModel):
     name: Optional[str] = None
+    username: Optional[str] = None
     phone: Optional[str] = None
     role: Optional[Literal["admin", "hr", "accountant", "employee"]] = None
+    module_permissions: Optional[List[str]] = None
     password: Optional[str] = None
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            from core.password_policy import validate_password
+            return validate_password(v)
+        return v
+
 
 
 # ---------------- Inventory ----------------
@@ -37,6 +56,7 @@ class Product(BaseModel):
     name: str
     sku: str
     category: str
+    category_id: Optional[str] = None
     description: Optional[str] = None
     unit: str = "pcs"
     cost_price: float = 0
@@ -78,12 +98,14 @@ class Supplier(BaseModel):
 
 
 class POItem(BaseModel):
-    product_id: str
+    product_id: Optional[str] = None
     product_name: str
-    sku: str
+    sku: Optional[str] = ""
     quantity: float
+    unit: str = "pcs"
     unit_price: float
     gst_rate: float = 18.0
+    hsn_code: Optional[str] = None
 
 
 class PurchaseOrder(BaseModel):
@@ -144,12 +166,14 @@ SUPPORTED_CURRENCIES = ["INR", "USD", "AED", "EUR", "GBP"]
 
 
 class SalesItem(BaseModel):
-    product_id: str
+    product_id: Optional[str] = None
     product_name: str
-    sku: str
+    sku: Optional[str] = ""
     quantity: float
+    unit: str = "pcs"
     unit_price: float
     gst_rate: float = 18.0
+    hsn_code: Optional[str] = None
 
 
 class Quotation(BaseModel):
@@ -219,6 +243,18 @@ class Dispatch(BaseModel):
     items: List[SalesItem] = []
     status: Literal["PENDING", "IN_TRANSIT", "DELIVERED"] = "PENDING"
     notes: Optional[str] = None
+
+
+class CreditNote(BaseModel):
+    credit_note_number: Optional[str] = None
+    customer_id: str
+    customer_name: Optional[str] = None
+    original_invoice_id: Optional[str] = None
+    items: List[SalesItem]
+    status: Literal["DRAFT", "ISSUED"] = "DRAFT"
+    notes: Optional[str] = None
+    journal_entry_id: Optional[str] = None
+
 
 
 # ---------------- Proforma Invoice (Export) ----------------
@@ -297,7 +333,15 @@ class JobWorkChallanItem(BaseModel):
     sku: Optional[str] = ""
     quantity: float
     unit: str = "pcs"
+    description: Optional[str] = None
+    remarks: Optional[str] = None
     is_custom: bool = False
+    batch_id: Optional[str] = None
+    serial_id: Optional[str] = None
+    expiry_date: Optional[str] = None
+    rate: float = 0.0
+    gst_rate: float = 18.0
+    hsn_code: Optional[str] = None
 
 
 class JobWorkChallan(BaseModel):
@@ -305,6 +349,7 @@ class JobWorkChallan(BaseModel):
     date: str
     job_worker_id: str
     job_worker_name: Optional[str] = None
+    job_worker_gstin: Optional[str] = None
     items: List[JobWorkChallanItem]
     status: Literal["PENDING", "PARTIAL", "COMPLETED", "CANCELLED"] = "PENDING"
     notes: Optional[str] = None
@@ -317,6 +362,9 @@ class JobWorkReceiptItem(BaseModel):
     quantity_received: float
     scrap_quantity: float = 0.0
     is_custom: bool = False
+    batch_id: Optional[str] = None
+    serial_id: Optional[str] = None
+    expiry_date: Optional[str] = None
 
 
 class JobWorkReceipt(BaseModel):
@@ -337,4 +385,114 @@ class AuditLog(BaseModel):
     timestamp: str
     old_values: Optional[dict] = None
     new_values: Optional[dict] = None
+
+
+# ---------------- Auth Inputs / MFA ----------------
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordIn(BaseModel):
+    token: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_strength(cls, v: str) -> str:
+        from core.password_policy import validate_password
+        return validate_password(v)
+
+
+class MfaLoginIn(BaseModel):
+    mfa_token: str
+    code: Optional[str] = None
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_strength(cls, v: str) -> str:
+        from core.password_policy import validate_password
+        return validate_password(v)
+
+
+class ModulePermissionsIn(BaseModel):
+    module_permissions: List[str]
+
+
+# ---------------- Product Categories ----------------
+class ProductCategory(BaseModel):
+    name: str
+    code: Optional[str] = None
+    description: Optional[str] = None
+    parent_id: Optional[str] = None
+    status: Optional[str] = "Active"
+    display_order: Optional[int] = 0
+
+
+class ProductCategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    description: Optional[str] = None
+    parent_id: Optional[str] = None
+    status: Optional[str] = None
+    display_order: Optional[int] = None
+
+
+# ---------------- Additional MFA Inputs ----------------
+class MfaVerifyIn(BaseModel):
+    code: str
+
+
+class MfaDisableIn(BaseModel):
+    password: str
+
+
+# ---------------- e-Way Bill ----------------
+class EwbGenerateRequest(BaseModel):
+    invoice_id: str
+    transport_mode: Literal["ROAD", "RAIL", "AIR", "SHIP"]
+    vehicle_number: Optional[str] = None
+    distance_km: float
+    vehicle_type: Optional[str] = "R"
+    transporter_id: Optional[str] = None
+    transporter_name: Optional[str] = None
+    trans_doc_no: Optional[str] = None
+    supply_type: Optional[str] = "OUTWARD"
+    sub_supply_type: Optional[str] = "1"
+    transaction_type: Optional[int] = 1
+
+
+class EwbUpdateVehicleRequest(BaseModel):
+    ewb_number: str
+    vehicle_number: str
+    from_place: str
+    from_state_code: Optional[str] = None
+    reason_code: int
+    reason_remark: Optional[str] = None
+    transport_mode: Optional[str] = "ROAD"
+    trans_doc_no: Optional[str] = None
+    trans_doc_date: Optional[str] = None
+
+
+class EwbExtendRequest(BaseModel):
+    ewb_number: str
+    vehicle_number: Optional[str] = None
+    from_place: str
+    from_state_code: Optional[str] = None
+    remaining_distance_km: float
+    transport_mode: Optional[str] = "ROAD"
+    reason_code: int
+    reason_remark: Optional[str] = None
+    consignment_status: Optional[str] = "TRANSIT"
+
+
+class EwbCancelRequest(BaseModel):
+    ewb_number: str
+    reason_code: int
+    reason_remark: Optional[str] = None
+
 

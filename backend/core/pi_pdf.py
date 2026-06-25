@@ -34,7 +34,7 @@ def _money(amt, ccy):
         return f"{sym}{amt}"
 
 
-def build_pi_pdf(pi: dict) -> bytes:
+def build_pi_pdf(pi: dict, company: dict | None = None) -> bytes:
     buf = io.BytesIO()
     pdf = SimpleDocTemplate(
         buf, pagesize=A4,
@@ -55,16 +55,26 @@ def build_pi_pdf(pi: dict) -> bytes:
     pi_number = pi.get("pi_number", "—")
 
     # ---------- Header banner ----------
+    from core.pdf import _load_logo_image
+
+    company = company or {}
+    exporter_name = company.get("name") or "GRAVITYONE ERP"
+    left_header = []
+    logo = _load_logo_image(company.get("logo_url"))
+    if logo is not None:
+        left_header.append(logo)
+        left_header.append(Spacer(1, 4))
+    left_header += [
+        Paragraph(exporter_name, head),
+        Paragraph(pi.get("exporter_address", "Pune, Maharashtra, India"), sub),
+        Paragraph(
+            f"GSTIN: {pi.get('exporter_gstin') or '—'}{' · IEC: ' + pi['exporter_iec'] if pi.get('exporter_iec') else ''}",
+            sub,
+        ),
+    ]
     title = Table(
         [[
-            [
-                Paragraph("GRAVITYONE ERP", head),
-                Paragraph(pi.get("exporter_address", "Pune, Maharashtra, India"), sub),
-                Paragraph(
-                    f"GSTIN: {pi.get('exporter_gstin') or '—'}{' · IEC: ' + pi['exporter_iec'] if pi.get('exporter_iec') else ''}",
-                    sub,
-                ),
-            ],
+            left_header,
             [
                 Paragraph("PROFORMA INVOICE", ParagraphStyle("pititle", parent=body, fontSize=12, fontName="Helvetica-Bold", textColor=BLACK)),
                 Paragraph(f"<b>PI No:</b> {pi_number}", body),

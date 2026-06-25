@@ -14,28 +14,53 @@ from pydantic import BaseModel
 
 class Vendor(BaseModel):
     name: str
+    company: Optional[str] = None
     gstin: Optional[str] = None
     pan: Optional[str] = None
+    pan_number: Optional[str] = None
     billing_address: Optional[str] = None
     shipping_address: Optional[str] = None
+    address: Optional[str] = None
     state_code: Optional[str] = None  # place-of-supply: IGST vs CGST+SGST
     payment_terms_days: int = 0
+    payment_terms: Optional[str] = None
     opening_balance: float = 0.0
+    vendor_rating: float = 0.0
     email: Optional[str] = None
     phone: Optional[str] = None
     vendor_code: Optional[str] = None
+    party_type: Optional[str] = "SUPPLIER"
+    registration_type: Optional[str] = "Regular"
+    registration_date: Optional[str] = None
+    gst_status: Optional[str] = None
+    pan_holder_name: Optional[str] = None
+    pan_type: Optional[str] = None
+    pan_status: Optional[str] = None
 
 
 class VendorUpdate(BaseModel):
     name: Optional[str] = None
+    company: Optional[str] = None
     gstin: Optional[str] = None
     pan: Optional[str] = None
+    pan_number: Optional[str] = None
     billing_address: Optional[str] = None
     shipping_address: Optional[str] = None
+    address: Optional[str] = None
     state_code: Optional[str] = None
     payment_terms_days: Optional[int] = None
+    payment_terms: Optional[str] = None
+    opening_balance: Optional[float] = None
+    vendor_rating: Optional[float] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    party_type: Optional[str] = None
+    registration_type: Optional[str] = None
+    registration_date: Optional[str] = None
+    gst_status: Optional[str] = None
+    pan_holder_name: Optional[str] = None
+    pan_type: Optional[str] = None
+    pan_status: Optional[str] = None
 
 
 # ───────────────────────── Purchase Order ─────────────────────────
@@ -44,8 +69,16 @@ POStatus = Literal["DRAFT", "SENT", "PARTIALLY_RECEIVED", "RECEIVED", "CLOSED", 
 
 
 class POLine(BaseModel):
-    stock_item_id: str
+    stock_item_id: Optional[str] = None
+    product_id: Optional[str] = None
     item_name: Optional[str] = None
+    product_name: Optional[str] = None   # manual-entry name (frontend key)
+    hsn_code: Optional[str] = None
+    unit: Optional[str] = None
+    gst_type: Optional[str] = None
+    cgst_rate: Optional[float] = None
+    sgst_rate: Optional[float] = None
+    igst_rate: Optional[float] = None
     qty: float
     rate: float
     gst_rate: float = 18.0
@@ -55,6 +88,7 @@ class POLine(BaseModel):
 
 class PurchaseOrderV2(BaseModel):
     po_number: Optional[str] = None
+    po_number_reason: Optional[str] = None
     vendor_id: str
     vendor_name: Optional[str] = None
     expected_date: Optional[str] = None
@@ -66,8 +100,12 @@ class PurchaseOrderV2(BaseModel):
 # ───────────────────────── Goods Receipt Note ─────────────────────────
 
 class GRNLine(BaseModel):
-    stock_item_id: str
+    stock_item_id: Optional[str] = None
+    product_id: Optional[str] = None
     item_name: Optional[str] = None
+    product_name: Optional[str] = None   # manual-entry name (frontend key)
+    hsn_code: Optional[str] = None
+    unit: Optional[str] = None
     po_line_index: Optional[int] = None  # links back to the PO line
     qty_received: float
     rate: float = 0.0
@@ -91,8 +129,12 @@ class GRNV2(BaseModel):
 # ───────────────────────── Purchase Bill (vendor invoice) ─────────────────────────
 
 class BillLine(BaseModel):
-    stock_item_id: str
+    stock_item_id: Optional[str] = None
+    product_id: Optional[str] = None
     item_name: Optional[str] = None
+    product_name: Optional[str] = None   # manual-entry name (frontend key)
+    hsn_code: Optional[str] = None
+    unit: Optional[str] = None
     qty: float
     rate: float
     gst_rate: float = 18.0
@@ -116,12 +158,18 @@ class PurchaseBill(BaseModel):
 # ───────────────────────── Purchase Return / Debit Note ─────────────────────────
 
 class ReturnLine(BaseModel):
-    stock_item_id: str
+    stock_item_id: Optional[str] = None
+    product_id: Optional[str] = None
     item_name: Optional[str] = None
+    product_name: Optional[str] = None   # manual-entry name (frontend key)
+    hsn_code: Optional[str] = None
+    unit: Optional[str] = None
     qty: float          # positive; posted as outward
     rate: float = 0.0
     gst_rate: float = 18.0
     batch_id: Optional[str] = None
+    serial_id: Optional[str] = None
+    expiry_date: Optional[str] = None
 
 
 class PurchaseReturn(BaseModel):

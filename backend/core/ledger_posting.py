@@ -57,8 +57,8 @@ async def _is_interstate(db, supplier_id: Optional[str]) -> bool:
 
 
 async def _persist_journal(db, *, source_collection, source_id, source_number, narration,
-                           lines, supplier_id, supplier_name, gst, taxable,
-                           entry_date, user, tags) -> dict:
+                           lines, party_id, party_name, gst, taxable,
+                           entry_date, user, tags, party_type="SUPPLIER") -> dict:
     """Persist a balanced, POSTED journal entry and audit it. Shared by all posters."""
     fy = await db.fiscal_years.find_one({"is_active": True})
     fy_name = fy["name"] if fy else date.today().strftime("%Y-%y")
@@ -77,9 +77,9 @@ async def _persist_journal(db, *, source_collection, source_id, source_number, n
         "tags": tags,
         "source_collection": source_collection,
         "source_id": source_id,
-        "party_type": "SUPPLIER",
-        "party_id": supplier_id,
-        "party_name": supplier_name,
+        "party_type": party_type,
+        "party_id": party_id,
+        "party_name": party_name,
         "total_debit": total_debit,
         "total_credit": total_credit,
         "cgst": gst["cgst"],
@@ -303,9 +303,10 @@ async def post_purchase_bill_journal(
     return await _persist_journal(
         db, source_collection="purchase_bills", source_id=bill_id,
         source_number=bill_number, narration=narration, lines=je_lines,
-        supplier_id=vendor_id, supplier_name=vendor_name, gst=gst,
+        party_id=vendor_id, party_name=vendor_name, gst=gst,
         taxable=taxable, entry_date=entry_date, user=user,
         tags=["AUTO", "PURCHASE", "BILL"],
+        party_type="SUPPLIER",
     )
 
 
@@ -362,7 +363,113 @@ async def post_purchase_return_journal(
     return await _persist_journal(
         db, source_collection="purchase_returns", source_id=return_id,
         source_number=return_number, narration=narration, lines=je_lines,
-        supplier_id=vendor_id, supplier_name=vendor_name, gst=gst,
+        party_id=vendor_id, party_name=vendor_name, gst=gst,
         taxable=taxable, entry_date=entry_date, user=user,
         tags=["AUTO", "PURCHASE", "RETURN"],
+        party_type="SUPPLIER",
     )
+
+
+ACC_ACCOUNTS_RECEIVABLE = "1100"
+ACC_SALES_REVENUE = "4001"
+ACC_CGST_PAYABLE = "2003"
+ACC_SGST_PAYABLE = "2004"
+ACC_IGST_PAYABLE = "2005"
+
+
+async def post_credit_note_journal(
+    db,
+    *,
+    credit_note_id: str,
+    credit_note_number: str,
+    customer_id: Optional[str],
+    customer_name: str,
+    items: list,
+    user: Optional[dict] = None,
+    entry_date: Optional[str] = None,
+) -> Optional[dict]:
+    """Reverses sales revenue and GST payable, credits accounts receivable."""
+    existing = await db.journal_entries.find_one(
+        {"source_collection": "credit_notes", "source_id": credit_note_id}, {"_id": 0}
+    )
+    if existing:
+        return existing
+
+    if not await db.chart_of_accounts.find_one({"code": ACC_ACCOUNTS_RECEIVABLE}):
+        return None
+
+    # Determine intra- vs inter-state
+    interstate = False
+    customer = None
+    if customer_id:
+        customer = await db.customers.find_one({"id": customer_id}, {"_id": 0, "state_code": 1})
+    company = await db.companies.find_one({}, {"_id": 0, "state_code": 1})
+    company_state = (company or {}).get("state_code") or "27"
+    customer_state = (customer or {}).get("state_code")
+    if customer_state and str(customer_state) != str(company_state):
+        interstate = True
+
+    # Totals from line items
+    taxable = 0.0
+    gst_amount = 0.0
+    for it in items or []:
+        qty = float(it.get("quantity", 0) or 0)
+        price = float(it.get("unit_price", 0) or 0)
+        line = qty * price
+        taxable += line
+        gst_amount += line * float(it.get("gst_rate", 0) or 0) / 100.0
+
+    taxable = round(taxable, 2)
+    gst_amount = round(gst_amount, 2)
+    gross = round(taxable + gst_amount, 2)
+    if gross <= 0:
+        return None
+
+    gst = _split_gst(gst_amount, interstate)
+    narration = f"Credit note {credit_note_number} for {customer_name}"
+
+    je_lines = [{
+        "account_code": ACC_SALES_REVENUE,
+        "account_name": await _account_name(db, ACC_SALES_REVENUE, "Sales Revenue"),
+        "debit": taxable, "credit": 0.0, "narration": narration,
+    }]
+    if gst_amount > 0:
+        if interstate:
+            je_lines.append({
+                "account_code": ACC_IGST_PAYABLE,
+                "account_name": await _account_name(db, ACC_IGST_PAYABLE, "IGST Payable"),
+                "debit": gst_amount, "credit": 0.0,
+                "narration": f"IGST reversal on {credit_note_number}",
+            })
+        else:
+            cgst = gst["cgst"]
+            sgst = gst["sgst"]
+            if cgst > 0:
+                je_lines.append({
+                    "account_code": ACC_CGST_PAYABLE,
+                    "account_name": await _account_name(db, ACC_CGST_PAYABLE, "CGST Payable"),
+                    "debit": cgst, "credit": 0.0,
+                    "narration": f"CGST reversal on {credit_note_number}",
+                })
+            if sgst > 0:
+                je_lines.append({
+                    "account_code": ACC_SGST_PAYABLE,
+                    "account_name": await _account_name(db, ACC_SGST_PAYABLE, "SGST Payable"),
+                    "debit": sgst, "credit": 0.0,
+                    "narration": f"SGST reversal on {credit_note_number}",
+                })
+    je_lines.append({
+        "account_code": ACC_ACCOUNTS_RECEIVABLE,
+        "account_name": await _account_name(db, ACC_ACCOUNTS_RECEIVABLE, "Accounts Receivable"),
+        "debit": 0.0, "credit": gross, "narration": narration,
+    })
+
+    return await _persist_journal(
+        db, source_collection="credit_notes", source_id=credit_note_id,
+        source_number=credit_note_number, narration=narration, lines=je_lines,
+        party_id=customer_id, party_name=customer_name, gst=gst,
+        taxable=taxable, entry_date=entry_date, user=user,
+        tags=["AUTO", "SALES", "CREDIT_NOTE"],
+        party_type="CUSTOMER",
+    )
+

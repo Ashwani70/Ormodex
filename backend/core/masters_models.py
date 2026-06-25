@@ -6,7 +6,7 @@ Tree masters self-reference via a parent_*_id field.
 """
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ════════════════════════ Accounting Masters ════════════════════════
@@ -62,6 +62,8 @@ class Ledger(BaseModel):
     state: Optional[str] = None
     gst_registration_type: Optional[GstRegType] = None
     tds_applicable: bool = False
+    product_id: Optional[str] = None
+    product_name_manual: Optional[str] = None
     bank_details: Optional[BankDetails] = None
     mailing_address: Optional[MailingAddress] = None
 
@@ -76,6 +78,8 @@ class LedgerUpdate(BaseModel):
     state: Optional[str] = None
     gst_registration_type: Optional[GstRegType] = None
     tds_applicable: Optional[bool] = None
+    product_id: Optional[str] = None
+    product_name_manual: Optional[str] = None
     bank_details: Optional[BankDetails] = None
     mailing_address: Optional[MailingAddress] = None
 
@@ -84,7 +88,7 @@ class Currency(BaseModel):
     symbol: str
     iso_code: str
     formal_name: str
-    decimal_places: int = 2
+    decimal_places: int = Field(default=2, ge=0)
     is_base_currency: bool = False
 
 
@@ -92,7 +96,7 @@ class CurrencyUpdate(BaseModel):
     symbol: Optional[str] = None
     iso_code: Optional[str] = None
     formal_name: Optional[str] = None
-    decimal_places: Optional[int] = None
+    decimal_places: Optional[int] = Field(default=None, ge=0)
     is_base_currency: Optional[bool] = None
 
 
