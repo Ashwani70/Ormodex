@@ -5,7 +5,12 @@ from contextlib import asynccontextmanager
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
-_db_url = os.environ.get("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/gravity_erp")
+# Use the localhost default when DATABASE_URL is unset OR empty/whitespace.
+# (`.env` files often leave the key present-but-blank; os.environ.get's default
+# only fires when the key is absent, so we must guard the empty case too — an
+# empty string would otherwise crash create_async_engine with a parse error.)
+_db_url = (os.environ.get("DATABASE_URL") or "").strip() \
+    or "postgresql+asyncpg://postgres:postgres@localhost:5432/gravity_erp"
 if _db_url.startswith("postgresql://"):
     _db_url = _db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 if _db_url.startswith("postgres://"):
