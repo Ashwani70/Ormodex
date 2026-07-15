@@ -33,7 +33,7 @@ def _value(movements: list[dict], cfg: tuple[str, float] | None):
 from core.tracking_validation import validate_tracking_fields
 from core.utils import (
     crud_create, crud_delete, crud_get, crud_update, new_id, next_doc_number,
-    now_iso, paginated_list,
+    paginated_list,
 )
 from pydantic import BaseModel
 
@@ -613,17 +613,10 @@ async def create_transfer(payload: StockTransfer, user: dict = Depends(get_curre
     data["transfer_date"] = data.get("transfer_date") or date.today().isoformat()
     transfer = await crud_create("stock_transfers", data, user=user)
 
-    # Batch-read product names once for the stock_transactions rows below —
-    # the v2 ledger (post_entry) only needs stock_item_id, but the Stock Log
-    # grid reads the legacy stock_transactions table, which is keyed by
-    # product_id/product_name (see routers/purchase.py et al for the pattern).
-    product_ids = [ln["product_id"] for ln in data["lines"] if ln.get("product_id")]
-    products_by_id = {}
-    if product_ids:
-        prods = await db.products.find({"id": {"$in": product_ids}}, {"_id": 0}).to_list(len(product_ids))
-        products_by_id = {p["id"]: p for p in prods}
-
     # Post paired TRANSFER_OUT (priced by engine) then TRANSFER_IN at same cost.
+    # post_entry mirrors each posting into stock_transactions itself (see
+    # core/stock_ledger.py's dual-write note), so the Stock Log grid picks up
+    # both legs automatically — no manual mirroring needed here.
     for line in data["lines"]:
         out = await post_entry(
             stock_item_id=line["stock_item_id"], godown_id=data["from_godown_id"],
@@ -640,34 +633,6 @@ async def create_transfer(payload: StockTransfer, user: dict = Depends(get_curre
             source_doc_type="stock_transfer", source_doc_id=transfer["id"],
             entry_date=data["transfer_date"], user=user,
         )
-
-        # Mirror into stock_transactions so the Stock Log grid sees transfers
-        # too (paired -qty out / +qty in, matching the ledger postings above).
-        prod = products_by_id.get(line.get("product_id"))
-        if prod:
-            common = {
-                "product_id": prod["id"],
-                "product_name": prod.get("name", ""),
-                "rate": out["rate"],
-                "doc_type": "STOCK_TRANSFER",
-                "voucher_no": data["transfer_number"],
-                "source_doc_id": transfer["id"],
-                "godown_id": data["from_godown_id"],
-                "batch_id": line.get("batch_id"),
-                "user_id": user["id"],
-                "user_name": user.get("name", ""),
-                "created_at": now_iso(),
-            }
-            await db.stock_transactions.insert_one({
-                **common, "id": new_id(), "delta": -abs(line["qty"]),
-                "balance": None, "reason": f"Stock Transfer {data['transfer_number']} (out)",
-                "godown_id": data["from_godown_id"],
-            })
-            await db.stock_transactions.insert_one({
-                **common, "id": new_id(), "delta": abs(line["qty"]),
-                "balance": None, "reason": f"Stock Transfer {data['transfer_number']} (in)",
-                "godown_id": data["to_godown_id"],
-            })
     return transfer
 
 

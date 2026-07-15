@@ -6,14 +6,94 @@ stored denormalised, so valuation can never drift from the ledger.
 
 Outward movements (qty < 0) are priced by the item's valuation_method using all
 its prior entries. Inward movements carry the supplied rate.
+
+Dual-write to `stock_transactions`
+-----------------------------------
+The Stock Log grid, its summary cards (opening/inward/outward/closing/value),
+and its negative-stock count (routers/stock_log.py) all read exclusively from
+`stock_transactions` — a separate, older table keyed by product_id/godown_id
+rather than stock_item_id. Historically each v1 voucher router (purchase.py,
+sales.py, job_work.py, manufacturing.py) wrote that table directly, while v2
+flows (purchase_v2.py GRN/returns, inventory_v2.py adjustments/opening stock)
+call `post_entry` and only ever wrote `stock_ledger_entries`. Result: any stock
+posted through a v2 endpoint was invisible to Stock Log and skewed its
+negative-stock count (inward legs missing, outward legs present).
+
+`post_entry` now mirrors every posting into `stock_transactions` itself, so
+this can't drift again — no call site needs to remember to do it separately
+(Stock Transfer used to do this by hand; that's now redundant but harmless).
+The mirror is best-effort: a failure there is logged and swallowed rather than
+failing the ledger write, since stock_ledger_entries is the source of truth for
+valuation and must never be blocked by a reporting-table write.
 """
+import logging
 from datetime import date
 
 from .db import db
 from .stock_valuation import resolve_method, value_movements
 from .utils import log_audit, new_id, now_iso
 
+logger = logging.getLogger(__name__)
+
 LEDGER = "stock_ledger_entries"
+LEGACY_TXN = "stock_transactions"
+
+# stock_ledger_entries.movement_type -> stock_transactions.doc_type. Stock Log
+# renders unmapped values as-is (routers/stock_log.py _DOC_TYPE_LABELS), so an
+# unrecognised movement_type still shows up, just unlabelled.
+_MOVEMENT_TO_DOC_TYPE = {
+    "PURCHASE": "PURCHASE",
+    "SALE": "SALES",
+    "TRANSFER_IN": "STOCK_TRANSFER",
+    "TRANSFER_OUT": "STOCK_TRANSFER",
+    "ADJUSTMENT": "ADJUSTMENT",
+    "OPENING": "PURCHASE",
+}
+
+
+async def _mirror_to_legacy_transaction(entry: dict, user: dict | None) -> None:
+    """Best-effort mirror of one stock_ledger_entries row into stock_transactions.
+
+    Resolves stock_item_id -> product_id/name (stock_items may be linked to a
+    Product or may be a standalone v2 item with no product_id; the row still
+    gets a name so it's not blank in the grid). Never raises — Stock Log
+    visibility must not be able to break a stock posting.
+    """
+    try:
+        item = await db.stock_items.find_one(
+            {"id": entry["stock_item_id"]}, {"_id": 0, "id": 1, "name": 1, "product_id": 1}
+        ) or {}
+        qty = float(entry["qty"])
+        doc_type = _MOVEMENT_TO_DOC_TYPE.get(entry["movement_type"], entry["movement_type"])
+        await db[LEGACY_TXN].insert_one({
+            "id": new_id(),
+            "product_id": item.get("product_id") or entry["stock_item_id"],
+            "product_name": item.get("name") or entry["stock_item_id"],
+            "godown_id": entry.get("godown_id"),
+            "batch_id": entry.get("batch_id"),
+            "doc_type": doc_type,
+            "voucher_no": entry.get("source_doc_id"),
+            "source_doc_id": entry.get("source_doc_id"),
+            "qty": abs(qty),
+            "rate": entry.get("rate"),
+            "value": entry.get("value"),
+            "delta": qty,
+            "balance": None,  # Stock Log computes running balance at read time
+            "reason": f"{doc_type} (v2 stock_item {entry['stock_item_id']})",
+            "user_id": (user or {}).get("id"),
+            "user_name": (user or {}).get("name", ""),
+            "created_at": entry.get("created_at") or now_iso(),
+        })
+        logger.info(
+            "stock_ledger: mirrored entry %s (item=%s qty=%s) into stock_transactions",
+            entry["id"], entry["stock_item_id"], qty,
+        )
+    except Exception:
+        logger.exception(
+            "stock_ledger: failed to mirror entry %s into stock_transactions "
+            "(Stock Log grid will not show this movement until backfilled)",
+            entry.get("id"),
+        )
 
 
 async def _company_default_method() -> str | None:
@@ -119,8 +199,14 @@ async def post_entry(
 ) -> dict:
     """Append one signed StockLedgerEntry, pricing outward moves via the engine.
 
-    Returns the persisted entry (with computed rate/value).
+    Also mirrors into stock_transactions so the Stock Log grid sees it — see
+    the module docstring's "Dual-write" note. Returns the persisted entry
+    (with computed rate/value).
     """
+    logger.info(
+        "stock_ledger.post_entry: posting item=%s godown=%s qty=%s type=%s source=%s/%s",
+        stock_item_id, godown_id, qty, movement_type, source_doc_type, source_doc_id,
+    )
     entry_date = entry_date or date.today().isoformat()
 
     if qty < 0:
@@ -158,7 +244,13 @@ async def post_entry(
     }
     await db[LEDGER].insert_one(entry)
     entry.pop("_id", None)
+    logger.info(
+        "stock_ledger.post_entry: inserted stock_ledger_entries id=%s rate=%s value=%s",
+        entry["id"], rate, value,
+    )
     await log_audit("CREATE", LEDGER, entry["id"], user, new_values=entry)
+    await _mirror_to_legacy_transaction(entry, user)
+    logger.info("stock_ledger.post_entry: success for entry %s", entry["id"])
     return entry
 
 
