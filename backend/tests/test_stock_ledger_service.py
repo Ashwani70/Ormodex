@@ -66,9 +66,9 @@ class _DB:
 
 def _setup():
     db = _DB()
-    core.db.db = db
-    utils.db = db
-    sl.db = db
+    core.db.db = db  # type: ignore[assignment]
+    utils.db = db  # type: ignore[assignment]
+    sl.db = db  # type: ignore[assignment]
     utils._txn_supported = False
     return db
 
@@ -138,3 +138,69 @@ def test_per_godown_fifo_layers_are_isolated():
     oh_b = asyncio.run(sl.on_hand("item1", "gB"))
     assert oh_a["value"] == 1000
     assert oh_b["value"] == 1200  # 6 @ 200
+
+
+# ── LIFO / Standard-cost / resolver through the DB layer ──
+
+def test_lifo_closing_value_through_db():
+    db = _setup()
+    _seed_item(db, "LIFO")
+    # Spec example: 100@100, 200@110, 150@130, then sell 220.
+    _post("item1", GODOWN, 100, "PURCHASE", rate=100, dt="2026-01-01")
+    _post("item1", GODOWN, 200, "PURCHASE", rate=110, dt="2026-01-02")
+    _post("item1", GODOWN, 150, "PURCHASE", rate=130, dt="2026-01-03")
+    out = _post("item1", GODOWN, -220, "SALE", dt="2026-01-04")
+    # LIFO consumes 150@130 + 70@110 = 27200.
+    assert abs(out["value"]) == 27200
+    oh = asyncio.run(sl.on_hand("item1"))
+    assert oh["qty"] == 230
+    assert oh["value"] == 100 * 100 + 130 * 110   # 24300
+    assert oh["method"] == "LIFO"
+
+
+def test_standard_cost_through_db():
+    db = _setup()
+    # standard_cost lives on the item row.
+    asyncio.run(db.stock_items.insert_one(
+        {"id": "item1", "name": "Widget",
+         "valuation_method": "STANDARD_COST", "standard_cost": 105}
+    ))
+    _post("item1", GODOWN, 100, "PURCHASE", rate=100, dt="2026-01-01")
+    _post("item1", GODOWN, 50, "PURCHASE", rate=110, dt="2026-01-02")
+    out = _post("item1", GODOWN, -30, "SALE", dt="2026-01-03")
+    assert abs(out["value"]) == 30 * 105          # priced at standard, not actual
+    oh = asyncio.run(sl.on_hand("item1"))
+    assert oh["qty"] == 120
+    assert oh["value"] == 120 * 105               # 12600
+    assert oh["method"] == "STANDARD_COST"
+
+
+def test_company_default_applies_when_item_has_no_override():
+    db = _setup()
+    # Item has NO valuation_method → must fall back to the company default (LIFO).
+    asyncio.run(db.stock_items.insert_one({"id": "item1", "name": "Widget"}))
+    asyncio.run(db.companies.insert_one(
+        {"id": "c1", "extra": {"inventory_valuation_method": "LIFO"}}
+    ))
+    _post("item1", GODOWN, 100, "PURCHASE", rate=100, dt="2026-01-01")
+    _post("item1", GODOWN, 200, "PURCHASE", rate=110, dt="2026-01-02")
+    _post("item1", GODOWN, 150, "PURCHASE", rate=130, dt="2026-01-03")
+    out = _post("item1", GODOWN, -220, "SALE", dt="2026-01-04")
+    assert abs(out["value"]) == 27200             # LIFO cost flow
+    assert asyncio.run(sl.on_hand("item1"))["method"] == "LIFO"
+
+
+def test_item_override_beats_company_default():
+    db = _setup()
+    # Company default LIFO, but the item overrides to FIFO — item wins.
+    asyncio.run(db.stock_items.insert_one(
+        {"id": "item1", "name": "Widget", "valuation_method": "FIFO"}
+    ))
+    asyncio.run(db.companies.insert_one(
+        {"id": "c1", "extra": {"inventory_valuation_method": "LIFO"}}
+    ))
+    _post("item1", GODOWN, 100, "PURCHASE", rate=100, dt="2026-01-01")
+    _post("item1", GODOWN, 200, "PURCHASE", rate=110, dt="2026-01-02")
+    _post("item1", GODOWN, 150, "PURCHASE", rate=130, dt="2026-01-03")
+    out = _post("item1", GODOWN, -220, "SALE", dt="2026-01-04")
+    assert abs(out["value"]) == 23200             # FIFO cost flow, not LIFO's 27200
