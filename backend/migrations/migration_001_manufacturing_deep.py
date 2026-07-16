@@ -1,19 +1,28 @@
 """
-Migration 001 — Manufacturing (deep) module
-Adds JSON Schema validators and indexes for:
-  - boms (enhanced with components/co_products/by_products)
-  - work_orders (enhanced with godown_id, new status values)
-  - production_journals
-  - wastage_entries
-  - job_work_challans (enhanced with due_date, taxable_value)
-  - rate_tables (job-work return window config)
+Migration 001 — Manufacturing (deep) module  [LEGACY — MongoDB only]
 
-Run via:  python -m migrations.001_manufacturing_deep
-Or called from server startup via apply_all().
+This script was a one-time MongoDB migration that ran against the legacy Mongo
+database. The application has been fully migrated to Supabase PostgreSQL.
+This file is retained for historical reference ONLY.
+
+DO NOT RUN THIS SCRIPT — it will fail because MongoDB is no longer in use.
+PostgreSQL schema changes go in backend/alembic/versions/ instead.
 """
-import asyncio
-import os
-from motor.motor_asyncio import AsyncIOMotorClient
+import sys
+if __name__ == "__main__":
+    print("ERROR: This is a legacy MongoDB migration script. App now uses Supabase PostgreSQL.")
+    print("See backend/alembic/versions/ for current Postgres migrations.")
+    sys.exit(1)
+
+# Legacy imports below — kept to preserve the historical record.
+# These are never executed by the live application.
+import asyncio  # noqa: F401
+import os  # noqa: F401
+try:
+    from motor.motor_asyncio import AsyncIOMotorClient  # type: ignore  # noqa: F401
+except ImportError:
+    def AsyncIOMotorClient(*args, **kwargs):  # type: ignore  # noqa: N802
+        raise RuntimeError("MongoDB not available — this is a legacy migration script")
 
 
 async def run(db):

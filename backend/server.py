@@ -12,7 +12,8 @@ import os
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from starlette.middleware.cors import CORSMiddleware
-from starlette.middleware.gzip import GZipMiddleware
+
+from core.compression import SkipAlreadyCompressedGZipMiddleware
 
 from core.db import (
     AsyncSessionLocal,
@@ -355,6 +356,11 @@ async def lifespan(app: FastAPI):
         ALTER TABLE IF EXISTS stock_ledger_entries ADD COLUMN IF NOT EXISTS entry_date      TEXT DEFAULT NULL;
         ALTER TABLE IF EXISTS stock_ledger_entries ADD COLUMN IF NOT EXISTS serial_id       TEXT DEFAULT NULL;
         ALTER TABLE IF EXISTS stock_ledger_entries ADD COLUMN IF NOT EXISTS extra           JSONB DEFAULT NULL;
+        ALTER TABLE IF EXISTS stock_ledger_entries ADD COLUMN IF NOT EXISTS product_id      TEXT DEFAULT NULL;
+        ALTER TABLE IF EXISTS stock_ledger_entries ADD COLUMN IF NOT EXISTS product_name    TEXT DEFAULT NULL;
+        ALTER TABLE IF EXISTS stock_ledger_entries ADD COLUMN IF NOT EXISTS user_id         TEXT DEFAULT NULL;
+        ALTER TABLE IF EXISTS stock_ledger_entries ADD COLUMN IF NOT EXISTS user_name       TEXT DEFAULT NULL;
+        ALTER TABLE IF EXISTS stock_ledger_entries ADD COLUMN IF NOT EXISTS reason          TEXT DEFAULT NULL;
         UPDATE stock_ledger_entries SET entry_date = txn_date   WHERE entry_date IS NULL AND txn_date IS NOT NULL;
         UPDATE stock_ledger_entries SET qty = COALESCE(qty_in,0) - COALESCE(qty_out,0) WHERE qty IS NULL AND (qty_in IS NOT NULL OR qty_out IS NOT NULL);
         UPDATE stock_ledger_entries SET value = COALESCE(value_in,0) - COALESCE(value_out,0) WHERE value IS NULL AND (value_in IS NOT NULL OR value_out IS NOT NULL);
@@ -383,6 +389,40 @@ async def lifespan(app: FastAPI):
         logger.info("stock_items valuation columns ensured")
     except Exception as _e:
         logger.warning("stock_items valuation schema fix skipped (non-fatal): %s", _e)
+
+    # Stock Log fix: source_doc_id index for voucher drill-down/backfill lookups
+    # on both tables. Mirrors alembic migration 021 (plain CREATE INDEX here,
+    # not CONCURRENTLY, since this runs inside the same transaction as the
+    # other startup drift-ensure statements above).
+    _stock_log_index_fix = """
+        CREATE INDEX IF NOT EXISTS ix_stock_txn_source_doc_id ON stock_transactions (source_doc_id);
+        CREATE INDEX IF NOT EXISTS ix_stock_ledger_source_doc_id ON stock_ledger_entries (source_doc_id);
+    """
+    try:
+        async with engine.begin() as conn:
+            for _stmt in [s.strip() for s in _stock_log_index_fix.strip().split(";") if s.strip()]:
+                await conn.execute(text(_stmt))
+        logger.info("stock_log source_doc_id indexes ensured")
+    except Exception as _e:
+        logger.warning("stock_log index fix skipped (non-fatal): %s", _e)
+
+    # Database indexes for inventory query optimization
+    _inventory_performance_indexes = """
+        CREATE INDEX IF NOT EXISTS ix_stock_ledger_item_godown_date ON stock_ledger_entries (stock_item_id, godown_id, entry_date);
+        CREATE INDEX IF NOT EXISTS ix_stock_ledger_godown_date ON stock_ledger_entries (godown_id, entry_date);
+        CREATE INDEX IF NOT EXISTS ix_stock_transactions_product_created ON stock_transactions (product_id, created_at);
+        CREATE INDEX IF NOT EXISTS ix_stock_transactions_godown_created ON stock_transactions (godown_id, created_at);
+        CREATE INDEX IF NOT EXISTS ix_stock_transactions_doc_type_created ON stock_transactions (doc_type, created_at);
+        CREATE INDEX IF NOT EXISTS ix_stock_transfers_status ON stock_transfers (status);
+        CREATE INDEX IF NOT EXISTS ix_product_categories_deleted_name ON product_categories (is_deleted, name);
+    """
+    try:
+        async with engine.begin() as conn:
+            for _stmt in [s.strip() for s in _inventory_performance_indexes.strip().split(";") if s.strip()]:
+                await conn.execute(text(_stmt))
+        logger.info("Inventory performance indexes ensured")
+    except Exception as _e:
+        logger.warning("Inventory performance index fix skipped (non-fatal): %s", _e)
 
     if os.environ.get("SKIP_POOL_WARMUP", "").lower() not in ("1", "true", "yes"):
         await warm_pool()
@@ -427,7 +467,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Ormodex ERP", lifespan=lifespan)
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(SkipAlreadyCompressedGZipMiddleware, minimum_size=1000)
 
 
 import time as _time

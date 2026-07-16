@@ -865,7 +865,7 @@ class AIConversation(Base):
     messages = _jsonb(); created_at = _ts(); updated_at = _ts()
 '''
 
-with open(path, "w", encoding="utf-8") as f:
-    f.write(CONTENT)
-
-print(f"Written {len(CONTENT)} chars")
+if __name__ == "__main__":
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(CONTENT)
+    print(f"Written {len(CONTENT)} chars")

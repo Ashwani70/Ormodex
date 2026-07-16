@@ -4,7 +4,7 @@ import os
 from logging.config import fileConfig
 from pathlib import Path
 
-from alembic import context
+from alembic import context  # type: ignore[attr-defined]
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -18,7 +18,6 @@ except ImportError:
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.db import Base  # noqa: E402
-import core.schema  # noqa: E402, F401
 
 config = context.config
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 
 # 15-char GSTIN: 2-digit state code, 10-char PAN, entity number, 'Z', checksum.
-GSTIN_PATTERN = re.compile(r"^[0-3][0-9][A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
+GSTIN_PATTERN = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
 
 # Indian PIN code: 6 digits, first digit 1-9 (no leading zero).
 PINCODE_PATTERN = re.compile(r"^[1-9][0-9]{5}$")

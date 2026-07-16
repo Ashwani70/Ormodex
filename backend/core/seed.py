@@ -5,7 +5,7 @@ from sqlalchemy import select, func
 
 from .auth_utils import hash_password, verify_password
 from .db import get_session
-from .schema import User, Godown, Product, Customer, Vendor, BOM, RateTable, Lead, StockItem
+from .schema import User, Godown, Product, Customer, Vendor, RateTable, Lead
 from .utils import new_id, now_iso
 
 
@@ -14,7 +14,7 @@ async def seed_admin():
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
     async with get_session() as session:
         result = await session.execute(select(User).where(User.email == admin_email))
-        existing = result.scalar_one_or_none()
+        existing = result.scalars().first()
         if not existing:
             session.add(User(
                 id=new_id(),
@@ -25,7 +25,9 @@ async def seed_admin():
                 password_hash=hash_password(admin_password),
                 created_at=now_iso(),
             ))
+        
         elif not verify_password(admin_password, existing.password_hash or ""):
+            
             existing.password_hash = hash_password(admin_password)
 
 
@@ -38,13 +40,75 @@ async def seed_default_categories(session):
                 func.lower(ProductCategory.name) == cat.lower()
             )
         )
-        if not result.scalar_one_or_none():
+        if not result.scalars().first():
             session.add(ProductCategory(
                 id=new_id(),
                 name=cat,
                 created_at=now_iso(),
                 updated_at=now_iso(),
             ))
+
+
+async def seed_default_coa() -> bool:
+    """Seed default Chart of Accounts if the table is empty. Returns True if already present."""
+    from .schema import ChartOfAccount
+    async with get_session() as session:
+        count = (await session.execute(select(func.count()).select_from(ChartOfAccount))).scalar_one()
+        if count:
+            return True
+        now = now_iso()
+        default_accounts = [
+            # ASSETS
+            ("1001", "Cash in Hand", "ASSET"),
+            ("1002", "Bank Account - Primary", "ASSET"),
+            ("1003", "Petty Cash", "ASSET"),
+            ("1100", "Accounts Receivable", "ASSET"),
+            ("1200", "Inventory", "ASSET"),
+            ("1300", "Prepaid Expenses", "ASSET"),
+            ("1400", "Fixed Assets", "ASSET"),
+            ("1401", "Plant & Machinery", "ASSET"),
+            ("1402", "Vehicles", "ASSET"),
+            ("1500", "GST Input Tax Credit", "ASSET"),
+            # LIABILITIES
+            ("2001", "Accounts Payable", "LIABILITY"),
+            ("2002", "GST Payable", "LIABILITY"),
+            ("2003", "CGST Payable", "LIABILITY"),
+            ("2004", "SGST Payable", "LIABILITY"),
+            ("2005", "IGST Payable", "LIABILITY"),
+            ("2006", "TDS Payable", "LIABILITY"),
+            ("2100", "Short-Term Loans", "LIABILITY"),
+            ("2200", "Long-Term Loans", "LIABILITY"),
+            ("2300", "Salary Payable", "LIABILITY"),
+            # EQUITY
+            ("3001", "Owner's Capital", "EQUITY"),
+            ("3002", "Retained Earnings", "EQUITY"),
+            ("3003", "Current Year Profit/Loss", "EQUITY"),
+            # INCOME
+            ("4001", "Sales Revenue", "INCOME"),
+            ("4002", "Export Revenue", "INCOME"),
+            ("4003", "Service Income", "INCOME"),
+            ("4004", "Interest Income", "INCOME"),
+            ("4005", "Other Income", "INCOME"),
+            # EXPENSES
+            ("5001", "Cost of Goods Sold", "EXPENSE"),
+            ("5002", "Purchase Expenses", "EXPENSE"),
+            ("5003", "Salaries & Wages", "EXPENSE"),
+            ("5004", "Rent Expense", "EXPENSE"),
+            ("5005", "Utilities Expense", "EXPENSE"),
+            ("5006", "Transport & Logistics", "EXPENSE"),
+            ("5007", "Marketing & Advertising", "EXPENSE"),
+            ("5008", "Office Supplies", "EXPENSE"),
+            ("5009", "Bank Charges", "EXPENSE"),
+            ("5010", "Depreciation", "EXPENSE"),
+            ("5011", "Miscellaneous Expenses", "EXPENSE"),
+        ]
+        for code, name, acct_type in default_accounts:
+            session.add(ChartOfAccount(
+                id=new_id(), code=code, name=name, account_type=acct_type,
+                is_active=True, opening_balance=0, currency="INR", tags=[],
+                created_at=now, updated_at=now,
+            ))
+    return False
 
 
 async def seed_demo_data():

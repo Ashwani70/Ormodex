@@ -352,7 +352,8 @@ async def paginated_list(
 ) -> dict:
     Model = _table(collection)
     effective_filters = filters or q or {}
-    effective_page_size = limit or page_size
+    effective_page_size = max(1, limit or page_size or 1)
+    page = max(1, page or 1)
     skip = (page - 1) * effective_page_size
     async with get_session() as session:
         stmt = select(Model)
@@ -405,7 +406,7 @@ def _diff_fields(old: Optional[dict], new: Optional[dict]) -> list[str]:
     return sorted(k for k in keys if old.get(k) != new.get(k))
 '''
 
-with open(path, "w", encoding="utf-8") as f:
-    f.write(CONTENT)
-
-print(f"Written utils.py v2: {len(CONTENT)} chars")
+if __name__ == "__main__":
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(CONTENT)
+    print(f"Written utils.py v2: {len(CONTENT)} chars")

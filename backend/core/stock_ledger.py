@@ -25,6 +25,26 @@ this can't drift again — no call site needs to remember to do it separately
 The mirror is best-effort: a failure there is logged and swallowed rather than
 failing the ledger write, since stock_ledger_entries is the source of truth for
 valuation and must never be blocked by a reporting-table write.
+
+As of migration 022, `stock_ledger_entries` also carries product_id/
+product_name/doc_type/voucher_no/user_id/user_name/reason directly (resolved
+once per post_entry call, reused by the mirror) — a superset of
+`stock_transactions`'s columns. Readers still use `stock_transactions`
+exclusively today (routers/stock_log.py etc.); this is groundwork for
+eventually repointing them and retiring the second table, not a completed
+cutover — see the stock ledger unification project notes.
+
+Transitional sync to `products.quantity`
+------------------------------------------
+As v1 direct-write call sites are migrated to call `post_entry` (stock ledger
+unification, 2026-07), `products.quantity` stops being written by them
+directly. But it is still read directly (not via product_stock_bridge) by
+~13 call sites — dashboard/MIS KPIs, low-stock alerts, MRP shortage calc, and
+every v1 call site not yet migrated — so `post_entry` keeps it in sync via a
+best-effort `$inc`, the same way it keeps `stock_transactions` in sync. This
+is a transitional shim, not a second source of truth: once every writer AND
+reader of `products.quantity` is migrated (writers onto `post_entry`, readers
+onto `product_stock_bridge`), the column and this sync should be retired.
 """
 import logging
 from datetime import date
@@ -44,34 +64,32 @@ LEGACY_TXN = "stock_transactions"
 _MOVEMENT_TO_DOC_TYPE = {
     "PURCHASE": "PURCHASE",
     "SALE": "SALES",
+    "SALE_RETURN": "SALES_RETURN",
     "TRANSFER_IN": "STOCK_TRANSFER",
     "TRANSFER_OUT": "STOCK_TRANSFER",
     "ADJUSTMENT": "ADJUSTMENT",
-    "OPENING": "PURCHASE",
+    "OPENING": "OPENING_STOCK",
 }
 
 
-async def _mirror_to_legacy_transaction(entry: dict, user: dict | None) -> None:
+async def _mirror_to_legacy_transaction(entry: dict) -> None:
     """Best-effort mirror of one stock_ledger_entries row into stock_transactions.
 
-    Resolves stock_item_id -> product_id/name (stock_items may be linked to a
-    Product or may be a standalone v2 item with no product_id; the row still
-    gets a name so it's not blank in the grid). Never raises — Stock Log
-    visibility must not be able to break a stock posting.
+    `entry` already carries product_id/name/doc_type/voucher_no/reason/
+    user_id/user_name — post_entry resolves and denormalizes those onto the
+    ledger row itself now (migration 022), so this mirror is a pure reshape,
+    no second stock_items lookup. Never raises — Stock Log visibility must
+    not be able to break a stock posting.
     """
     try:
-        item = await db.stock_items.find_one(
-            {"id": entry["stock_item_id"]}, {"_id": 0, "id": 1, "name": 1, "product_id": 1}
-        ) or {}
         qty = float(entry["qty"])
-        doc_type = _MOVEMENT_TO_DOC_TYPE.get(entry["movement_type"], entry["movement_type"])
         await db[LEGACY_TXN].insert_one({
             "id": new_id(),
-            "product_id": item.get("product_id") or entry["stock_item_id"],
-            "product_name": item.get("name") or entry["stock_item_id"],
+            "product_id": entry["product_id"],
+            "product_name": entry["product_name"],
             "godown_id": entry.get("godown_id"),
             "batch_id": entry.get("batch_id"),
-            "doc_type": doc_type,
+            "doc_type": entry["doc_type"],
             "voucher_no": entry.get("source_doc_id"),
             "source_doc_id": entry.get("source_doc_id"),
             "qty": abs(qty),
@@ -79,9 +97,9 @@ async def _mirror_to_legacy_transaction(entry: dict, user: dict | None) -> None:
             "value": entry.get("value"),
             "delta": qty,
             "balance": None,  # Stock Log computes running balance at read time
-            "reason": f"{doc_type} (v2 stock_item {entry['stock_item_id']})",
-            "user_id": (user or {}).get("id"),
-            "user_name": (user or {}).get("name", ""),
+            "reason": entry["reason"],
+            "user_id": entry.get("user_id"),
+            "user_name": entry.get("user_name"),
             "created_at": entry.get("created_at") or now_iso(),
         })
         logger.info(
@@ -93,6 +111,33 @@ async def _mirror_to_legacy_transaction(entry: dict, user: dict | None) -> None:
             "stock_ledger: failed to mirror entry %s into stock_transactions "
             "(Stock Log grid will not show this movement until backfilled)",
             entry.get("id"),
+        )
+        return None
+
+
+async def _sync_product_quantity(product_id: str | None, delta: float) -> None:
+    """Best-effort denormalised products.quantity update, kept in sync so the
+    ~13 call sites that still read products.quantity directly (dashboard KPIs,
+    low-stock alerts, MRP shortage calc, and the not-yet-migrated v1 posting
+    paths in purchase.py/sales.py/job_work.py/manufacturing.py) don't silently
+    go stale as call sites are migrated to post_entry one at a time. This is a
+    transitional shim, not the source of truth — stock_ledger_entries is;
+    products.quantity should be retired once every writer and every reader in
+    the table above (see stock ledger unification project notes) is migrated
+    to read live stock via product_stock_bridge instead. Never raises for the
+    same reason as the stock_transactions mirror.
+    """
+    if not product_id:
+        return
+    try:
+        await db.products.update_one(
+            {"id": product_id},
+            {"$inc": {"quantity": delta}, "$set": {"updated_at": now_iso()}},
+        )
+    except Exception:
+        logger.exception(
+            "stock_ledger: failed to sync products.quantity for product %s (delta=%s)",
+            product_id, delta,
         )
 
 
@@ -227,6 +272,16 @@ async def post_entry(
         rate = (rate or 0.0)
         value = round(qty * rate, 4)
 
+    # Resolved once, used both to denormalize onto this row (so
+    # stock_ledger_entries is a complete superset of stock_transactions on
+    # its own — see migration 022) and by the stock_transactions mirror
+    # below, so this is a single stock_items lookup, not two.
+    item = await db.stock_items.find_one(
+        {"id": stock_item_id}, {"_id": 0, "id": 1, "name": 1, "product_id": 1}
+    ) or {}
+    linked_product_id = item.get("product_id")
+    doc_type = _MOVEMENT_TO_DOC_TYPE.get(movement_type, movement_type)
+
     entry = {
         "id": new_id(),
         "stock_item_id": stock_item_id,
@@ -241,6 +296,13 @@ async def post_entry(
         "source_doc_id": source_doc_id,
         "entry_date": entry_date,
         "created_at": now_iso(),
+        "product_id": linked_product_id or stock_item_id,
+        "product_name": item.get("name") or stock_item_id,
+        "doc_type": doc_type,
+        "voucher_no": source_doc_id,
+        "user_id": (user or {}).get("id"),
+        "user_name": (user or {}).get("name", ""),
+        "reason": f"{doc_type} (v2 stock_item {stock_item_id})",
     }
     await db[LEDGER].insert_one(entry)
     entry.pop("_id", None)
@@ -249,7 +311,8 @@ async def post_entry(
         entry["id"], rate, value,
     )
     await log_audit("CREATE", LEDGER, entry["id"], user, new_values=entry)
-    await _mirror_to_legacy_transaction(entry, user)
+    await _mirror_to_legacy_transaction(entry)
+    await _sync_product_quantity(linked_product_id, qty)
     logger.info("stock_ledger.post_entry: success for entry %s", entry["id"])
     return entry
 

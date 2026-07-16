@@ -139,9 +139,15 @@ async def main(dry_run: bool) -> None:
         print("Nothing to backfill.")
         return
 
+    # One INSERT statement executed against a chunk of rows at a time
+    # (SQLAlchemy Core batches a list of param dicts into one executemany
+    # call) instead of a round trip per row — this backfill can touch
+    # thousands of rows in one run. Chunked at 1000 to keep each batch
+    # bounded rather than sending the whole backfill as a single oversized
+    # executemany call.
     async with engine.begin() as conn:
-        for row in to_insert:
-            await conn.execute(_INSERT_SQL, row)
+        for i in range(0, len(to_insert), 1000):
+            await conn.execute(_INSERT_SQL, to_insert[i:i + 1000])
 
     print(f"Inserted {len(to_insert)} backfilled stock_transactions row(s).")
     print("Stock Log should now show these movements immediately (no restart needed).")

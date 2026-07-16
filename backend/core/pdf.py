@@ -21,6 +21,8 @@ from functools import lru_cache
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
+from . import pdf_theme as T_theme
+
 YELLOW = colors.HexColor("#FACC15")
 BLACK = colors.HexColor("#0a0a0a")
 LIGHT = colors.HexColor("#f4f4f5")
@@ -211,10 +213,10 @@ def _load_logo_image(logo_url, max_w_mm=40, max_h_mm=20):
         return None
 
 
-def _company_block(styles, company: dict | None = None):
-    # Each line needs `leading` (line height) matched to its font size, otherwise
-    # the 18pt title only gets ~12pt of vertical space and the lines below it
-    # render on top of it (overlap).
+def _company_block(styles, company: dict | None = None, col_width_mm: float = 110):
+    # Returns a single-column nested Table so that all elements (logo + text)
+    # stack correctly when placed inside a parent Table cell. Returning a plain
+    # list caused ReportLab to render only the first item and overlap the rest.
     company = company or _DEFAULT_COMPANY
     title_style = ParagraphStyle(
         "CompanyTitle", parent=styles["Normal"],
@@ -235,24 +237,598 @@ def _company_block(styles, company: dict | None = None):
     tagline = company.get("tagline")
     addr_line = company.get("address_line")
     if addr_line is None:
-        # Build a sensible single-line address from a real company profile.
         bits = [company.get("address"), company.get("state")]
         gstin = company.get("gstin")
         addr_line = " · ".join([b for b in bits if b])
         if gstin:
             addr_line = (addr_line + " · " if addr_line else "") + f"GSTIN {gstin}"
 
-    block = []
+    rows = []
     logo = _load_logo_image(company.get("logo_url"))
     if logo is not None:
-        block.append(logo)
-        block.append(Spacer(1, 4))
-    block.append(Paragraph(name, title_style))
+        rows.append([logo])
+        rows.append([Spacer(1, 4)])
+    rows.append([Paragraph(name, title_style)])
     if tagline:
-        block.append(Paragraph(tagline, sub_style))
+        rows.append([Paragraph(tagline, sub_style)])
     if addr_line:
-        block.append(Paragraph(addr_line, addr_style))
-    return block
+        rows.append([Paragraph(addr_line, addr_style)])
+
+    inner = Table(rows, colWidths=[col_width_mm * mm])
+    inner.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    return inner
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Shared "professional" document layout
+#
+# One reusable builder (build_document_pdf) renders every core document — GST
+# invoice, purchase invoice/order, sales order, quotation, delivery challan,
+# credit/debit note — with an identical, print-ready A4 layout: supplier + buyer
+# identity boxes, a meta strip (numbers/dates/PO/e-way/vehicle), an item table
+# with a GST split (CGST/SGST/IGST), round-off + grand total, amount in words,
+# and a footer with payment terms / bank details / declaration / signatory.
+# Change the design here once and every document follows it.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_UNITS = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+          "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
+          "Seventeen", "Eighteen", "Nineteen"]
+_TENS = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+
+
+def _two_digit_words(n: int) -> str:
+    if n < 20:
+        return _UNITS[n]
+    return (_TENS[n // 10] + (" " + _UNITS[n % 10] if n % 10 else "")).strip()
+
+
+def _three_digit_words(n: int) -> str:
+    out = ""
+    if n >= 100:
+        out += _UNITS[n // 100] + " Hundred"
+        n %= 100
+        if n:
+            out += " and "
+    if n:
+        out += _two_digit_words(n)
+    return out.strip()
+
+
+def amount_in_words(amount, currency: str = "INR") -> str:
+    """Convert a number to words using the Indian numbering system (lakh/crore).
+
+    Returns e.g. "Rupees One Lakh Twenty Three Thousand Four Hundred and Fifty
+    and Fifty Paise Only". Used for the mandatory 'amount in words' line on tax
+    invoices. Falls back gracefully on bad input.
+    """
+    try:
+        amount = float(amount or 0)
+    except (TypeError, ValueError):
+        return ""
+    unit_name = {"INR": ("Rupees", "Paise"), "USD": ("Dollars", "Cents"),
+                 "EUR": ("Euros", "Cents"), "GBP": ("Pounds", "Pence")}.get(currency, (currency, "Cents"))
+    whole = int(amount)
+    paise = round((amount - whole) * 100)
+
+    if whole == 0:
+        words = "Zero"
+    else:
+        parts = []
+        crore = whole // 10_000_000
+        whole %= 10_000_000
+        lakh = whole // 100_000
+        whole %= 100_000
+        thousand = whole // 1000
+        whole %= 1000
+        hundred = whole
+        if crore:
+            parts.append(_three_digit_words(crore) + " Crore")
+        if lakh:
+            parts.append(_two_digit_words(lakh) + " Lakh")
+        if thousand:
+            parts.append(_two_digit_words(thousand) + " Thousand")
+        if hundred:
+            parts.append(_three_digit_words(hundred))
+        words = " ".join(parts)
+
+    result = f"{unit_name[0]} {words}"
+    if paise:
+        result += f" and {_two_digit_words(paise)} {unit_name[1]}"
+    return result + " Only"
+
+
+def _fmt_date(value) -> str:
+    """Best-effort date → 'DD Mon YYYY'."""
+    if not value:
+        return "—"
+    s = str(value)
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).strftime("%d %b %Y")
+    except Exception:
+        return s[:10]
+
+
+def _party_lines(party: dict) -> list[str]:
+    """Ordered display lines for a supplier/buyer identity box (skips blanks)."""
+    lines: list[str] = []
+    addr = party.get("billing_address") or party.get("address")
+    if addr:
+        lines += [ln for ln in str(addr).split("\n") if ln.strip()]
+    st = party.get("state")
+    sc = party.get("state_code")
+    if st or sc:
+        lines.append(f"State: {st or '—'}" + (f" ({sc})" if sc else ""))
+    if party.get("gstin"):
+        lines.append(f"GSTIN: {party['gstin']}")
+    if party.get("pan"):
+        lines.append(f"PAN: {party['pan']}")
+    cp = party.get("contact_person")
+    if cp:
+        lines.append(f"Contact: {cp}")
+    ph = party.get("mobile") or party.get("phone")
+    if ph:
+        lines.append(f"Mobile: {ph}")
+    if party.get("email"):
+        lines.append(f"Email: {party['email']}")
+    return lines
+
+
+def _party_box(styles, heading: str, name: str, party: dict, accent=BLACK) -> Table:
+    """A bordered identity box (SUPPLIER / BUYER) with name + detail lines."""
+    hstyle = ParagraphStyle("pbhead", parent=styles["Normal"], fontName=FONT_BOLD,
+                            fontSize=7, textColor=colors.white, leading=9)
+    nstyle = ParagraphStyle("pbname", parent=styles["Normal"], fontName=FONT_BOLD,
+                            fontSize=10, textColor=BLACK, leading=13, spaceAfter=1)
+    lstyle = ParagraphStyle("pbline", parent=styles["Normal"], fontSize=7.5,
+                            textColor=colors.HexColor("#3f3f46"), leading=10)
+    body: list[list[Any]] = [[Paragraph(heading, hstyle)]]
+    body.append([Paragraph(name or "—", nstyle)])
+    for ln in _party_lines(party):
+        body.append([Paragraph(ln, lstyle)])
+    t = Table(body, colWidths=[85 * mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, 0), accent),
+        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#d4d4d8")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, 0), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 3),
+        ("TOPPADDING", (0, 1), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 2),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    return t
+
+
+def _numbered_canvas_factory(company: dict | None, watermark_text: str | None):
+    """Returns a Canvas subclass that defers footer/watermark drawing until
+    save(), at which point the true total page count is known (two-pass
+    technique — ReportLab doesn't know page count while building page 1)."""
+    from reportlab.pdfgen import canvas as _canvas_mod
+    from . import pdf_components as C
+
+    class _NumberedCanvas(_canvas_mod.Canvas):
+        def __init__(self, *args, **kwargs):
+            _canvas_mod.Canvas.__init__(self, *args, **kwargs)
+            self._saved_page_states = []
+
+        def showPage(self):
+            self._saved_page_states.append(dict(self.__dict__))
+            self._startPage()  # type: ignore[attr-defined]
+
+        def save(self):
+            total = len(self._saved_page_states)
+            generated_at = datetime.now().strftime("%d %b %Y %H:%M")
+            for i, state in enumerate(self._saved_page_states, start=1):
+                self.__dict__.update(state)
+                page_w = self._pagesize[0]  # type: ignore[attr-defined]
+                page_h = self._pagesize[1]  # type: ignore[attr-defined]
+                if watermark_text:
+                    C.draw_watermark(self, page_w, page_h, watermark_text)
+                C.draw_footer(self, page_w, i, total, company or {}, generated_at)
+                _canvas_mod.Canvas.showPage(self)
+            _canvas_mod.Canvas.save(self)
+
+    return _NumberedCanvas
+
+
+def build_document_pdf(
+    *,
+    doc_type: str,
+    doc_number: str,
+    doc: dict,
+    company: dict | None = None,
+    party: dict | None = None,
+    party_role: str = "BUYER",
+    supplier_role: str = "SUPPLIER",
+) -> bytes:
+    """Reusable premium layout shared by every core document type (invoices,
+    orders, challans, notes). `company` is our own company profile (the
+    constant supplier for sales docs, or 'our' side generally). `party` is
+    the resolved counterparty (buyer for sales, supplier/vendor for
+    purchase) fetched live from the master DB. Either box is populated from
+    whichever side each document represents.
+    """
+    from . import pdf_components as C
+
+    doc = clean_unicode(doc)
+    company_data: dict = clean_unicode(company) if company else {}
+    party_data: dict = clean_unicode(party) if party else {}
+    currency = doc.get("currency") or "INR"
+    status = doc.get("status") or doc.get("einvoice_status")
+
+    buf = io.BytesIO()
+    pdf = SimpleDocTemplate(buf, pagesize=A4, leftMargin=T_theme.PAGE_MARGIN_MM * mm,
+                            rightMargin=T_theme.PAGE_MARGIN_MM * mm,
+                            topMargin=T_theme.PAGE_MARGIN_MM * mm,
+                            bottomMargin=(T_theme.PAGE_MARGIN_MM + 2) * mm,
+                            title=f"{doc_type} {doc_number}")
+    story: list[Any] = []
+
+    # ── Header: company identity + doc title/number/badge/dates/barcode ─────────
+    issue_date = _fmt_date(doc.get("date") or doc.get("invoice_date") or doc.get("challan_date") or doc.get("created_at"))
+    due_date = _fmt_date(doc.get("due_date")) if doc.get("due_date") else None
+    barcode = C.barcode_flowable(doc_number)
+    story += C.document_header(company_data, doc_type, doc_number, status=status,
+                               issue_date=issue_date, due_date=due_date, barcode_flowable=barcode)
+
+    # ── Our Company, then Party — stacked full-width sections (not side by
+    # side): Our Company always renders first, per the "Bill From" convention,
+    # followed by the counterparty (Buyer/Supplier) below it. ────────────────
+    party_name = party_data.get("name") or doc.get("customer_name") or "—"
+    party_heading = party_role if party_role == "BUYER" else supplier_role
+    story.append(C.party_card("OUR COMPANY (BILL FROM)", company_data.get("name") or "—", company_data, width=C.CONTENT_W, two_col=True))
+    story.append(Spacer(1, 5))
+    story.append(C.party_card(party_heading, party_name, party_data, width=C.CONTENT_W, two_col=True))
+    story.append(Spacer(1, 6))
+
+    # ── Document detail grid: only fields with a real value render ──────────────
+    detail_pairs = [
+        ("Date", issue_date if issue_date != "—" else None),
+        ("Due Date", due_date),
+        ("PO Number", doc.get("po_number") or doc.get("reference")),
+        ("Vehicle No.", doc.get("vehicle_no")),
+        ("Transport", doc.get("transport") or doc.get("transport_name")),
+        ("E-Way Bill", doc.get("eway_bill_no") or doc.get("ewb_number")),
+        ("LR/GR No.", doc.get("lr_number") or doc.get("lr_no") or doc.get("gr_number")),
+        ("Place of Supply", party_data.get("place_of_supply") or doc.get("place_of_supply") or party_data.get("state")),
+        ("Payment Terms", doc.get("payment_terms") or doc.get("terms_of_delivery") or doc.get("delivery_terms")),
+        ("Currency", currency if currency != "INR" else None),
+        ("Exchange Rate", doc.get("exchange_rate") if doc.get("exchange_rate") not in (None, 1, 1.0) else None),
+        ("Driver", doc.get("driver_name")),
+        ("Dispatch Date", _fmt_date(doc.get("dispatch_date")) if doc.get("dispatch_date") else None),
+        ("Delivery Date", _fmt_date(doc.get("delivery_date")) if doc.get("delivery_date") else None),
+    ]
+    grid = C.detail_grid(detail_pairs, columns=4)
+    if grid:
+        story += grid
+        story.append(Spacer(1, 6))
+
+    # ── Delivery address / instructions (only when present) ─────────────────────
+    del_addr = doc.get("delivery_address")
+    del_instr = doc.get("delivery_instructions")
+    if del_addr or del_instr:
+        text_bits = []
+        if del_addr:
+            text_bits.append(str(del_addr).replace("\n", ", "))
+        if del_instr:
+            text_bits.append(str(del_instr))
+        delivery = C.terms_card("DELIVERY", " — ".join(text_bits))
+        if delivery:
+            story.append(delivery)
+            story.append(Spacer(1, 6))
+
+    # ── Item table with GST split ────────────────────────────────────────────────
+    items = doc.get("items", []) or []
+    if items:
+        rows, totals = _build_item_rows(items, currency, doc)
+        story.append(C.item_table(rows, show_discount=totals["has_discount"]))
+        story.append(Spacer(1, 6))
+
+        # ── Totals card ───────────────────────────────────────────────────────────
+        summary_rows = [("Taxable Value", _money(totals["taxable"], currency))]
+        if totals["discount"]:
+            summary_rows.append(("Discount", "-" + _money(totals["discount"], currency)))
+        if totals["freight"]:
+            summary_rows.append(("Freight", _money(totals["freight"], currency)))
+        if totals["packing"]:
+            summary_rows.append(("Packing Charges", _money(totals["packing"], currency)))
+        if totals["inter_state"]:
+            summary_rows.append(("IGST", _money(totals["igst"], currency)))
+        else:
+            summary_rows.append(("CGST", _money(totals["cgst"], currency)))
+            summary_rows.append(("SGST", _money(totals["sgst"], currency)))
+        if totals["cess"]:
+            summary_rows.append(("CESS", _money(totals["cess"], currency)))
+        if abs(totals["round_off"]) >= 0.01:
+            summary_rows.append(("Round Off", _money(totals["round_off"], currency)))
+
+        tot_card = C.totals_card(summary_rows, "GRAND TOTAL", _money(totals["grand"], currency))
+        story.append(C.totals_row(tot_card))
+        story.append(Spacer(1, 6))
+
+        # ── Amount in words ────────────────────────────────────────────────────────
+        story.append(C.amount_in_words_card(amount_in_words(totals["grand"], currency)))
+        story.append(Spacer(1, 5))
+
+    # ── Payment details ──────────────────────────────────────────────────────────
+    pay_terms = doc.get("payment_terms") or doc.get("terms")
+    payment = C.payment_card(company_data, payment_terms=pay_terms)
+    if payment:
+        story.append(payment)
+        story.append(Spacer(1, 3))
+
+    # ── Declaration (left) + Signature block (bottom-right) ─────────────────────
+    # Note: deliberately NOT wrapped in KeepTogether. ReportLab's KeepTogether
+    # always reports an oversized height on its first wrap() pass (by design,
+    # to force Platypus to re-evaluate on a fresh frame) — for a ~30mm-tall
+    # block that reliably pushes it to a lonely near-blank page even when 40mm+
+    # of real space remains. A plain Table (as these components already build)
+    # won't split a single row across a page break on its own, which is all the
+    # protection this needs.
+    declaration = company_data.get("declaration") or doc.get("declaration") or \
+        "We declare that this document shows the actual particulars of the goods/services described and that all particulars are true and correct."
+    sig_width_mm = 70
+    terms = C.terms_card("DECLARATION", declaration, width=C.CONTENT_W - sig_width_mm * mm - 6 * mm)
+
+    seal = _load_logo_image(company_data.get("seal_url"), max_w_mm=20, max_h_mm=20) if company_data.get("seal_url") else None
+    sig = C.signature_block_corner(company_data.get("name") or "—", seal_flowable=seal, width_mm=sig_width_mm)
+
+    story.append(C.declaration_and_signature_row(terms, sig, sig_width_mm=sig_width_mm))
+
+    watermark_text = _watermark_for_status(status, doc)
+    canvas_cls = _numbered_canvas_factory(company_data, watermark_text)
+    pdf.build(story, canvasmaker=canvas_cls)
+    return buf.getvalue()
+
+
+def _watermark_for_status(status: str | None, doc: dict) -> str | None:
+    """Only a small set of statuses get a printed watermark — everything
+    else (e.g. a routine DRAFT purchase order mid-edit) stays clean."""
+    if doc.get("is_copy"):
+        return "COPY"
+    s = (status or "").upper()
+    if s in ("CANCELLED", "REJECTED"):
+        return "CANCELLED"
+    if s == "PAID":
+        return "PAID"
+    if s == "DRAFT":
+        return "DRAFT"
+    return None
+
+
+def _build_item_rows(items: list[dict], currency: str, doc: dict) -> tuple[list[dict], dict]:
+    """Shared item-row + totals computation for the new item_table component.
+    Mirrors the GST math _append_item_table_with_gst used (CGST/SGST split
+    for intra-state, IGST for inter-state), reading only fields that already
+    exist on the documents — no new stored fields required."""
+    from . import pdf_components as C
+
+    inter_state = bool(doc.get("is_inter_state"))
+    total_taxable = total_cgst = total_sgst = total_igst = total_discount = 0.0
+    rows = []
+    for i, it in enumerate(items, start=1):
+        qty = float(it.get("quantity", 0) or 0)
+        rate = float(it.get("unit_price", it.get("rate", 0)) or 0)
+        discount = float(it.get("discount", 0) or 0)
+        gross = qty * rate
+        taxable_value = it.get("taxable_value")
+        taxable = float(taxable_value) if taxable_value is not None else max(gross - discount, 0.0)
+        gst_rate = float(it.get("gst_rate", 0) or 0)
+        gst_amt = round(taxable * gst_rate / 100.0, 2)
+        total_taxable += taxable
+        total_discount += discount
+        if inter_state:
+            total_igst += gst_amt
+        else:
+            total_cgst += round(gst_amt / 2, 2)
+            total_sgst += gst_amt - round(gst_amt / 2, 2)
+        hsn = it.get("hsn_code") or it.get("hsn_sac_code") or it.get("hsn") or "—"
+        rows.append({
+            "sno": str(i),
+            "description": C.table_cell_paragraph(it.get("product_name", "")),
+            "hsn": str(hsn),
+            "unit": it.get("unit") or "pcs",
+            "qty": f"{qty:g}",
+            "rate": _money(rate, currency),
+            "discount": _money(discount, currency) if discount else "—",
+            "taxable": _money(taxable, currency),
+            "gst_rate": f"{gst_rate:g}%",
+            "amount": _money(taxable + gst_amt, currency),
+        })
+
+    total_gst = round(total_cgst + total_sgst + total_igst, 2)
+    freight = float(doc.get("freight_charges") or doc.get("freight") or 0)
+    packing = float(doc.get("packing_charges") or 0)
+    cess = float(doc.get("cess") or 0)
+    pre_round = round(total_taxable + total_gst + freight + packing + cess, 2)
+    stored_grand = doc.get("grand_total")
+    grand = float(stored_grand) if stored_grand is not None else round(pre_round)
+    round_off = round(grand - pre_round, 2)
+
+    totals = {
+        "taxable": total_taxable, "cgst": total_cgst, "sgst": total_sgst, "igst": total_igst,
+        "discount": total_discount, "freight": freight, "packing": packing, "cess": cess,
+        "round_off": round_off, "grand": grand, "inter_state": inter_state,
+        "has_discount": total_discount > 0,
+    }
+    return rows, totals
+
+
+def _append_meta_band(story: list, styles, pairs: list) -> None:
+    """Render one bordered 6-column label/value band (dates, transport, etc.)."""
+    mlabel = ParagraphStyle("ml", parent=styles["Normal"], fontSize=6.5, textColor=colors.HexColor("#71717a"))
+    mval = ParagraphStyle("mv", parent=styles["Normal"], fontSize=8, fontName=FONT_BOLD, textColor=BLACK, leading=10)
+    rows = [
+        [Paragraph(lbl, mlabel) for lbl, _ in pairs],
+        [Paragraph(str(val), mval) for _, val in pairs],
+    ]
+    n = len(pairs)
+    table = Table(rows, colWidths=[(180 / n) * mm] * n)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), LIGHT),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#d4d4d8")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#e4e4e7")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    story.append(table)
+
+
+def _company_as_party(company: dict | None) -> dict:
+    """Normalize our company profile into the party-box shape."""
+    c = company or _DEFAULT_COMPANY
+    return {
+        "name": c.get("name"),
+        "billing_address": c.get("address") or c.get("address_line"),
+        "state": c.get("state"),
+        "state_code": c.get("state_code"),
+        "gstin": c.get("gstin"),
+        "pan": c.get("pan"),
+        "phone": c.get("phone"),
+        "email": c.get("email"),
+        "contact_person": c.get("contact_person"),
+    }
+
+
+def _append_item_table_with_gst(story: list, styles, doc: dict, currency: str) -> None:
+    items = doc.get("items", []) or []
+    if not items:
+        return
+    header = [
+        "#", "DESCRIPTION", "HSN/SAC", "QTY", "RATE", "TAXABLE", "GST%", "AMOUNT",
+    ]
+    rows: list[list[Any]] = [[Paragraph(f"<font color='white' size='7.5'><b>{h}</b></font>", styles["Normal"]) for h in header]]
+    cell = ParagraphStyle("c", parent=styles["Normal"], fontName=FONT_REGULAR, fontSize=8, leading=10)
+
+    total_taxable = total_cgst = total_sgst = total_igst = 0.0
+    inter_state = bool(doc.get("is_inter_state"))
+    for i, it in enumerate(items, start=1):
+        qty = float(it.get("quantity", 0) or 0)
+        rate = float(it.get("unit_price", it.get("rate", 0)) or 0)
+        taxable = float(it.get("taxable_value") if it.get("taxable_value") is not None else qty * rate)
+        gst_rate = float(it.get("gst_rate", 0) or 0)
+        gst_amt = round(taxable * gst_rate / 100.0, 2)
+        total_taxable += taxable
+        if inter_state:
+            total_igst += gst_amt
+        else:
+            total_cgst += round(gst_amt / 2, 2)
+            total_sgst += gst_amt - round(gst_amt / 2, 2)
+        hsn = it.get("hsn_code") or it.get("hsn_sac_code") or it.get("hsn") or "—"
+        rows.append([
+            str(i),
+            Paragraph(str(it.get("product_name", "")), cell),
+            str(hsn),
+            f"{qty:g}",
+            _money(rate, currency),
+            _money(taxable, currency),
+            f"{gst_rate:g}%",
+            _money(taxable + gst_amt, currency),
+        ])
+    line_table = Table(rows, colWidths=[8 * mm, 58 * mm, 20 * mm, 16 * mm, 22 * mm, 24 * mm, 12 * mm, 20 * mm])
+    line_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), BLACK),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, -1), FONT_REGULAR), ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.4, colors.HexColor("#e4e4e7")),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#d4d4d8")),
+    ]))
+    story.append(line_table)
+
+    # Totals block with CGST/SGST/IGST + round-off + grand total.
+    total_gst = round(total_cgst + total_sgst + total_igst, 2)
+    pre_round = round(total_taxable + total_gst, 2)
+    stored_grand = doc.get("grand_total")
+    grand = float(stored_grand) if stored_grand is not None else round(pre_round)
+    round_off = round(grand - pre_round, 2)
+
+    trows: list[list[Any]] = [["", "Taxable Value", _money(total_taxable, currency)]]
+    if inter_state:
+        trows.append(["", "IGST", _money(total_igst, currency)])
+    else:
+        trows.append(["", "CGST", _money(total_cgst, currency)])
+        trows.append(["", "SGST", _money(total_sgst, currency)])
+    if abs(round_off) >= 0.01:
+        trows.append(["", "Round Off", _money(round_off, currency)])
+    trows.append(["", Paragraph(f"<font size='10'><b>GRAND TOTAL</b></font>", styles["Normal"]),
+                  Paragraph(f"<font size='11' name='{FONT_BOLD}'>{_money(grand, currency)}</font>", styles["Normal"])])
+    totals = Table(trows, colWidths=[100 * mm, 40 * mm, 40 * mm])
+    totals.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), FONT_REGULAR), ("FONTSIZE", (1, 0), (-1, -1), 8),
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("BACKGROUND", (1, -1), (-1, -1), YELLOW),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LINEABOVE", (1, -1), (-1, -1), 0.5, BLACK),
+    ]))
+    story.append(totals)
+
+
+def _append_document_footer(story: list, styles, doc: dict, company: dict | None) -> None:
+    company = company or {}
+    small = ParagraphStyle("f", parent=styles["Normal"], fontSize=7.5, textColor=colors.HexColor("#3f3f46"), leading=10)
+    head = ParagraphStyle("fh", parent=styles["Normal"], fontSize=7, fontName=FONT_BOLD, textColor=colors.HexColor("#71717a"))
+
+    # Payment terms (stored per-document; falls back to a dash).
+    pay_terms = doc.get("payment_terms") or doc.get("terms") or "—"
+    bank_bits = []
+    if company.get("bank_name"):
+        bank_bits.append(f"Bank: {company['bank_name']}")
+    if company.get("bank_account_no"):
+        bank_bits.append(f"A/C: {company['bank_account_no']}")
+    if company.get("bank_ifsc"):
+        bank_bits.append(f"IFSC: {company['bank_ifsc']}")
+    if company.get("bank_branch"):
+        bank_bits.append(f"Branch: {company['bank_branch']}")
+
+    story.append(Spacer(1, 10))
+    left_cells: list[Any] = [Paragraph("PAYMENT TERMS", head), Paragraph(str(pay_terms), small), Spacer(1, 4)]
+    if bank_bits:
+        left_cells += [Paragraph("BANK DETAILS", head), Paragraph(" · ".join(bank_bits), small), Spacer(1, 4)]
+    declaration = company.get("declaration") or doc.get("declaration") or \
+        "We declare that this document shows the actual particulars of the goods/services described and that all particulars are true and correct."
+    left_cells += [Paragraph("DECLARATION", head), Paragraph(declaration, small)]
+    left_col = Table([[c] for c in left_cells], colWidths=[110 * mm])
+    left_col.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                                  ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
+
+    sig_style = ParagraphStyle("sig", parent=styles["Normal"], fontSize=7.5, textColor=colors.HexColor("#3f3f46"))
+    company_name = company.get("name") or _DEFAULT_COMPANY["name"]
+
+    # Company seal: use the uploaded seal image when present, else a labelled
+    # placeholder ring so the seal area is always reserved on the printed doc.
+    seal = _load_logo_image(company.get("seal_url"), max_w_mm=24, max_h_mm=24) if company.get("seal_url") else None
+    if seal is not None:
+        seal_cell: Any = seal
+    else:
+        seal_style = ParagraphStyle("seal", parent=styles["Normal"], fontSize=6,
+                                    textColor=colors.HexColor("#a1a1aa"), alignment=2)
+        seal_cell = Paragraph("(Company Seal)", seal_style)
+
+    sig_col = Table([
+        [Paragraph(f"For <b>{company_name}</b>", sig_style)],
+        [seal_cell],
+        [Spacer(1, 8)],
+        [Paragraph("_____________________________", sig_style)],
+        [Paragraph("<b>Authorised Signatory</b>", sig_style)],
+    ], colWidths=[60 * mm])
+    sig_col.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "RIGHT"),
+                                 ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+
+    footer = Table([[left_col, sig_col]], colWidths=[112 * mm, 62 * mm])
+    footer.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    story.append(footer)
 
 
 def build_doc_pdf(doc_type: str, doc_number: str, doc: dict, party_label: str = "CUSTOMER", company: dict | None = None) -> bytes:
@@ -321,9 +897,11 @@ def build_doc_pdf(doc_type: str, doc_number: str, doc: dict, party_label: str = 
     items = doc.get("items", []) or []
     currency = doc.get("currency") or "INR"
     if items:
+        # colWidths: 9+50+20+25+13+20+13+24 = 174mm
         rows: list[list[Any]] = [[
             Paragraph("<font color='white' size='8'><b>#</b></font>", styles["Normal"]),
             Paragraph("<font color='white' size='8'><b>DESCRIPTION</b></font>", styles["Normal"]),
+            Paragraph("<font color='white' size='8'><b>HSN/SAC</b></font>", styles["Normal"]),
             Paragraph("<font color='white' size='8'><b>SKU</b></font>", styles["Normal"]),
             Paragraph("<font color='white' size='8'><b>QTY</b></font>", styles["Normal"]),
             Paragraph("<font color='white' size='8'><b>RATE</b></font>", styles["Normal"]),
@@ -334,16 +912,18 @@ def build_doc_pdf(doc_type: str, doc_number: str, doc: dict, party_label: str = 
         sku_style = ParagraphStyle("skucell", parent=cell_style, fontSize=8, leading=10)
         for i, it in enumerate(items, start=1):
             line = float(it.get("quantity", 0)) * float(it.get("unit_price", 0))
+            hsn = it.get("hsn_code") or it.get("hsn_sac_code") or it.get("hsn") or "—"
             rows.append([
                 str(i),
                 Paragraph(str(it.get("product_name", "")), cell_style),
+                hsn,
                 Paragraph(str(it.get("sku", "")), sku_style),
                 str(it.get("quantity", "")),
                 _money(it.get("unit_price", 0), currency),
                 f"{it.get('gst_rate', 0)}%",
                 _money(line, currency),
             ])
-        line_table = Table(rows, colWidths=[9 * mm, 55 * mm, 30 * mm, 14 * mm, 22 * mm, 14 * mm, 30 * mm])
+        line_table = Table(rows, colWidths=[9 * mm, 50 * mm, 20 * mm, 25 * mm, 13 * mm, 20 * mm, 13 * mm, 24 * mm])
         line_table.setStyle(
             TableStyle(
                 [
@@ -355,7 +935,7 @@ def build_doc_pdf(doc_type: str, doc_number: str, doc: dict, party_label: str = 
                     ("FONTNAME", (0, 0), (-1, -1), FONT_REGULAR),
                     ("FONTSIZE", (0, 0), (-1, -1), 9),
                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
+                    ("ALIGN", (4, 1), (-1, -1), "RIGHT"),  # QTY col onwards right-aligned (col 4 after HSN added)
                     ("TOPPADDING", (0, 0), (-1, -1), 5),
                     ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
                     ("LINEBELOW", (0, 1), (-1, -1), 0.5, colors.HexColor("#d4d4d8")),
@@ -460,7 +1040,8 @@ def normalize_purchase_doc(doc: dict, party_field: str = "vendor") -> dict:
         rate_val = line.get("rate") if line.get("rate") is not None else line.get("unit_price", 0)
         items.append({
             "product_name": line.get("product_name") or line.get("item_name") or "",
-            "hsn_code": line.get("hsn_code") or line.get("hsn_sac_code") or "",
+            "sku": line.get("sku") or line.get("item_code") or "",
+            "hsn_code": line.get("hsn_code") or line.get("hsn_sac_code") or line.get("hsn") or "",
             "quantity": qty_val if qty_val is not None else 0,
             "unit_price": rate_val if rate_val is not None else 0,
             "gst_rate": line.get("gst_rate") or 0,
@@ -493,91 +1074,147 @@ def normalize_purchase_doc(doc: dict, party_field: str = "vendor") -> dict:
 
 
 def build_jobwork_pdf(challan: dict, company: dict | None = None) -> bytes:
+    """Job Work Challan (Outward) — built on the shared _party_box/
+    _append_meta_band helpers (same visual language as every other document
+    in the app) with job-work-specific additions layered on top: no GST/
+    pricing columns (a §143 challan is not a supply), the statutory
+    disclaimer, and dual signature lines (job-worker acknowledgement +
+    receiver's signature, distinct from our own authorized signatory)."""
     challan = clean_unicode(challan)
     company = clean_unicode(company) if company else None
     buf = io.BytesIO()
-    pdf = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=18 * mm, bottomMargin=18 * mm)
+    pdf = SimpleDocTemplate(buf, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
+                            topMargin=14 * mm, bottomMargin=14 * mm,
+                            title=f"Job Work Challan {challan.get('challan_number', '')}")
     styles = get_styles_with_fonts()
-    story = []
+    story: list[Any] = []
 
+    from reportlab.graphics.shapes import Drawing
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    from reportlab.graphics.barcode.code128 import Code128
+
+    # ── Header: company identity + QR + barcode + badge ─────────────────────
     badge = Table(
-        [
-            [Paragraph("<font size='8'><b>JOB WORK CHALLAN</b></font>", styles["Normal"])],
-            [Paragraph(f"<font size='14' name='{FONT_BOLD}'>{challan.get('challan_number', '—')}</font>", styles["Normal"])],
-        ],
-        colWidths=[55 * mm],
+        [[Paragraph("<font size='9'><b>JOB WORK CHALLAN</b></font>", styles["Normal"])],
+         [Paragraph(f"<font size='13' name='{FONT_BOLD}'>{challan.get('challan_number', '—')}</font>", styles["Normal"])]],
+        colWidths=[50 * mm],
     )
-    badge.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (0, -1), YELLOW),
-                ("TEXTCOLOR", (0, 0), (0, -1), BLACK),
-                ("ALIGN", (0, 0), (0, -1), "CENTER"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                ("TOPPADDING", (0, 0), (-1, -1), 6),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ]
-        )
-    )
+    badge.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), YELLOW), ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#eab308")),
+    ]))
 
-    company_block = _company_block(styles, company)
-    header = Table([[company_block, badge]], colWidths=[110 * mm, 60 * mm])
+    item_summaries = [
+        f"{it.get('product_name', '')[:10]} ({it.get('quantity', 0)} {it.get('uom', 'pcs')})"
+        for it in (challan.get("items", []) or [])
+    ]
+    qr_text = (
+        f"challan={challan.get('challan_number', '—')};date={challan.get('date', '—')};"
+        f"due={challan.get('due_date', '—')};worker={challan.get('job_worker_name', '—')};"
+        f"items={len(item_summaries)}"
+    )
+    qr_size = 32 * mm
+    qr = QrCodeWidget(value=qr_text)
+    qr.barWidth = qr_size
+    qr.barHeight = qr_size
+    qr_drawing = Drawing(qr_size, qr_size)
+    qr_drawing.add(qr)
+
+    # Code128 is itself a Flowable (unlike QrCodeWidget, which is a Shape that
+    # needs a Drawing container) — it goes straight into the table cell.
+    barcode = Code128(challan.get("challan_number", "") or "—", barHeight=8 * mm, barWidth=0.35)
+
+    codes_col = Table([[qr_drawing], [Spacer(1, 4)], [barcode]], colWidths=[50 * mm])
+    codes_col.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER")]))
+
+    header = Table([[_company_block(styles, company, col_width_mm=90), codes_col, badge]],
+                   colWidths=[90 * mm, 40 * mm, 50 * mm])
     header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     story.append(header)
-    story.append(Spacer(1, 6))
-    story.append(Table([[""]], colWidths=[174 * mm], rowHeights=[2], style=[("BACKGROUND", (0, 0), (-1, -1), BLACK)]))
+    story.append(Spacer(1, 4))
+    story.append(Table([[""]], colWidths=[180 * mm], rowHeights=[2],
+                       style=[("BACKGROUND", (0, 0), (-1, -1), BLACK)]))
     story.append(Spacer(1, 8))
 
-    worker = challan.get("job_worker_name") or "—"
-    c_date = challan.get("date") or "—"
-    meta = [
-        [
-            Paragraph("<font size='7' color='#71717a'><b>JOB WORKER</b></font>", styles["Normal"]),
-            Paragraph("<font size='7' color='#71717a'><b>DATE</b></font>", styles["Normal"]),
-        ],
-        [
-            Paragraph(f"<font size='10'><b>{worker}</b></font>", styles["Normal"]),
-            Paragraph(f"<font size='10'>{c_date}</font>", styles["Normal"]),
-        ],
-    ]
-    meta_table = Table(meta, colWidths=[100 * mm, 70 * mm])
-    meta_table.setStyle(TableStyle([("BOTTOMPADDING", (0, 0), (-1, 0), 2), ("TOPPADDING", (0, 1), (-1, 1), 0)]))
-    story.append(meta_table)
-    story.append(Spacer(1, 10))
+    # ── Job Worker (party) box + our company box ─────────────────────────────
+    jw_party = {
+        "address": challan.get("address"),
+        "gstin": challan.get("job_worker_gstin"),
+        "contact_person": challan.get("contact_person"),
+        "mobile": challan.get("mobile"),
+    }
+    supplier_side = _company_as_party(company)
+    left = _party_box(styles, "JOB WORKER", challan.get("job_worker_name") or "—", jw_party)
+    right = _party_box(styles, "PRINCIPAL (US)", supplier_side.get("name") or "—", supplier_side, accent=colors.HexColor("#3f3f46"))
+    boxes = Table([[left, "", right]], colWidths=[85 * mm, 10 * mm, 85 * mm])
+    boxes.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    story.append(boxes)
+    story.append(Spacer(1, 8))
 
+    # ── Meta band: date / due date ────────────────────────────────────────────
+    due_date = challan.get("due_date") or "—"
+    core_pairs = [
+        ("DATE", challan.get("date") or "—"),
+        ("DUE DATE", due_date),
+        ("NATURE", (challan.get("nature") or "inputs").replace("_", " ").title()),
+        ("STATUS", challan.get("status") or "—"),
+    ]
+    _append_meta_band(story, styles, core_pairs)
+
+    # ── Transport band (Vehicle/Driver/Transport/LR/E-Way Bill) ──────────────
+    transport_pairs = [
+        ("VEHICLE NO.", challan.get("vehicle_no") or "—"),
+        ("DRIVER", challan.get("driver_name") or "—"),
+        ("TRANSPORT", challan.get("transport") or "—"),
+        ("LR NO.", challan.get("lr_number") or "—"),
+        ("E-WAY BILL NO.", challan.get("eway_bill_number") or "—"),
+    ]
+    story.append(Spacer(1, 4))
+    _append_meta_band(story, styles, transport_pairs)
+    story.append(Spacer(1, 8))
+
+    # ── Material grid — no GST/pricing columns (not a supply) ─────────────────
     items = challan.get("items", []) or []
     rows: list[list[Any]] = [[
         Paragraph("<font color='white' size='8'><b>#</b></font>", styles["Normal"]),
+        Paragraph("<font color='white' size='8'><b>ITEM CODE</b></font>", styles["Normal"]),
         Paragraph("<font color='white' size='8'><b>PRODUCT/DESCRIPTION</b></font>", styles["Normal"]),
-        Paragraph("<font color='white' size='8'><b>SKU</b></font>", styles["Normal"]),
-        Paragraph("<font color='white' size='8'><b>QUANTITY</b></font>", styles["Normal"]),
-        Paragraph("<font color='white' size='8'><b>UNIT</b></font>", styles["Normal"]),
+        Paragraph("<font color='white' size='8'><b>HSN</b></font>", styles["Normal"]),
+        Paragraph("<font color='white' size='8'><b>SENT QTY</b></font>", styles["Normal"]),
+        Paragraph("<font color='white' size='8'><b>UOM</b></font>", styles["Normal"]),
     ]]
     for i, it in enumerate(items, start=1):
+        hsn = it.get("hsn_code") or "—"
         rows.append([
             str(i),
-            it.get("product_name", ""),
-            it.get("sku", ""),
+            Paragraph(it.get("sku") or "—", styles["Normal"]),
+            Paragraph(it.get("product_name", ""), styles["Normal"]),
+            hsn,
             str(it.get("quantity", 0)),
-            it.get("unit", "pcs"),
+            it.get("uom", "pcs"),
         ])
-    line_table = Table(rows, colWidths=[15 * mm, 90 * mm, 30 * mm, 20 * mm, 19 * mm])
-    line_table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), BLACK),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("TOPPADDING", (0, 0), (-1, -1), 5),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                ("LINEBELOW", (0, 1), (-1, -1), 0.5, colors.HexColor("#d4d4d8")),
-            ]
-        )
-    )
+    line_table = Table(rows, colWidths=[8 * mm, 32 * mm, 82 * mm, 20 * mm, 20 * mm, 18 * mm])
+    line_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), BLACK),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.5, colors.HexColor("#d4d4d8")),
+    ]))
     story.append(line_table)
-    story.append(Spacer(1, 15))
+    story.append(Spacer(1, 12))
+
+    if challan.get("process_name"):
+        story.append(Paragraph(f"<font size='8' color='#52525b'><b>Process:</b> {challan['process_name']}</font>", styles["Normal"]))
+    if challan.get("instructions"):
+        story.append(Paragraph(f"<font size='8' color='#52525b'><b>Instructions:</b> {challan['instructions']}</font>", styles["Normal"]))
+    if challan.get("notes"):
+        story.append(Paragraph(f"<font size='8' color='#52525b'><b>Notes:</b> {challan['notes']}</font>", styles["Normal"]))
+    story.append(Spacer(1, 8))
 
     disclaimer = (
         "<b>Statutory Declaration (Section 143):</b> This challan is issued under the provisions of "
@@ -585,22 +1222,141 @@ def build_jobwork_pdf(challan: dict, company: dict | None = None) -> bytes:
         "be returned to the principal place of business within 1 year (for inputs) or 3 years (for capital goods) "
         "of being sent out. This movement does not constitute a supply under GST, and no tax is payable on this document."
     )
-    story.append(Paragraph(f"<font size='8' color='#52525b'>{disclaimer}</font>", styles["Normal"]))
-    
-    if challan.get("notes"):
-        story.append(Spacer(1, 10))
-        story.append(Paragraph("<font size='7' color='#71717a'><b>NOTES</b></font>", styles["Normal"]))
-        story.append(Paragraph(f"<font size='9'>{challan['notes']}</font>", styles["Normal"]))
+    story.append(Paragraph(f"<font size='7.5' color='#52525b'>{disclaimer}</font>", styles["Normal"]))
 
-    story.append(Spacer(1, 30))
+    terms_text = (
+        "1. The goods sent herewith are for job work under Section 143 of the CGST Act, 2017 and are not a supply.<br/>"
+        "2. The job worker must return the processed goods within 1 year of issue (or 3 years for capital goods).<br/>"
+        "3. Any wastage/scrap generated must be either returned or tax paid on it by the job worker."
+    )
+    story.append(Spacer(1, 6))
+    story.append(Paragraph("<font size='7' color='#71717a'><b>TERMS & CONDITIONS</b></font>", styles["Normal"]))
+    story.append(Paragraph(f"<font size='7' color='#71717a'>{terms_text}</font>", styles["Normal"]))
+
+    # ── Sign-off: Prepared / Checked / three signature lines ─────────────────
+    story.append(Spacer(1, 14))
+    prep_bits = []
+    if challan.get("prepared_by"):
+        prep_bits.append(f"Prepared By: {challan['prepared_by']}")
+    if challan.get("checked_by"):
+        prep_bits.append(f"Checked By: {challan['checked_by']}")
+    if prep_bits:
+        story.append(Paragraph(f"<font size='7.5' color='#71717a'>{' · '.join(prep_bits)}</font>", styles["Normal"]))
+        story.append(Spacer(1, 10))
+
     sig_style = ParagraphStyle("sig", parent=styles["Normal"], fontSize=7, textColor=colors.HexColor("#52525b"))
-    sig_rows = [
-        [
-            Paragraph("____________________<br/><b>JOB WORK WORKER ACKNOWLEDGEMENT</b>", sig_style),
-            Paragraph("____________________<br/><b>AUTHORIZED SIGNATORY</b>", sig_style),
-        ]
+    sig_rows = [[
+        Paragraph("____________________<br/><b>JOB WORKER ACKNOWLEDGEMENT</b>", sig_style),
+        Paragraph("____________________<br/><b>RECEIVER'S SIGNATURE</b>", sig_style),
+        Paragraph("____________________<br/><b>AUTHORIZED SIGNATORY</b>", sig_style),
+    ]]
+    sig_table = Table(sig_rows, colWidths=[60 * mm, 60 * mm, 60 * mm])
+    sig_table.setStyle(TableStyle([("ALIGN", (1, 0), (1, 0), "CENTER"), ("ALIGN", (2, 0), (2, 0), "RIGHT")]))
+    story.append(sig_table)
+
+    pdf.build(story)
+    return buf.getvalue()
+
+
+def build_jobwork_receipt_pdf(receipt: dict, challan: dict | None = None, company: dict | None = None) -> bytes:
+    """Job Work Receipt (Inward) — built on the shared _party_box/
+    _append_meta_band helpers. Distinct document from the Challan: shows
+    Received/Accepted/Rejected/Scrap, never Sent-side pricing."""
+    receipt = clean_unicode(receipt)
+    challan_data: dict = clean_unicode(challan) if challan else {}
+    company = clean_unicode(company) if company else None
+    buf = io.BytesIO()
+    pdf = SimpleDocTemplate(buf, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
+                            topMargin=14 * mm, bottomMargin=14 * mm,
+                            title=f"Job Work Receipt {receipt.get('receipt_number', '')}")
+    styles = get_styles_with_fonts()
+    story: list[Any] = []
+
+    badge = Table(
+        [[Paragraph("<font size='9'><b>MATERIAL INWARD RECEIPT</b></font>", styles["Normal"])],
+         [Paragraph(f"<font size='13' name='{FONT_BOLD}'>{receipt.get('receipt_number', '—')}</font>", styles["Normal"])]],
+        colWidths=[60 * mm],
+    )
+    badge.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), YELLOW), ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#eab308")),
+    ]))
+    header = Table([[_company_block(styles, company, col_width_mm=120), badge]], colWidths=[120 * mm, 60 * mm])
+    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    story.append(header)
+    story.append(Spacer(1, 4))
+    story.append(Table([[""]], colWidths=[180 * mm], rowHeights=[2],
+                       style=[("BACKGROUND", (0, 0), (-1, -1), BLACK)]))
+    story.append(Spacer(1, 8))
+
+    jw_party = {
+        "gstin": challan_data.get("job_worker_gstin"),
+        "contact_person": challan_data.get("contact_person"),
+        "mobile": challan_data.get("mobile"),
+    }
+    supplier_side = _company_as_party(company)
+    left = _party_box(styles, "JOB WORKER", challan_data.get("job_worker_name") or "—", jw_party)
+    right = _party_box(styles, "PRINCIPAL (US)", supplier_side.get("name") or "—", supplier_side, accent=colors.HexColor("#3f3f46"))
+    boxes = Table([[left, "", right]], colWidths=[85 * mm, 10 * mm, 85 * mm])
+    boxes.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    story.append(boxes)
+    story.append(Spacer(1, 8))
+
+    core_pairs = [
+        ("RECEIPT DATE", receipt.get("date") or "—"),
+        ("AGAINST CHALLAN", challan_data.get("challan_number") or "—"),
+        ("CHALLAN DATE", challan_data.get("date") or "—"),
     ]
-    sig_table = Table(sig_rows, colWidths=[85 * mm, 85 * mm])
+    _append_meta_band(story, styles, core_pairs)
+    story.append(Spacer(1, 8))
+
+    items = receipt.get("items", []) or []
+    rows: list[list[Any]] = [[
+        Paragraph("<font color='white' size='8'><b>#</b></font>", styles["Normal"]),
+        Paragraph("<font color='white' size='8'><b>PRODUCT</b></font>", styles["Normal"]),
+        Paragraph("<font color='white' size='8'><b>SKU</b></font>", styles["Normal"]),
+        Paragraph("<font color='white' size='8'><b>RECEIVED</b></font>", styles["Normal"]),
+        Paragraph("<font color='white' size='8'><b>ACCEPTED</b></font>", styles["Normal"]),
+        Paragraph("<font color='white' size='8'><b>REJECTED</b></font>", styles["Normal"]),
+        Paragraph("<font color='white' size='8'><b>SCRAP</b></font>", styles["Normal"]),
+    ]]
+    for i, it in enumerate(items, start=1):
+        rows.append([
+            str(i),
+            Paragraph(it.get("product_name", ""), styles["Normal"]),
+            it.get("sku", "") or "—",
+            str(it.get("quantity_received", 0)),
+            str(it.get("accepted_quantity", 0) or 0),
+            str(it.get("rejected_quantity", 0) or 0),
+            str(it.get("scrap_quantity", 0) or 0),
+        ])
+    line_table = Table(rows, colWidths=[8 * mm, 62 * mm, 30 * mm, 20 * mm, 20 * mm, 20 * mm, 20 * mm])
+    line_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), BLACK),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.5, colors.HexColor("#d4d4d8")),
+    ]))
+    story.append(line_table)
+    story.append(Spacer(1, 12))
+
+    if receipt.get("notes"):
+        story.append(Paragraph("<font size='7' color='#71717a'><b>NOTES</b></font>", styles["Normal"]))
+        story.append(Paragraph(f"<font size='9'>{receipt['notes']}</font>", styles["Normal"]))
+        story.append(Spacer(1, 10))
+
+    story.append(Spacer(1, 16))
+    sig_style = ParagraphStyle("sig", parent=styles["Normal"], fontSize=7, textColor=colors.HexColor("#52525b"))
+    sig_rows = [[
+        Paragraph("____________________<br/><b>RECEIVED BY (STORES)</b>", sig_style),
+        Paragraph("____________________<br/><b>AUTHORIZED SIGNATORY</b>", sig_style),
+    ]]
+    sig_table = Table(sig_rows, colWidths=[90 * mm, 90 * mm])
     sig_table.setStyle(TableStyle([("ALIGN", (1, 0), (1, 0), "RIGHT")]))
     story.append(sig_table)
 
@@ -921,9 +1677,11 @@ def build_ewaybill_pdf(ewb: dict, company: dict | None = None) -> bytes:
     # Items section
     items = ewb.get("items", []) or []
     if items:
+        # colWidths: 9+45+20+25+13+20+13+24 = 169mm (slightly narrower — parties table is 87+87=174)
         rows: list[list[Any]] = [[
             Paragraph("<font color='white' size='8'><b>#</b></font>", styles["Normal"]),
             Paragraph("<font color='white' size='8'><b>PRODUCT</b></font>", styles["Normal"]),
+            Paragraph("<font color='white' size='8'><b>HSN/SAC</b></font>", styles["Normal"]),
             Paragraph("<font color='white' size='8'><b>SKU</b></font>", styles["Normal"]),
             Paragraph("<font color='white' size='8'><b>QTY</b></font>", styles["Normal"]),
             Paragraph("<font color='white' size='8'><b>RATE</b></font>", styles["Normal"]),
@@ -936,16 +1694,18 @@ def build_ewaybill_pdf(ewb: dict, company: dict | None = None) -> bytes:
             qty = float(it.get("quantity", 0))
             rate = float(it.get("unit_price", 0))
             line = qty * rate
+            hsn = it.get("hsn_code") or it.get("hsn_sac_code") or it.get("hsn") or "—"
             rows.append([
                 str(i),
                 Paragraph(str(it.get("product_name", "")), cell_style),
+                hsn,
                 Paragraph(str(it.get("sku", "")), sku_style),
                 str(qty),
                 _money(rate),
                 f"{it.get('gst_rate', 0)}%",
                 _money(line),
             ])
-        line_table = Table(rows, colWidths=[9 * mm, 55 * mm, 30 * mm, 14 * mm, 22 * mm, 14 * mm, 30 * mm])
+        line_table = Table(rows, colWidths=[9 * mm, 50 * mm, 20 * mm, 25 * mm, 13 * mm, 20 * mm, 13 * mm, 24 * mm])
         line_table.setStyle(
             TableStyle(
                 [
@@ -954,7 +1714,7 @@ def build_ewaybill_pdf(ewb: dict, company: dict | None = None) -> bytes:
                     ("FONTNAME", (0, 0), (-1, -1), FONT_REGULAR),
                     ("FONTSIZE", (0, 0), (-1, -1), 9),
                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
+                    ("ALIGN", (4, 1), (-1, -1), "RIGHT"),
                     ("TOPPADDING", (0, 0), (-1, -1), 5),
                     ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
                     ("LINEBELOW", (0, 1), (-1, -1), 0.5, colors.HexColor("#d4d4d8")),

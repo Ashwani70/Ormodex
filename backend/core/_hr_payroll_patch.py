@@ -1,5 +1,5 @@
 """Patch hr_payroll.py to replace MongoDB calls with SQLAlchemy."""
-import os, re
+import os
 
 path = os.path.join(os.path.dirname(__file__), "hr_payroll.py")
 with open(path, "r", encoding="utf-8") as f:
@@ -84,7 +84,12 @@ new_leaves = '''    async with get_session() as _s:
         )
         leaves = [{"leave_type_id": lv.leave_type_id, "total_days": float(lv.days or 0)} for lv in _lr.scalars().all()]
         _ltr = await _s.execute(select(LeaveType))
-        leave_types = {lt.id: {"paid": True} for lt in _ltr.scalars().all()}'''
+        # Use each leave type's real paid flag so unpaid (LOP) leave deducts.
+        # Defaults to paid=True for legacy rows where the flag is unset.
+        leave_types = {
+            lt.id: {"paid": bool(getattr(lt, "paid", True) if getattr(lt, "paid", True) is not None else True)}
+            for lt in _ltr.scalars().all()
+        }'''
 
 src = src.replace(old_leaves, new_leaves)
 
@@ -94,11 +99,15 @@ old_adv = '''    advances = await db.advances.find(
         {"_id": 0},
     ).to_list(200)'''
 
-new_adv = '''    async with get_session() as _s:
+new_adv = '''    # Advances scheduled for recovery this month only — without the
+    # recovery_month restriction every advance is recovered every month,
+    # over-deducting payroll.
+    async with get_session() as _s:
         _ar = await _s.execute(
             select(Advance).where(
                 and_(Advance.party_id == employee["id"],
-                     Advance.party_type == "employee")
+                     Advance.party_type == "employee",
+                     Advance.recovery_month == month)
             )
         )
         advances = [{"amount": float(a.balance or 0)} for a in _ar.scalars().all()]'''

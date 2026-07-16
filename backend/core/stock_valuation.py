@@ -233,7 +233,7 @@ def value_standard_cost(movements: list[dict], *, standard_cost: float = 0.0) ->
     A zero/blank standard degrades to weighted-average (actual-cost) valuation
     so a misconfigured item is costed at what it actually cost, never at 0.
     """
-    std = float(standard_cost or 0.0)
+    std = standard_cost or 0.0
     if std <= 1e-9:
         # No usable standard → value at actual cost. Reuse the WA engine so
         # outward moves draw the real running-average cost (they carry no rate

@@ -28,6 +28,8 @@ class Vendor(BaseModel):
     vendor_rating: float = 0.0
     email: Optional[str] = None
     phone: Optional[str] = None
+    contact_person: Optional[str] = None
+    mobile: Optional[str] = None
     vendor_code: Optional[str] = None
     party_type: Optional[str] = "SUPPLIER"
     registration_type: Optional[str] = "Regular"
@@ -54,6 +56,8 @@ class VendorUpdate(BaseModel):
     vendor_rating: Optional[float] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    contact_person: Optional[str] = None
+    mobile: Optional[str] = None
     party_type: Optional[str] = None
     registration_type: Optional[str] = None
     registration_date: Optional[str] = None

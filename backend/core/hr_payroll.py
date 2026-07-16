@@ -1,4 +1,4 @@
-﻿"""Indian-standard payroll engine + salary-slip PDF builder."""
+"""Indian-standard payroll engine + salary-slip PDF builder."""
 import io
 from calendar import monthrange
 from datetime import date, datetime
@@ -10,7 +10,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, or_
 from .db import get_session
 from .schema import Holiday, Shift, Attendance, Leave, LeaveType, Advance
 from .words import amount_in_words
@@ -46,6 +46,8 @@ async def working_days_in_month(month: str, branch_id: Optional[str] = None, wee
             weekly_offs += 1
     async with get_session() as _s:
         _conds = [Holiday.holiday_date.like(f"{month}-%")]
+        if branch_id:
+            _conds.append(or_(Holiday.branch_id == branch_id, Holiday.branch_id.is_(None)))
         _res = await _s.execute(select(func.count()).select_from(Holiday).where(and_(*_conds)))
         holidays = _res.scalar_one()
     return {
@@ -67,8 +69,11 @@ async def calculate_payslip(employee: dict, month: str, *, salary_structure: Opt
             _r = await _s.execute(select(Shift).where(Shift.id == employee["shift_id"]))
             _sr = _r.scalar_one_or_none()
             if _sr:
-                shift = {"weekly_off_days": getattr(_sr, "extra", {}) and (_sr.extra or {}).get("weekly_off_days")}
+                _extra = getattr(_sr, "extra", None) or {}
+                shift = {"weekly_off_days": _extra.get("weekly_off_days")}
     weekly_offs = (shift.get("weekly_off_days") if shift else None) or [6]
+    if not isinstance(weekly_offs, list):
+        weekly_offs = [6]
 
     info = await working_days_in_month(month, employee.get("branch_id"), weekly_offs)
     total_working_days = info["working_days"]
@@ -81,6 +86,8 @@ async def calculate_payslip(employee: dict, month: str, *, salary_structure: Opt
                      Attendance.attendance_date.like(f"{month}-%"))
             )
         )
+        # TODO: replace 0 with a.overtime_hours once the column is added to
+        #       the Attendance table in schema.py and migrated in the DB.
         att = [{"status": a.status, "overtime_hours": 0} for a in _r.scalars().all()]
     present = 0.0
     ot_hours = 0.0
@@ -104,7 +111,12 @@ async def calculate_payslip(employee: dict, month: str, *, salary_structure: Opt
         )
         leaves = [{"leave_type_id": lv.leave_type_id, "total_days": float(lv.days or 0)} for lv in _lr.scalars().all()]
         _ltr = await _s.execute(select(LeaveType))
-        leave_types = {lt.id: {"paid": True} for lt in _ltr.scalars().all()}
+        # Use each leave type's real paid flag so unpaid (LOP) leave deducts.
+        # Defaults to paid=True for legacy rows where the flag is unset.
+        leave_types = {
+            lt.id: {"paid": bool(getattr(lt, "paid", True) if getattr(lt, "paid", True) is not None else True)}
+            for lt in _ltr.scalars().all()
+        }
     paid_leave_days = 0.0
     unpaid_leave_days = 0.0
     for lv in leaves:
@@ -165,12 +177,15 @@ async def calculate_payslip(employee: dict, month: str, *, salary_structure: Opt
     pt = float(ss.get("professional_tax", 0) or 0)
     tds = _round(gross * float(ss.get("tds_percent", 0)) / 100.0)
 
-    # Advances scheduled for recovery this month
+    # Advances scheduled for recovery this month only — without the
+    # recovery_month restriction every advance is recovered every month,
+    # over-deducting payroll.
     async with get_session() as _s:
         _ar = await _s.execute(
             select(Advance).where(
                 and_(Advance.party_id == employee["id"],
-                     Advance.party_type == "employee")
+                     Advance.party_type == "employee",
+                     Advance.recovery_month == month)
             )
         )
         advances = [{"amount": float(a.balance or 0)} for a in _ar.scalars().all()]
@@ -279,12 +294,12 @@ def build_payslip_pdf(payslip: dict, employee: dict, branch_name: str = "Ormodex
         Paragraph("<b>Payable Days</b>", label),
         Paragraph("<b>OT Hours</b>", label),
     ], [
-        str(payslip["total_working_days"]),
-        str(payslip["present_days"]),
-        str(payslip["paid_leave_days"]),
-        str(payslip["unpaid_leave_days"]),
-        str(payslip["payable_days"]),
-        str(payslip["overtime_hours"]),
+        str(payslip.get("total_working_days") or payslip.get("components", {}).get("total_working_days") or "—"),
+        str(payslip.get("present_days") or payslip.get("components", {}).get("present_days") or "—"),
+        str(payslip.get("paid_leave_days") or payslip.get("components", {}).get("paid_leave_days") or "—"),
+        str(payslip.get("unpaid_leave_days") or payslip.get("components", {}).get("unpaid_leave_days") or "—"),
+        str(payslip.get("payable_days") or payslip.get("components", {}).get("payable_days") or "—"),
+        str(payslip.get("overtime_hours") or payslip.get("components", {}).get("overtime_hours") or "—"),
     ]]
     att_tbl = Table(att_rows, colWidths=[30 * mm] * 6)
     att_tbl.setStyle(TableStyle([
@@ -300,39 +315,42 @@ def build_payslip_pdf(payslip: dict, employee: dict, branch_name: str = "Ormodex
     story.append(Spacer(1, 8))
 
     # Earnings & deductions side-by-side
-    earn = payslip["earnings"]
-    ded = payslip["deductions"]
+    # Fields may be at top level (old rows) or nested in components JSONB (new rows)
+    _comp = payslip.get("components") or {}
+    earn = payslip.get("earnings") or _comp.get("earnings") or {}
+    ded = payslip.get("deductions") or _comp.get("deductions") or {}
+    _g = lambda key, d=payslip: d.get(key) or _comp.get(key) or 0
     earn_rows = [
-        ["Basic", earn["basic"]],
-        ["HRA", earn["hra"]],
-        ["DA", earn["da"]],
-        ["Conveyance", earn["conveyance"]],
-        ["Medical", earn["medical"]],
-        ["Special Allowance", earn["special_allowance"]],
-        ["Other Allowance", earn["other_allowance"]],
-        ["Overtime", earn["overtime"]],
+        ["Basic", earn.get("basic", 0)],
+        ["HRA", earn.get("hra", 0)],
+        ["DA", earn.get("da", 0)],
+        ["Conveyance", earn.get("conveyance", 0)],
+        ["Medical", earn.get("medical", 0)],
+        ["Special Allowance", earn.get("special_allowance", 0)],
+        ["Other Allowance", earn.get("other_allowance", 0)],
+        ["Overtime", earn.get("overtime", 0)],
     ]
-    if payslip.get("bonus", 0):
-        earn_rows.append(["Bonus", payslip["bonus"]])
-    if payslip.get("incentive", 0):
-        earn_rows.append(["Incentive", payslip["incentive"]])
+    if _g("bonus"):
+        earn_rows.append(["Bonus", _g("bonus")])
+    if _g("incentive"):
+        earn_rows.append(["Incentive", _g("incentive")])
 
     ded_rows = [
-        ["PF", ded["pf"]],
-        ["ESI (Employee)", ded["esi_employee"]],
-        ["Professional Tax", ded["professional_tax"]],
-        ["TDS", ded["tds"]],
-        ["Advance Recovered", ded["advance_recovered"]],
+        ["PF", ded.get("pf", 0)],
+        ["ESI (Employee)", ded.get("esi_employee", 0)],
+        ["Professional Tax", ded.get("professional_tax", 0)],
+        ["TDS", ded.get("tds", 0)],
+        ["Advance Recovered", ded.get("advance_recovered", 0)],
     ]
     if ded.get("other_deduction"):
-        ded_rows.append([payslip.get("other_deduction_label") or "Other", ded["other_deduction"]])
+        ded_rows.append([payslip.get("other_deduction_label") or _comp.get("other_deduction_label") or "Other", ded["other_deduction"]])
 
     earnings_tbl = Table(
-        [["EARNINGS", "Amount (₹)"]] + [[r[0], _r(r[1])] for r in earn_rows] + [["", ""]] * (max(0, len(ded_rows) - len(earn_rows))) + [["GROSS", _r(payslip["gross_salary"])]],
+        [["EARNINGS", "Amount (₹)"]] + [[r[0], _r(r[1])] for r in earn_rows] + [["", ""]] * (max(0, len(ded_rows) - len(earn_rows))) + [["GROSS", _r(_g("gross_salary"))]],
         colWidths=[44 * mm, 32 * mm],
     )
     deductions_tbl = Table(
-        [["DEDUCTIONS", "Amount (₹)"]] + [[r[0], _r(r[1])] for r in ded_rows] + [["", ""]] * (max(0, len(earn_rows) - len(ded_rows))) + [["TOTAL", _r(payslip["total_deduction"])]],
+        [["DEDUCTIONS", "Amount (₹)"]] + [[r[0], _r(r[1])] for r in ded_rows] + [["", ""]] * (max(0, len(earn_rows) - len(ded_rows))) + [["TOTAL", _r(_g("total_deduction"))]],
         colWidths=[44 * mm, 32 * mm],
     )
     for t in (earnings_tbl, deductions_tbl):
@@ -359,7 +377,7 @@ def build_payslip_pdf(payslip: dict, employee: dict, branch_name: str = "Ormodex
     # Net pay block
     net_tbl = Table(
         [[Paragraph("<b>NET SALARY</b>", ParagraphStyle("n1", parent=body, fontSize=11, fontName="Helvetica-Bold")),
-          Paragraph(f"<font name='Helvetica-Bold' size='14'>{_r(payslip['net_salary'])}</font>", body)],
+          Paragraph(f"<font name='Helvetica-Bold' size='14'>{_r(_g('net_salary'))}</font>", body)],
          [Paragraph("<b>In words</b>", label),
           Paragraph(payslip.get("amount_in_words", ""), body)]],
         colWidths=[110 * mm, 70 * mm],

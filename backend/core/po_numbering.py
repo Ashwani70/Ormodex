@@ -5,6 +5,7 @@ from typing import Optional, Any
 
 from fastapi import HTTPException
 
+from .auth_utils import is_admin_role
 from .db import db
 from .utils import now_iso, new_id
 
@@ -20,7 +21,7 @@ PERM_EDIT = "po_number_edit"
 
 
 def has_perm(user: dict, perm: str) -> bool:
-    if (user or {}).get("role") == "admin":
+    if is_admin_role((user or {}).get("role")):
         return True
     return perm in ((user or {}).get("module_permissions") or [])
 

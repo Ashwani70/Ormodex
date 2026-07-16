@@ -11,7 +11,6 @@ import os
 import httpx
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +42,9 @@ class GstFilingNotFound(GstFilingProviderError):
 
 # ── Configuration check ──────────────────────────────────────────────
 def is_configured() -> bool:
-    """True when the RapidAPI key and filing host are set."""
+    """True when the RapidAPI key is set (filing host has a usable default)."""
     key = os.environ.get("RAPIDAPI_KEY", "")
-    host = os.environ.get("RAPIDAPI_FILING_HOST", "")
-    return bool(key and key != "your_rapidapi_key_here" and host)
+    return bool(key and key != "your_rapidapi_key_here")
 
 
 # ── Core lookup ──────────────────────────────────────────────────────
@@ -138,8 +136,11 @@ def _normalize_filings(raw: list) -> list:
     """Normalize raw API filing records into a consistent shape."""
     filings = []
     for item in raw:
+        # Normalize: providers return "GSTR-1", "GSTR-3B" etc.; strip hyphens
+        # so compliance lookups using "GSTR1" / "GSTR3B" match correctly.
+        raw_rt = str(item.get("return_type") or "").upper().replace("-", "").replace(" ", "")
         filings.append({
-            "return_type": item.get("return_type", ""),
+            "return_type": raw_rt,
             "return_period": item.get("return_period", ""),
             "return_period_formatted": item.get("return_period_formatted", ""),
             "status": item.get("status", "Not Filed"),

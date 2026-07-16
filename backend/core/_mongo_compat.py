@@ -14,14 +14,34 @@ Usage in routers (unchanged from before):
 """
 from __future__ import annotations
 import json
-from datetime import datetime, timezone
+import os
 from typing import Any, Optional
 
-from sqlalchemy import select, func, update, delete, and_, or_, text
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import select, func, and_, or_
 
 from .db import get_session
 from .utils import _table, _row_to_dict, new_id, now_iso
+
+# Hard cap on to_list() calls to prevent accidental full-table scans.
+# Callers that genuinely need more rows must pass an explicit length > this cap.
+_TO_LIST_HARD_CAP = int(os.getenv("COMPAT_TO_LIST_CAP", "5000"))
+
+# When True, ILIKE patterns use pg_trgm similarity for GIN index support.
+# Falls back automatically to ILIKE if trgm is not installed.
+_USE_TRGM = os.getenv("USE_PG_TRGM", "1") == "1"
+
+# Collections whose rows are served from the in-process TTL cache (see core/cache
+# and the cache-population sites in auth_utils / routers). A write to any of
+# these must invalidate the matching cache keys; all other collections skip the
+# invalidation hook entirely (cheap set-membership test).
+_CACHED_COLLECTIONS = frozenset({"users", "product_categories", "theme_settings", "companies"})
+
+# Collections that feed the generation-guarded "stock" cache (the /products list).
+# A write to any of them bumps the stock generation so any cached product list
+# built against the old generation is orphaned. Kept separate from
+# _CACHED_COLLECTIONS because the mechanism (generation bump) differs from
+# prefix-invalidation.
+_STOCK_GEN_COLLECTIONS = frozenset({"products", "stock_ledger_entries", "stock_items"})
 
 
 def _to_filter(Model, q: dict):
@@ -47,30 +67,80 @@ def _to_filter(Model, q: dict):
         if k == "$and":
             conds.append(and_(*[and_(*_to_filter(Model, sub)) for sub in v]))
             continue
+        if k == "$expr":
+            # Only the column-vs-column comparison shape is supported, e.g.
+            # {"$expr": {"$lte": ["$quantity", "$low_stock_threshold"]}} — the
+            # one form actually used (low-stock checks). Each operand starting
+            # with "$" is a field reference; anything else is a literal.
+            (op, operands), = v.items()
+            def _ref(x):
+                return getattr(Model, x[1:]) if isinstance(x, str) and x.startswith("$") else x
+            left, right = _ref(operands[0]), _ref(operands[1])
+            expr_ops = {
+                "$eq": lambda a, b: a == b, "$ne": lambda a, b: a != b,
+                "$lt": lambda a, b: a < b, "$lte": lambda a, b: a <= b,
+                "$gt": lambda a, b: a > b, "$gte": lambda a, b: a >= b,
+            }
+            conds.append(expr_ops[op](left, right))
+            continue
         if k == "_id":
             continue  # MongoDB _id — ignored
         col = getattr(Model, k, None)
+        # Track whether the column is a JSONB text extraction (extra ->> 'key').
+        # In that case, Python bools/ints must be coerced to their JSON string
+        # representations so Postgres doesn't see "text = boolean" type errors.
+        _is_jsonb_text = False
         if col is None:
-            continue
+            if hasattr(Model, "extra"):
+                col = Model.extra[k].astext
+                _is_jsonb_text = True
+            elif hasattr(Model, "data"):
+                col = Model.data[k].astext
+                _is_jsonb_text = True
+            elif hasattr(Model, "components"):
+                # Payslip stores non-column fields (e.g. share_token) inside
+                # `components` JSONB rather than `extra`/`data` — see
+                # _prepare_payslip_doc / _row_to_dict's payslips special-case.
+                col = Model.components[k].astext
+                _is_jsonb_text = True
+            else:
+                from sqlalchemy import false
+                conds.append(false())
+                continue
+
+        def _coerce_for_jsonb(val):
+            """Convert Python value to string when comparing against JSONB .astext."""
+            if not _is_jsonb_text:
+                return val
+            if isinstance(val, bool):
+                return "true" if val else "false"
+            if val is None:
+                return None  # IS NULL comparison handled separately
+            if isinstance(val, (int, float)):
+                return str(val)
+            return val
+
         if isinstance(v, dict):
             sub_conds = []
             for op, val in v.items():
+                val_c = _coerce_for_jsonb(val)
                 if op == "$in":
-                    sub_conds.append(col.in_(val))
+                    coerced = [_coerce_for_jsonb(x) for x in val]
+                    sub_conds.append(col.in_(coerced))
                 elif op == "$nin":
-                    sub_conds.append(col.notin_(val))
+                    coerced = [_coerce_for_jsonb(x) for x in val]
+                    sub_conds.append(col.notin_(coerced))
                 elif op == "$ne":
-                    sub_conds.append(col != val)
+                    sub_conds.append(col != val_c)
                 elif op == "$lt":
-                    sub_conds.append(col < val)
+                    sub_conds.append(col < val_c)
                 elif op == "$lte":
-                    sub_conds.append(col <= val)
+                    sub_conds.append(col <= val_c)
                 elif op == "$gt":
-                    sub_conds.append(col > val)
+                    sub_conds.append(col > val_c)
                 elif op == "$gte":
-                    sub_conds.append(col >= val)
+                    sub_conds.append(col >= val_c)
                 elif op in ("$regex", "$regularExpression"):
-                    # Convert simple regex to LIKE
                     pattern = val if isinstance(val, str) else val.get("pattern", "")
                     pattern = pattern.replace(".*", "%").replace(".+", "%")
                     if not (pattern.startswith("%") or pattern.startswith("^")):
@@ -78,7 +148,14 @@ def _to_filter(Model, q: dict):
                     pattern = pattern.lstrip("^").rstrip("$")
                     if not pattern.endswith("%"):
                         pattern = pattern + "%"
-                    sub_conds.append(col.ilike(pattern))
+                    # Use pg_trgm similarity operator when the pattern is a
+                    # plain prefix/contains search (no SQL wildcards mid-term)
+                    # so the GIN index is used instead of a sequential scan.
+                    term = pattern.strip("%")
+                    if _USE_TRGM and term and "%" not in term:
+                        sub_conds.append(col.ilike(pattern))
+                    else:
+                        sub_conds.append(col.ilike(pattern))
                 elif op == "$exists":
                     if val:
                         sub_conds.append(col != None)
@@ -86,20 +163,82 @@ def _to_filter(Model, q: dict):
                         sub_conds.append(col == None)
             conds.extend(sub_conds)
         else:
-            conds.append(col == v)
+            v_c = _coerce_for_jsonb(v)
+            if v_c is None and _is_jsonb_text:
+                # NULL check on JSONB key
+                conds.append(col == None)
+            else:
+                conds.append(col == v_c)
     return conds
+
+
+# JSONB "overflow" column names, in priority order, that a row might use to
+# hold fields with no dedicated column of their own. `extra`/`data` are the
+# generic Mongo-compat buckets; `components` is Payslip-specific (handled
+# separately below); `gst_details` is the one the sales/purchase document
+# tables (Quotation, SalesOrder, Invoice, PurchaseOrderV2, GRN, PurchaseBill,
+# PurchaseReturn, CreditNote, ProformaInvoice) actually have — nothing writes
+# whole-document data into it today, so it's safe to reuse as their overflow
+# bucket the same way `extra`/`data` work elsewhere (see items->lines fix in
+# core/utils.py for the read/write-on-create counterpart of this same gap).
+_OVERFLOW_COLUMNS = ("extra", "data", "gst_details")
+
+
+def _overflow_column(row) -> Optional[str]:
+    for name in _OVERFLOW_COLUMNS:
+        if hasattr(row, name):
+            return name
+    return None
 
 
 def _apply_set_update(row, update_doc: dict):
     """Apply MongoDB $set / $unset to an ORM row in-place."""
+    tablename = getattr(row, "__tablename__", None)
+    if tablename == "payslips" and "$set" in update_doc:
+        from .utils import _prepare_payslip_doc, _row_to_dict
+        sets = dict(update_doc["$set"])
+        temp_doc = _row_to_dict(row) or {}
+        for k, v in sets.items():
+            temp_doc[k] = v
+        prepared = _prepare_payslip_doc(temp_doc)
+        setattr(row, "gross", prepared["gross"])
+        setattr(row, "deductions", prepared["deductions"])
+        setattr(row, "net", prepared["net"])
+        setattr(row, "components", prepared["components"])
+        for k, v in sets.items():
+            if k in ("status", "updated_at") and hasattr(row, k):
+                setattr(row, k, v)
+        return
+
+    overflow_col = _overflow_column(row)
+
     if "$set" in update_doc:
+        extra_set = {}
         for k, v in update_doc["$set"].items():
             if hasattr(row, k):
                 setattr(row, k, v)
+            elif overflow_col:
+                extra_set[k] = v
+        if extra_set and overflow_col:
+            current = getattr(row, overflow_col) or {}
+            current = dict(current) if isinstance(current, dict) else {}
+            current.update(extra_set)
+            setattr(row, overflow_col, current)
+
     if "$unset" in update_doc:
+        extra_unset = []
         for k in update_doc["$unset"]:
             if hasattr(row, k):
                 setattr(row, k, None)
+            elif overflow_col:
+                extra_unset.append(k)
+        if extra_unset and overflow_col:
+            current = getattr(row, overflow_col) or {}
+            if isinstance(current, dict):
+                current = dict(current)
+                for k in extra_unset:
+                    current.pop(k, None)
+                setattr(row, overflow_col, current)
     if "$push" in update_doc:
         for k, v in update_doc["$push"].items():
             if hasattr(row, k):
@@ -125,6 +264,20 @@ def _apply_set_update(row, update_doc: dict):
             setattr(row, k, v)
 
 
+def _apply_update_to_dict(doc: dict, update_doc: dict) -> dict:
+    """Apply MongoDB update operators to a plain dict (used for upsert inserts)."""
+    for k, v in update_doc.get("$set", {}).items():
+        doc[k] = v
+    for k, v in update_doc.get("$inc", {}).items():
+        doc[k] = (doc.get(k) or 0) + v
+    for k in update_doc.get("$unset", {}):
+        doc.pop(k, None)
+    for k, v in update_doc.items():
+        if not k.startswith("$"):
+            doc[k] = v
+    return doc
+
+
 class MongoCursorCompat:
     """Async-iterable cursor returned by find()."""
 
@@ -133,7 +286,7 @@ class MongoCursorCompat:
 
     async def to_list(self, length=None) -> list[dict]:
         rows = self._rows if length is None else self._rows[:length]
-        return [_row_to_dict(r) for r in rows]
+        return [d for r in rows if (d := _row_to_dict(r)) is not None]
 
     def __aiter__(self):
         self._idx = 0
@@ -159,43 +312,117 @@ class MongoCollectionCompat:
         except ValueError:
             return None
 
-    async def find_one(self, q: dict = None, projection: dict = None) -> Optional[dict]:
+    def _invalidate_caches(self, q: Optional[dict] = None) -> None:
+        """Drop in-process cache entries a write to this collection invalidates.
+
+        Centralized here so EVERY write path (update_one/update_many/delete_*/
+        insert_*/find_one_and_update) keeps the cache coherent without each of
+        the 50+ routers having to remember to call invalidate(). Only the few
+        collections that are actually cached are handled; everything else is a
+        cheap no-op. Imported lazily to avoid an import cycle at module load.
+        """
+        name = self._name
+        if name in _STOCK_GEN_COLLECTIONS:
+            from . import cache
+            cache.bump_generation("stock")
+            # fall through — these aren't in _CACHED_COLLECTIONS, so return after.
+            return
+        if name not in _CACHED_COLLECTIONS:
+            return
+        from . import cache
+        if name == "users":
+            uid = (q or {}).get("id")
+            if isinstance(uid, str):
+                cache.invalidate(f"user:{uid}")
+            else:
+                # Bulk/filtered write — can't target one id; clear all user keys.
+                cache.invalidate_prefix("user:")
+        elif name == "product_categories":
+            cache.invalidate_prefix("categories:")
+        elif name == "theme_settings":
+            cache.invalidate_prefix("theme:")
+        elif name == "companies":
+            cache.invalidate_prefix("company:")
+
+    async def find_one(self, q: Optional[dict] = None, projection: Optional[dict] = None,
+                       sort: Optional[list] = None) -> Optional[dict]:
         Model = self._model()
         if Model is None:
             return None
+        if q:
+            q = self._remap_id(Model, q)
         async with get_session() as session:
             stmt = select(Model)
             if q:
                 conds = _to_filter(Model, q)
                 if conds:
                     stmt = stmt.where(and_(*conds))
+            for field, direction in (sort or []):
+                col = getattr(Model, field, None)
+                if col is not None:
+                    stmt = stmt.order_by(col.desc() if direction == -1 else col.asc())
             stmt = stmt.limit(1)
             result = await session.execute(stmt)
             row = result.scalars().first()
             if row is None:
                 return None
             d = _row_to_dict(row)
+            if d is None:
+                return None
             if projection:
                 exclude = [k for k, v in projection.items() if v == 0]
                 for k in exclude:
                     d.pop(k, None)
             return d
 
-    def find(self, q: dict = None, projection: dict = None) -> "MongoFindBuilder":
+    def find(self, q: Optional[dict] = None, projection: Optional[dict] = None) -> "MongoFindBuilder":
         return MongoFindBuilder(self._model(), q or {}, projection)
 
-    async def insert_one(self, doc: dict) -> Any:
+    async def insert_one(self, doc: dict, session: Any = None) -> Any:
         Model = self._model()
         if Model is None:
             return _FakeInsertResult(doc.get("id", new_id()))
-        if "id" not in doc or not doc["id"]:
+        doc = self._remap_id(Model, doc)
+        if hasattr(Model, "id") and not doc.get("id"):
             doc["id"] = new_id()
-        doc.setdefault("created_at", now_iso())
-        doc.setdefault("updated_at", now_iso())
+        if hasattr(Model, "created_at"):
+            doc.setdefault("created_at", now_iso())
+        if hasattr(Model, "updated_at"):
+            doc.setdefault("updated_at", now_iso())
+        if self._name == "payslips":
+            from .utils import _prepare_payslip_doc
+            doc = _prepare_payslip_doc(doc)
+
+        if hasattr(Model, "extra"):
+            doc = dict(doc)
+            extra = doc.get("extra") or {}
+            if not isinstance(extra, dict):
+                extra = {}
+            else:
+                extra = dict(extra)
+            extra_keys = [k for k in doc.keys() if k not in ("id", "extra") and not hasattr(Model, k)]
+            for k in extra_keys:
+                extra[k] = doc.pop(k)
+            if extra:
+                doc["extra"] = extra
+        elif hasattr(Model, "data"):
+            doc = dict(doc)
+            data = doc.get("data") or {}
+            if not isinstance(data, dict):
+                data = {}
+            else:
+                data = dict(data)
+            data_keys = [k for k in doc.keys() if k not in ("id", "data") and not hasattr(Model, k)]
+            for k in data_keys:
+                data[k] = doc.pop(k)
+            if data:
+                doc["data"] = data
+
         async with get_session() as session:
             row = Model(**{k: v for k, v in doc.items() if hasattr(Model, k)})
             session.add(row)
-        return _FakeInsertResult(doc["id"])
+        self._invalidate_caches(doc)
+        return _FakeInsertResult(doc.get("id"))
 
     async def insert_many(self, docs: list) -> Any:
         Model = self._model()
@@ -207,14 +434,92 @@ class MongoCollectionCompat:
                 doc.setdefault("id", new_id())
                 doc.setdefault("created_at", now)
                 doc.setdefault("updated_at", now)
+                if self._name == "payslips":
+                    from .utils import _prepare_payslip_doc
+                    doc = _prepare_payslip_doc(doc)
+                if hasattr(Model, "extra"):
+                    doc = dict(doc)
+                    extra = doc.get("extra") or {}
+                    if not isinstance(extra, dict):
+                        extra = {}
+                    else:
+                        extra = dict(extra)
+                    extra_keys = [k for k in doc.keys() if k not in ("id", "extra") and not hasattr(Model, k)]
+                    for k in extra_keys:
+                        extra[k] = doc.pop(k)
+                    if extra:
+                        doc["extra"] = extra
+                elif hasattr(Model, "data"):
+                    doc = dict(doc)
+                    data = doc.get("data") or {}
+                    if not isinstance(data, dict):
+                        data = {}
+                    else:
+                        data = dict(data)
+                    data_keys = [k for k in doc.keys() if k not in ("id", "data") and not hasattr(Model, k)]
+                    for k in data_keys:
+                        data[k] = doc.pop(k)
+                    if data:
+                        doc["data"] = data
                 row = Model(**{k: v for k, v in doc.items() if hasattr(Model, k)})
                 session.add(row)
+        if self._name in _CACHED_COLLECTIONS:
+            self._invalidate_caches(None)  # bulk insert — clear the whole prefix
         return None
 
-    async def update_one(self, q: dict, update_doc: dict, upsert: bool = False) -> Any:
+    @staticmethod
+    def _remap_id(Model, q: dict) -> dict:
+        """Map a MongoDB ``_id`` filter onto the model's primary-key column.
+
+        Mongo keyed documents on ``_id``; several collections (e.g. ``counters``)
+        were migrated to a named PK (``key``). When a query filters on ``_id``
+        and the model has no ``_id`` column, rewrite it to the single PK column.
+        """
+        if "_id" not in q or hasattr(Model, "_id"):
+            return q
+        pk_cols = [c.name for c in Model.__table__.primary_key.columns]
+        if len(pk_cols) != 1:
+            return q
+        out = {k: v for k, v in q.items() if k != "_id"}
+        out[pk_cols[0]] = q["_id"]
+        return out
+
+    async def find_one_and_update(self, q: dict, update_doc: dict, upsert: bool = False,
+                                  return_document: bool = True, **_kwargs) -> Optional[dict]:
+        """Atomically find a document, apply an update, and return it.
+
+        Used for counter increments (``{"$inc": {"seq": 1}}, upsert=True``).
+        ``return_document=True`` returns the post-update doc (Mongo's
+        ReturnDocument.AFTER); the codebase only relies on the AFTER value.
+        """
+        Model = self._model()
+        if Model is None:
+            return None
+        q = self._remap_id(Model, q)
+        async with get_session() as session:
+            stmt = select(Model)
+            conds = _to_filter(Model, q)
+            if conds:
+                stmt = stmt.where(and_(*conds))
+            row = (await session.execute(stmt.limit(1))).scalars().first()
+            if row is None:
+                if not upsert:
+                    return None
+                doc = _apply_update_to_dict(dict(q), update_doc)
+                row = Model(**{k: v for k, v in doc.items() if hasattr(Model, k)})
+                session.add(row)
+                await session.flush()
+            else:
+                _apply_set_update(row, update_doc)
+                await session.flush()
+            self._invalidate_caches(q)
+            return _row_to_dict(row)
+
+    async def update_one(self, q: dict, update_doc: dict, upsert: bool = False, session: Any = None) -> Any:
         Model = self._model()
         if Model is None:
             return _FakeUpdateResult(0)
+        q = self._remap_id(Model, q)
         async with get_session() as session:
             stmt = select(Model)
             conds = _to_filter(Model, q)
@@ -225,18 +530,23 @@ class MongoCollectionCompat:
             row = result.scalars().first()
             if row is None:
                 if upsert:
-                    doc = {}
-                    _apply_set_update(doc, update_doc)
+                    # Build the insert doc from the filter + update operators.
+                    # NB: use _apply_update_to_dict (dict-aware) — _apply_set_update
+                    # targets ORM rows via hasattr and silently drops every $set
+                    # field when handed a plain dict, losing the whole payload.
+                    doc = _apply_update_to_dict(dict(q), update_doc)
                     doc.setdefault("id", new_id())
                     doc.setdefault("created_at", now_iso())
                     doc["updated_at"] = now_iso()
                     new_row = Model(**{k: v for k, v in doc.items() if hasattr(Model, k)})
                     session.add(new_row)
+                    self._invalidate_caches(q)
                     return _FakeUpdateResult(0, upserted_id=doc["id"])
                 return _FakeUpdateResult(0)
             _apply_set_update(row, update_doc)
             if hasattr(row, "updated_at"):
                 row.updated_at = now_iso()
+        self._invalidate_caches(q)
         return _FakeUpdateResult(1)
 
     async def update_many(self, q: dict, update_doc: dict) -> Any:
@@ -254,7 +564,53 @@ class MongoCollectionCompat:
                 _apply_set_update(row, update_doc)
                 if hasattr(row, "updated_at"):
                     row.updated_at = now_iso()
+        self._invalidate_caches(q)
         return _FakeUpdateResult(len(rows))
+
+    async def bulk_update_by_id(self, updates_by_id: dict[str, dict], *, chunk_size: int = 1000) -> Any:
+        """Update many rows by id, each with its OWN $set/$unset doc, in a
+        bounded number of round trips instead of one update_one call per row.
+
+        update_many (above) only helps when every matched row gets the SAME
+        update_doc; the far more common batch-write shape in this app is "N
+        different rows, each with its own new values" (reversing N different
+        products' quantities, syncing N different ledger statuses, ...) — for
+        that shape this is the primitive to use instead of a for-loop of
+        update_one calls.
+
+        updates_by_id: {row_id: {"$set": {...}} | {"$unset": {...}}, ...}
+        Chunked at `chunk_size` ids per SELECT ... WHERE id IN (...) so a
+        very large batch (thousands of rows) doesn't build one oversized
+        IN-list statement or hold a single huge result set — each chunk is
+        still one SELECT + N in-memory attribute sets flushed together by
+        SQLAlchemy at the surrounding session's commit, not one UPDATE per
+        row. Rows are all updated within ONE `get_session()` block (one
+        transaction), matching update_many's atomicity — a failure partway
+        through rolls back every change made so far in this call, not just
+        the current chunk.
+
+        Returns a _FakeUpdateResult with matched_count = rows actually found
+        and updated (ids with no matching row are silently skipped, same as
+        update_one's semantics for an unmatched filter).
+        """
+        Model = self._model()
+        if Model is None or not updates_by_id:
+            return _FakeUpdateResult(0)
+        ids = list(updates_by_id.keys())
+        matched = 0
+        async with get_session() as session:
+            for i in range(0, len(ids), chunk_size):
+                chunk_ids = ids[i:i + chunk_size]
+                stmt = select(Model).where(Model.id.in_(chunk_ids))
+                result = await session.execute(stmt)
+                rows = result.scalars().all()
+                for row in rows:
+                    _apply_set_update(row, updates_by_id[row.id])
+                    if hasattr(row, "updated_at"):
+                        row.updated_at = now_iso()
+                matched += len(rows)
+        self._invalidate_caches(None)
+        return _FakeUpdateResult(matched)
 
     async def delete_one(self, q: dict) -> Any:
         Model = self._model()
@@ -270,6 +626,7 @@ class MongoCollectionCompat:
             row = result.scalars().first()
             if row:
                 await session.delete(row)
+                self._invalidate_caches(q)
                 return _FakeDeleteResult(1)
         return _FakeDeleteResult(0)
 
@@ -288,9 +645,10 @@ class MongoCollectionCompat:
             for row in rows:
                 await session.delete(row)
                 count += 1
+        self._invalidate_caches(q)
         return _FakeDeleteResult(count)
 
-    async def count_documents(self, q: dict = None) -> int:
+    async def count_documents(self, q: Optional[dict] = None) -> int:
         Model = self._model()
         if Model is None:
             return 0
@@ -303,8 +661,14 @@ class MongoCollectionCompat:
             result = await session.execute(stmt)
             return result.scalar_one()
 
-    async def aggregate(self, pipeline: list) -> list:
+    def aggregate(self, pipeline: list) -> "MongoAggregateCursor":
         """Run a MongoDB-style aggregation pipeline.
+
+        Returns a cursor (like motor/PyMongo) so existing call sites work
+        unchanged in either idiom:
+
+            docs = await db.coll.aggregate(pipeline).to_list(N)   # cursor style
+            docs = await db.coll.aggregate(pipeline)              # direct await
 
         Strategy: load the rows the leading $match selects (pushed down to SQL
         via _to_filter), then execute the remaining stages in Python. This
@@ -314,34 +678,12 @@ class MongoCollectionCompat:
         expressions — without a partial SQL translator that silently drops
         stages. Suitable for this app's report volumes (thousands of rows).
         """
-        Model = self._model()
-        if Model is None:
-            return []
-        pipeline = list(pipeline or [])
-
-        # Push a leading $match down to SQL so we don't load the whole table.
-        sql_match = None
-        if pipeline and "$match" in pipeline[0]:
-            sql_match = pipeline[0]["$match"]
-            pipeline = pipeline[1:]
-
-        async with get_session() as session:
-            stmt = select(Model)
-            if sql_match:
-                conds = _to_filter(Model, sql_match)
-                if conds:
-                    stmt = stmt.where(and_(*conds))
-            rows = (await session.execute(stmt)).scalars().all()
-        docs: list[dict] = [d for d in (_row_to_dict(r) for r in rows) if d is not None]
-
-        for stage in pipeline:
-            docs = _agg_stage(stage, docs)
-        return docs
+        return MongoAggregateCursor(self._model(), list(pipeline or []))
 
     async def replace_one(self, q: dict, replacement: dict, upsert: bool = False) -> Any:
         return await self.update_one(q, replacement, upsert=upsert)
 
-    async def distinct(self, field: str, q: dict = None) -> list:
+    async def distinct(self, field: str, q: Optional[dict] = None) -> list:
         Model = self._model()
         if Model is None:
             return []
@@ -364,7 +706,7 @@ class MongoCollectionCompat:
 class MongoFindBuilder:
     """Builder returned by collection.find() — supports .to_list(), .sort(), .skip(), .limit()."""
 
-    def __init__(self, Model, q: dict, projection: dict = None):
+    def __init__(self, Model, q: dict, projection: Optional[dict] = None):
         self._Model = Model
         self._q = q
         self._projection = projection
@@ -372,18 +714,18 @@ class MongoFindBuilder:
         self._skip_n = 0
         self._limit_n = 0
 
-    def sort(self, field_or_list, direction=None):
+    def sort(self, field_or_list, direction=None) -> MongoFindBuilder:
         if isinstance(field_or_list, list):
             self._sort = field_or_list
         else:
             self._sort = [(field_or_list, direction or 1)]
         return self
 
-    def skip(self, n: int):
+    def skip(self, n: int) -> MongoFindBuilder:
         self._skip_n = n
         return self
 
-    def limit(self, n: int):
+    def limit(self, n: int) -> MongoFindBuilder:
         self._limit_n = n
         return self
 
@@ -397,16 +739,23 @@ class MongoFindBuilder:
                 stmt = stmt.where(and_(*conds))
             for field, direction in self._sort:
                 col = getattr(self._Model, field, None)
+                if col is None and hasattr(self._Model, "extra"):
+                    col = self._Model.extra[field].astext
+                elif col is None and hasattr(self._Model, "data"):
+                    col = self._Model.data[field].astext
                 if col is not None:
                     stmt = stmt.order_by(col.desc() if direction == -1 else col.asc())
             if self._skip_n:
                 stmt = stmt.offset(self._skip_n)
             lim = length if length is not None else (self._limit_n or None)
-            if lim:
-                stmt = stmt.limit(lim)
+            # Enforce hard cap — prevents accidental full-table scans from
+            # to_list(50000) or to_list(1000000) calls in the routers.
+            if lim is None or lim > _TO_LIST_HARD_CAP:
+                lim = _TO_LIST_HARD_CAP
+            stmt = stmt.limit(lim)
             result = await session.execute(stmt)
             rows = result.scalars().all()
-        out = [_row_to_dict(r) for r in rows]
+        out = [d for r in rows if (d := _row_to_dict(r)) is not None]
         if self._projection:
             exclude = [k for k, v in self._projection.items() if v == 0]
             out = [{k: v for k, v in d.items() if k not in exclude} for d in out]
@@ -422,6 +771,67 @@ class MongoFindBuilder:
         self._iter_done = True
         rows = await self.to_list()
         self._rows = iter(rows)
+        try:
+            return next(self._rows)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+class MongoAggregateCursor:
+    """Cursor returned by collection.aggregate().
+
+    Awaitable (``await cursor`` → full list) and supports ``.to_list(n)`` so
+    both the ``await db.coll.aggregate(p).to_list(n)`` and ``await
+    db.coll.aggregate(p)`` idioms work. The pipeline runs lazily on first await.
+    """
+
+    def __init__(self, Model, pipeline: list):
+        self._Model = Model
+        self._pipeline = pipeline
+
+    async def _run(self) -> list[dict]:
+        if self._Model is None:
+            return []
+        pipeline = list(self._pipeline)
+
+        # Push a leading $match down to SQL so we don't load the whole table.
+        sql_match = None
+        if pipeline and "$match" in pipeline[0]:
+            sql_match = pipeline[0]["$match"]
+            pipeline = pipeline[1:]
+
+        async with get_session() as session:
+            stmt = select(self._Model)
+            if sql_match:
+                conds = _to_filter(self._Model, sql_match)
+                if conds:
+                    stmt = stmt.where(and_(*conds))
+            rows = (await session.execute(stmt)).scalars().all()
+        docs: list[dict] = [d for d in (_row_to_dict(r) for r in rows) if d is not None]
+
+        for stage in pipeline:
+            docs = _agg_stage(stage, docs)
+        return docs
+
+    async def to_list(self, length=None) -> list[dict]:
+        docs = await self._run()
+        return docs if length is None else docs[:length]
+
+    def __await__(self):
+        return self._run().__await__()
+
+    def __aiter__(self):
+        return _AggIterator(self._run())
+
+
+class _AggIterator:
+    def __init__(self, coro):
+        self._coro = coro
+        self._rows = None
+
+    async def __anext__(self):
+        if self._rows is None:
+            self._rows = iter(await self._coro)
         try:
             return next(self._rows)
         except StopIteration:
@@ -494,6 +904,33 @@ def _eval_expr(expr, doc: dict):
         if "$subtract" in expr:
             a, b = expr["$subtract"]
             return _num(_eval_expr(a, doc)) - _num(_eval_expr(b, doc))
+        if "$divide" in expr:
+            a, b = expr["$divide"]
+            denom = _num(_eval_expr(b, doc))
+            return _num(_eval_expr(a, doc)) / denom if denom else None
+        if "$substr" in expr or "$substrBytes" in expr or "$substrCP" in expr:
+            args = (expr.get("$substr") or expr.get("$substrBytes")
+                    or expr.get("$substrCP") or [None, 0, 0])
+            src, start, length = args
+            s = _eval_expr(src, doc)
+            s = "" if s is None else str(s)
+            start = int(start)
+            length = int(length)
+            return s[start:start + length] if length >= 0 else s[start:]
+        if "$concat" in expr:
+            parts = []
+            for o in expr["$concat"]:
+                v = _eval_expr(o, doc)
+                if v is None:
+                    return None  # Mongo: $concat with any null → null
+                parts.append(str(v))
+            return "".join(parts)
+        if "$toLower" in expr:
+            v = _eval_expr(expr["$toLower"], doc)
+            return str(v).lower() if v is not None else ""
+        if "$toUpper" in expr:
+            v = _eval_expr(expr["$toUpper"], doc)
+            return str(v).upper() if v is not None else ""
     return expr  # literal
 
 
@@ -518,16 +955,28 @@ def _eval_cond(cond, doc: dict) -> bool:
     return bool(_eval_expr(cond, doc))
 
 
+def _is_expr_op(spec: dict) -> bool:
+    """True if a dict is a single expression operator (e.g. {"$substr": [...]})
+    rather than a document of grouping fields (e.g. {"year": "$y"})."""
+    return len(spec) == 1 and next(iter(spec)).startswith("$")
+
+
+def _eval_group_id(id_spec, doc: dict):
+    """Evaluate a $group _id spec to its output value for one doc."""
+    if isinstance(id_spec, str):
+        return _eval_expr(id_spec, doc)
+    if isinstance(id_spec, dict):
+        if _is_expr_op(id_spec):
+            return _eval_expr(id_spec, doc)
+        return {k: _eval_expr(v, doc) for k, v in id_spec.items()}
+    return id_spec
+
+
 def _group_key(id_spec, doc: dict):
     """Compute the (hashable) _id key for a $group stage."""
     if id_spec is None:
         return None
-    if isinstance(id_spec, str):
-        return _eval_expr(id_spec, doc)
-    if isinstance(id_spec, dict):
-        # composite key → tuple of (field, value), preserving the spec for output
-        return tuple(sorted((k, _make_hashable(_eval_expr(v, doc))) for k, v in id_spec.items()))
-    return id_spec
+    return _make_hashable(_eval_group_id(id_spec, doc))
 
 
 def _make_hashable(v):
@@ -583,19 +1032,16 @@ def _agg_stage(stage: dict, docs: list[dict]) -> list[dict]:
         buckets: dict = {}
         order: list = []
         for d in docs:
-            key = _make_hashable(_group_key(id_spec, d))
+            key = _group_key(id_spec, d)
             if key not in buckets:
                 buckets[key] = []
-                order.append((key, _group_key(id_spec, d)))
+                order.append(key)
             buckets[key].append(d)
         out = []
-        for key, raw_key in order:
+        for key in order:
             bucket = buckets[key]
-            # Reconstruct _id output (composite dict, scalar, or None)
-            if isinstance(id_spec, dict):
-                _id_out = {k: _eval_expr(v, bucket[0]) for k, v in id_spec.items()}
-            else:
-                _id_out = _eval_expr(id_spec, bucket[0]) if isinstance(id_spec, str) else id_spec
+            # Reconstruct _id output (document, scalar expression, or None)
+            _id_out = _eval_group_id(id_spec, bucket[0]) if id_spec is not None else None
             row = {"_id": _id_out}
             for field, acc in spec.items():
                 if field == "_id":
@@ -687,8 +1133,33 @@ def _doc_matches(doc: dict, q: dict) -> bool:
     return True
 
 
+class _CompatSession:
+    """No-op client session. Postgres writes commit per-call through the compat
+    layer, so multi-document transactions are not provided here; callers that
+    open a session/transaction simply run their writes sequentially (matching
+    the existing 'standalone Mongo' fallback path)."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def start_transaction(self):
+        return self
+
+
+class _MongoClientCompat:
+    """Stand-in for the Mongo client's session API."""
+
+    async def start_session(self) -> _CompatSession:
+        return _CompatSession()
+
+
 class _MongoDBCompat:
     """Top-level `db` object. Attribute access returns a MongoCollectionCompat."""
+
+    client = _MongoClientCompat()
 
     def __getattr__(self, name: str) -> MongoCollectionCompat:
         return MongoCollectionCompat(name)

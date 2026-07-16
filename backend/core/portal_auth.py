@@ -29,7 +29,17 @@ PORTAL_ACCESS_MIN = 60 * 12   # 12h portal sessions
 def _portal_secret() -> str:
     # Derive a distinct secret from the internal one so portal tokens can never
     # be replayed against the internal realm (and vice-versa) even by accident.
-    base = os.environ.get("JWT_SECRET") or os.environ.get("SECRET_KEY") or "dev-secret"
+    # Fails closed (raises) if neither env var is set — matching
+    # core/auth_utils.py's jwt_secret(). A hardcoded fallback here would let
+    # anyone forge valid portal tokens against any deployment that forgot to
+    # set JWT_SECRET/SECRET_KEY, since the fallback string is public (it's in
+    # this source file).
+    base = os.environ.get("JWT_SECRET") or os.environ.get("SECRET_KEY")
+    if not base:
+        raise RuntimeError(
+            "JWT_SECRET or SECRET_KEY must be set — refusing to sign portal "
+            "tokens with a hardcoded fallback secret."
+        )
     return base + "::portal"
 
 

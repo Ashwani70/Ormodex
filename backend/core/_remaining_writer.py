@@ -479,8 +479,10 @@ async def _check_unique(collection: str, field: str, value: str, exclude_id: Opt
 # masters_models.py is used by many routers for Pydantic schemas — leave it alone
 
 # write all files
-for fname, content in files.items():
-    out = os.path.join(BASE, fname)
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(content)
-    print(f"Written {fname}: {len(content)} chars")
+if __name__ == "__main__":
+    for fname, content in files.items():
+        out = os.path.join(BASE, fname)
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"Written {fname}: {len(content)} chars")
+

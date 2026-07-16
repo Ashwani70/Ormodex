@@ -8,6 +8,7 @@ EMAIL = '''\
 """Resend email helper — sends transactional emails and logs to email_logs."""
 import base64
 import os
+from html import escape as _esc
 from typing import Optional, Any, cast
 
 import resend
@@ -76,8 +77,13 @@ def render_doc_email_html(
     doc_number: str,
     intro: Optional[str] = None,
 ) -> str:
+    # Escape all dynamic, potentially user-controlled values before embedding
+    # them in HTML to prevent markup/script injection in the rendered email.
+    doc_label_e = _esc(doc_label)
+    doc_number_e = _esc(doc_number)
+    recipient_e = _esc(recipient_name) if recipient_name else "Sir/Madam"
     intro_html = (
-        f\'<p style="color:#3f3f46;line-height:1.6;font-size:14px;margin:18px 0;">{intro}</p>\'
+        f\'<p style="color:#3f3f46;line-height:1.6;font-size:14px;margin:18px 0;">{_esc(intro)}</p>\'
         if intro else ""
     )
     return f"""<!doctype html>
@@ -90,9 +96,9 @@ def render_doc_email_html(
         </td></tr>
         <tr><td style="background:#facc15;height:4px;"></td></tr>
         <tr><td style="padding:28px;color:#0a0a0a;">
-          <h1 style="margin:6px 0 18px 0;font-size:22px;">{doc_label} {doc_number}</h1>
-          <p>Dear {recipient_name or \'Sir/Madam\'},</p>
-          <p>Please find attached the {doc_label.lower()} <b>{doc_number}</b>.</p>
+          <h1 style="margin:6px 0 18px 0;font-size:22px;">{doc_label_e} {doc_number_e}</h1>
+          <p>Dear {recipient_e},</p>
+          <p>Please find attached the {doc_label_e.lower()} <b>{doc_number_e}</b>.</p>
           {intro_html}
           <p>Regards,<br><b>Ormodex ERP</b></p>
         </td></tr>
@@ -103,6 +109,10 @@ def render_doc_email_html(
 
 
 def render_password_reset_html(*, reset_link: str, expires_minutes: int = 30) -> str:
+    # Only allow http(s) links, then attribute-escape so a crafted value can't
+    # break out of the href or inject a javascript:/data: scheme.
+    safe_link = reset_link if reset_link.startswith(("http://", "https://")) else "#"
+    safe_link = _esc(safe_link, quote=True)
     return f"""<!doctype html>
 <html><body style="margin:0;padding:0;background:#f4f4f5;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;padding:32px 12px;">
@@ -117,7 +127,7 @@ def render_password_reset_html(*, reset_link: str, expires_minutes: int = 30) ->
           <p>You requested a password reset for your Ormodex ERP account.</p>
           <p>Click the button below to reset your password. This link expires in {expires_minutes} minutes.</p>
           <p style="margin:24px 0;">
-            <a href="{reset_link}" style="background:#0a0a0a;color:#facc15;padding:12px 24px;text-decoration:none;font-weight:700;border-radius:4px;">
+            <a href="{safe_link}" style="background:#0a0a0a;color:#facc15;padding:12px 24px;text-decoration:none;font-weight:700;border-radius:4px;">
               Reset Password
             </a>
           </p>
@@ -130,13 +140,15 @@ def render_password_reset_html(*, reset_link: str, expires_minutes: int = 30) ->
 </body></html>"""
 '''
 
-email_path = os.path.join(BASE, "email.py")
-with open(email_path, "w", encoding="utf-8") as f:
-    f.write(EMAIL)
-print(f"Written email.py: {len(EMAIL)} chars")
 
-# ── Append calc_totals and _diff_fields to utils.py ──────────────────────────
-ADDITIONS = '''
+if __name__ == "__main__":
+    email_path = os.path.join(BASE, "email.py")
+    with open(email_path, "w", encoding="utf-8") as f:
+        f.write(EMAIL)
+    print(f"Written email.py: {len(EMAIL)} chars")
+
+    # ── Append calc_totals and _diff_fields to utils.py ──────────────────────────
+    ADDITIONS = '''
 
 # ── helpers imported by routers ────────────────────────────────────────────────
 _AUDIT_IGNORED_FIELDS = frozenset({"_id", "updated_at", "created_at"})
@@ -163,7 +175,8 @@ def _diff_fields(old: dict | None, new: dict | None) -> list[str]:
     return sorted(k for k in keys if old.get(k) != new.get(k))
 '''
 
-utils_path = os.path.join(BASE, "utils.py")
-with open(utils_path, "a", encoding="utf-8") as f:
-    f.write(ADDITIONS)
-print(f"Appended calc_totals + _diff_fields to utils.py")
+    utils_path = os.path.join(BASE, "utils.py")
+    with open(utils_path, "a", encoding="utf-8") as f:
+        f.write(ADDITIONS)
+    print(f"Appended calc_totals + _diff_fields to utils.py")
+

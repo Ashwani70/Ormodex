@@ -254,6 +254,13 @@ class StockLedgerEntry(Base):
     qty_in = _num(); qty_out = _num(); value_in = _num(); value_out = _num()
     running_qty = _num(); running_value = _num(); txn_date = _ts()
     extra = _jsonb()
+    # Stock ledger unification (2026-07): denormalized so this row is a
+    # complete superset of stock_transactions on its own, without needing a
+    # stock_items join — product_id/name (this table is keyed by
+    # stock_item_id, not product_id), the posting user, and a free-text
+    # reason. See alembic/versions/022_stock_ledger_unify_columns.py.
+    product_id = _text(); product_name = _text()
+    user_id = _text(); user_name = _text(); reason = _text()
 
 
 class StockTransaction(Base):

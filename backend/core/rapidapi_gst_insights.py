@@ -139,7 +139,7 @@ async def lookup_gstin(gstin: str, api_key: Optional[str] = None) -> dict:
         addr.get("district"),
         addr.get("pincode"),
     ]
-    address = ", ".join(p.strip() for p in addr_parts if p and str(p).strip())
+    address = ", ".join(str(p).strip() for p in addr_parts if p is not None and str(p).strip())
 
     pincode = str(addr.get("pincode") or "").strip()
 

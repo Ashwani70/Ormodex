@@ -39,8 +39,7 @@ def rate_limit(key: str, limit: int, window_seconds: int, request: Request | Non
     import os
     if os.environ.get("BYPASS_RATE_LIMIT") == "true":
         return
-    if request is not None and request.headers.get("x-test-bypass") == "true":
-        return
+
     import sys
     if "pytest" in sys.modules:
         return
@@ -53,8 +52,15 @@ def rate_limit(key: str, limit: int, window_seconds: int, request: Request | Non
         _buckets[key] = (window_start, count)
         # Opportunistic cleanup so the dict can't grow unbounded.
         if len(_buckets) > 10_000:
+            # First, evict expired entries.
             for k, (ws, _) in list(_buckets.items()):
                 if now - ws >= window_seconds:
+                    _buckets.pop(k, None)
+            # Hard cap: if still over threshold, evict oldest active entries.
+            if len(_buckets) > 10_000:
+                overflow = len(_buckets) - 10_000
+                oldest_keys = sorted(_buckets, key=lambda k: _buckets[k][0])[:overflow]
+                for k in oldest_keys:
                     _buckets.pop(k, None)
     if count > limit:
         retry_after = int(window_seconds - (now - window_start))

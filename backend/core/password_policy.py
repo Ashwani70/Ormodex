@@ -27,7 +27,7 @@ _COMMON = {
 
 def _min_length() -> int:
     try:
-        return max(8, int(os.environ.get("PASSWORD_MIN_LENGTH", 12)))
+        return max(12, int(os.environ.get("PASSWORD_MIN_LENGTH", 12)))
     except (TypeError, ValueError):
         return 12
 
@@ -65,3 +65,25 @@ def validate_password(password: str) -> str:
     if errors:
         raise ValueError(" ".join(errors))
     return password
+
+
+PASSWORD_HISTORY_SIZE = 5
+
+
+def is_password_reused(new_plaintext: str, history_hashes: list[str] | None, current_hash: str | None) -> bool:
+    """True if `new_plaintext` matches the current password hash or any of the
+    last PASSWORD_HISTORY_SIZE historical hashes. bcrypt hashes can't be
+    reversed, so reuse detection has to bcrypt-compare against each stored hash
+    rather than comparing plaintexts."""
+    import bcrypt
+
+    candidate = new_plaintext.encode("utf-8")
+    for h in [current_hash, *(history_hashes or [])]:
+        if not h:
+            continue
+        try:
+            if bcrypt.checkpw(candidate, h.encode("utf-8")):
+                return True
+        except Exception:
+            continue
+    return False

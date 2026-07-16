@@ -29,7 +29,6 @@ import json
 import asyncio
 import logging
 import hashlib
-from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
@@ -414,12 +413,12 @@ def build_ewb_payload(invoice: dict, company: dict, customer: dict, transport: d
 
 
 def _to_nic_date(value: Any) -> str:
-    """NIC expects dd/mm/yyyy."""
+    """NIC expects dd/mm/yyyy. Raises ValueError on unparseable input."""
     s = str(value or "")[:10]
     try:
         return datetime.fromisoformat(s).strftime("%d/%m/%Y")
     except Exception:
-        return datetime.now(timezone.utc).strftime("%d/%m/%Y")
+        raise ValueError(f"Invalid date value for NIC e-way bill: {value!r}")
 
 
 # ── Deterministic sandbox simulator ──────────────────────────────────────────

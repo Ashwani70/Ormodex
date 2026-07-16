@@ -83,7 +83,6 @@ utils_src = utils_src.replace(old_map_footer, new_map_footer)
 # The whole map body needs to be prefixed with _s.
 # We already replaced the header/footer; now fix the body entries
 # Replace Model references in the map dict
-import re
 
 # Find the map dict body and prefix all class names
 def prefix_map_values(src):

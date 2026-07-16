@@ -389,15 +389,13 @@ class MongoFindBuilder:
         return out
 
     def __aiter__(self):
-        self._iter_done = False
+        self._rows = None  # reset on each new iteration
         return self
 
     async def __anext__(self):
-        if self._iter_done:
-            raise StopAsyncIteration
-        self._iter_done = True
-        rows = await self.to_list()
-        self._rows = iter(rows)
+        if self._rows is None:
+            rows = await self.to_list()
+            self._rows = iter(rows)
         try:
             return next(self._rows)
         except StopIteration:

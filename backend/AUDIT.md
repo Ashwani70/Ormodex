@@ -37,7 +37,7 @@ mechanism differs while the guarantees are preserved:
   `doc_id`, `old_values`, `new_values`, `timestamp`) are retained so existing
   readers (`/reports/audit`) keep working.
 
-- **Read access** — `GET /audit-log` (`routers/audit.py`), filterable by entity,
+- **Read access** — `GET /audit` (alias: `GET /audit-log`) (`routers/audit.py`), filterable by entity,
   entity id, user, action and date range, tenant-scoped, and RBAC-guarded to
   `admin` / `auditor` roles (or an explicit `audit` module permission). The
   router exposes **only GET** routes — no application path updates or deletes a

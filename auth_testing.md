@@ -6,7 +6,7 @@ Backend uses JWT-based custom auth (FastAPI + MongoDB). Cookies are httpOnly and
 ```
 curl -c cookies.txt -X POST $REACT_APP_BACKEND_URL/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@gravityengineering.com","password":"Admin@123"}'
+  -d '{"email":"admin@gravityengineering.com","password":"Admin@123456"}'
 
 curl -b cookies.txt $REACT_APP_BACKEND_URL/api/auth/me
 ```

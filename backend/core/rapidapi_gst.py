@@ -167,7 +167,7 @@ async def lookup_gstin(gstin: str, api_key: Optional[str] = None) -> dict:
     # Get state from state mapping using state_code
     from routers.gst_accounting import STATE_CODES
     state_code = gstin[:2]
-    state = STATE_CODES.get(state_code, "Maharashtra")
+    state = STATE_CODES.get(state_code, "")
 
     return {
         "company_name": legal_name,

@@ -1,7 +1,6 @@
 """
 GSTIN detail lookup and search via the GSTVerify.co.in API.
 """
-import os
 import httpx
 import logging
 import re

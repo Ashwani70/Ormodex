@@ -22,6 +22,15 @@ ACC_ACCOUNTS_PAYABLE = "2001"
 ACC_TDS_PAYABLE = "2006"
 
 
+class ChartOfAccountsNotSeededError(Exception):
+    """Raised when a poster needs a Chart of Accounts code that doesn't exist
+    yet. Only used where silently skipping would leave the document's one
+    purpose (posting accounting) silently unfulfilled — see
+    post_purchase_bill_journal. GRN's post_purchase_journal deliberately does
+    NOT raise this: goods receipt's job is moving stock, and that must not be
+    blocked by an accounting setup gap, so it keeps returning None there."""
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -264,7 +273,19 @@ async def post_purchase_bill_journal(
     if existing:
         return existing
     if not await db.chart_of_accounts.find_one({"code": ACC_ACCOUNTS_PAYABLE}):
-        return None
+        # A missing Chart of Accounts is a tenant configuration error, not a
+        # legitimate "nothing to post" case (unlike gross<=0 below) — it must
+        # never be silently swallowed. Previously this returned None here,
+        # which the caller (purchase_v2.create_bill) treated identically to
+        # success: the bill saved with journal_entry_id=None and HTTP 200,
+        # with no error surfaced anywhere. That let an entire tenant's
+        # Purchase Bills post with zero accounting effect (invisible to Day
+        # Book, Ledger, Trial Balance) until someone happened to notice.
+        raise ChartOfAccountsNotSeededError(
+            "Chart of Accounts is not set up — run Accounting → Seed Chart of "
+            "Accounts before posting Purchase Bills, or this bill's accounting "
+            "entries will never be created."
+        )
 
     interstate = await _is_interstate(db, vendor_id)
     taxable, gst_amount = _sum_lines(lines)

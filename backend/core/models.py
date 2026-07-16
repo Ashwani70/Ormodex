@@ -3,11 +3,26 @@ from typing import List, Optional, Literal
 
 from pydantic import BaseModel, EmailStr, field_validator
 
+# 10 spec roles + "employee" kept valid for the 9 existing users with that role
+# (not bulk-relabeled — see alembic/versions/015_auth_hardening.py). Matches
+# the DB CHECK constraint chk_users_role added by that migration exactly.
+UserRole = Literal[
+    "super_admin", "admin", "manager", "accountant", "purchase", "sales",
+    "store", "production", "hr", "viewer", "employee",
+]
+
 
 # ---------------- Auth & Users ----------------
 class LoginIn(BaseModel):
-    email: EmailStr
+    # Plain str, not EmailStr: this field accepts a username too (see
+    # _find_user_by_identifier in routers/auth.py) — EmailStr would 422-reject
+    # any non-email username before that lookup ever ran.
+    email: str
     password: str
+    remember_me: bool = False
+    company_code: Optional[str] = None
+    captcha_token: Optional[str] = None
+    captcha_answer: Optional[str] = None
 
 
 class UserCreate(BaseModel):
@@ -15,7 +30,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     username: Optional[str] = None
     phone: Optional[str] = None
-    role: Literal["admin", "hr", "accountant", "employee"] = "employee"
+    role: UserRole = "employee"
     permissions: Optional[dict] = None
     module_permissions: Optional[List[str]] = None
     password: str
@@ -31,8 +46,9 @@ class UserUpdate(BaseModel):
     name: Optional[str] = None
     username: Optional[str] = None
     phone: Optional[str] = None
-    role: Optional[Literal["admin", "hr", "accountant", "employee"]] = None
+    role: Optional[UserRole] = None
     module_permissions: Optional[List[str]] = None
+    is_active: Optional[bool] = None
     password: Optional[str] = None
 
     @field_validator("password")
@@ -316,14 +332,23 @@ class CompanyProfile(BaseModel):
     pan: Optional[str] = None
     state: str
     state_code: str
+    city: Optional[str] = None
+    pincode: Optional[str] = None
+    country: Optional[str] = "India"
     email: Optional[str] = None
     phone: Optional[str] = None
+    website: Optional[str] = None
+    cin: Optional[str] = None
+    iec: Optional[str] = None
+    tagline: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account_no: Optional[str] = None
     bank_ifsc: Optional[str] = None
     bank_branch: Optional[str] = None
+    declaration: Optional[str] = None
     terms_conditions: Optional[str] = None
     logo_url: Optional[str] = None
+    seal_url: Optional[str] = None
 
 
 # ---------------- Job Work ----------------
@@ -339,8 +364,8 @@ class JobWorkChallanItem(BaseModel):
     batch_id: Optional[str] = None
     serial_id: Optional[str] = None
     expiry_date: Optional[str] = None
-    rate: float = 0.0
-    gst_rate: float = 18.0
+    rate: Optional[float] = None      # None → backend fills from product cost_price
+    gst_rate: Optional[float] = None  # None → backend fills from product; frontend may send null
     hsn_code: Optional[str] = None
 
 
@@ -350,21 +375,49 @@ class JobWorkChallan(BaseModel):
     job_worker_id: str
     job_worker_name: Optional[str] = None
     job_worker_gstin: Optional[str] = None
+    contact_person: Optional[str] = None
+    mobile: Optional[str] = None
+    address: Optional[str] = None
+    nature: str = "inputs"            # "inputs" | "capital_goods" — drives return-window days
+    gst_type: str = "auto"            # "auto" | "intra" | "inter" — overrides GSTIN detection
+    vehicle_no: Optional[str] = None
+    driver_name: Optional[str] = None
+    transport: Optional[str] = None
+    lr_number: Optional[str] = None
+    eway_bill_number: Optional[str] = None
     items: List[JobWorkChallanItem]
-    status: Literal["PENDING", "PARTIAL", "COMPLETED", "CANCELLED"] = "PENDING"
+    status: Literal["DRAFT", "PENDING", "PARTIAL", "COMPLETED", "CANCELLED"] = "PENDING"
     notes: Optional[str] = None
+    process_name: Optional[str] = None
+    instructions: Optional[str] = None
+    prepared_by: Optional[str] = None
+    checked_by: Optional[str] = None
 
 
 class JobWorkReceiptItem(BaseModel):
+    # Links this receipt line to the exact challan line it's returning material
+    # against — the precise replacement for the old product-id/name string
+    # matching ("_item_key"), which could collide when two custom lines shared
+    # a name. Optional only so legacy/loose callers don't 422; the router
+    # resolves it from product_id when omitted.
+    challan_item_id: Optional[str] = None
     product_id: Optional[str] = None
     product_name: str
     sku: Optional[str] = ""
     quantity_received: float
+    # accepted_quantity is a distinct, user-entered field (goods can be received
+    # but held for quality inspection before being accepted into usable stock).
+    # None means "not yet specified" — the router defaults it to
+    # quantity_received - rejected_quantity - scrap_quantity so existing callers
+    # that don't send it keep working unchanged.
+    accepted_quantity: Optional[float] = None
+    rejected_quantity: float = 0.0
     scrap_quantity: float = 0.0
     is_custom: bool = False
     batch_id: Optional[str] = None
     serial_id: Optional[str] = None
     expiry_date: Optional[str] = None
+    remarks: Optional[str] = None
 
 
 class JobWorkReceipt(BaseModel):
@@ -389,11 +442,33 @@ class AuditLog(BaseModel):
 
 # ---------------- Auth Inputs / MFA ----------------
 class ForgotPasswordIn(BaseModel):
-    email: EmailStr
+    # email kept for back-compat with existing callers; identifier is the new,
+    # wider field (email/username/phone). If identifier is omitted, email is
+    # used — so existing clients sending only {"email": ...} are unaffected.
+    email: Optional[EmailStr] = None
+    identifier: Optional[str] = None
+    method: Literal["link", "otp"] = "link"
+
+    @field_validator("identifier")
+    @classmethod
+    def _default_identifier(cls, v, info):
+        return v or info.data.get("email")
 
 
 class ResetPasswordIn(BaseModel):
     token: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_strength(cls, v: str) -> str:
+        from core.password_policy import validate_password
+        return validate_password(v)
+
+
+class ResetPasswordOtpIn(BaseModel):
+    identifier: str
+    code: str
     new_password: str
 
     @field_validator("new_password")
@@ -421,6 +496,21 @@ class ChangePasswordIn(BaseModel):
 
 class ModulePermissionsIn(BaseModel):
     module_permissions: List[str]
+
+
+class AdminResetPasswordIn(BaseModel):
+    """Admin-initiated password reset for another user. If new_password is
+    omitted, the server generates one and returns it once (shown to the admin
+    to hand off out-of-band)."""
+    new_password: Optional[str] = None
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_strength(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            from core.password_policy import validate_password
+            return validate_password(v)
+        return v
 
 
 # ---------------- Product Categories ----------------

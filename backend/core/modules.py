@@ -24,6 +24,7 @@ MODULES: list[tuple[str, str]] = [
     ("cheque_print", "Cheque Printing"),
     ("cheque_cancel", "Cheque Cancellation"),
     ("payroll", "Payroll"),
+    ("hr", "HR & Employees"),
     ("manufacturing", "Manufacturing"),
     ("pricing", "Pricing"),
     ("pos", "Point of Sale"),
@@ -40,6 +41,8 @@ MODULES: list[tuple[str, str]] = [
     ("integration", "Integration"),
     ("branch_admin", "Branch Admin"),
     ("audit", "Audit Logs"),
+    ("letterhead_design", "Letterhead Designer"),
+    ("letterhead_manage", "Letterhead Template Management"),
 ]
 
 MODULE_KEYS: set[str] = {key for key, _ in MODULES}
