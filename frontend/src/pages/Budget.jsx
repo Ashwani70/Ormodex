@@ -1,6 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, forwardRef } from "react";
 import api from "@/lib/api";
 import { toast } from "sonner";
+import useGridKeyNav from "@/hooks/useGridKeyNav";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import {
   PieChart, BarChart2, Plus, RefreshCw, Trash2, Edit2,
   TrendingUp, TrendingDown, AlertTriangle, Building2, Target,
@@ -10,14 +13,14 @@ import {
 const inr = (n) => Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 
 const STATUS_COLORS = {
-  DRAFT:    "bg-zinc-800 text-zinc-400 border-zinc-700",
-  APPROVED: "bg-green-950 text-green-300 border-green-800",
-  CLOSED:   "bg-purple-950 text-purple-300 border-purple-800",
+  DRAFT:    "bg-zinc-800",
+  APPROVED: "bg-green-950",
+  CLOSED:   "bg-purple-950",
 };
 
 const ALERT_COLORS = {
-  CRITICAL: "bg-red-950/30 border-red-800 text-red-300",
-  WARNING:  "bg-yellow-950/30 border-yellow-800 text-yellow-300",
+  CRITICAL: "bg-red-950",
+  WARNING:  "bg-yellow-950",
 };
 
 function StatusBadge({ status }) {
@@ -28,9 +31,9 @@ function StatusBadge({ status }) {
   );
 }
 
-function Card({ children, className = "" }) {
-  return <div className={`bg-zinc-950 border border-zinc-800 ${className}`}>{children}</div>;
-}
+const Card = forwardRef(function Card({ children, className = "" }, ref) {
+  return <div ref={ref} className={`bg-zinc-950 border border-zinc-800 ${className}`}>{children}</div>;
+});
 
 function SectionHdr({ title, sub }) {
   return (
@@ -84,18 +87,33 @@ function CostCentersTab() {
     setForm(cc); setEditId(cc.id); setShowForm(true);
   };
 
+  const openNew = () => { setShowForm(!showForm); setEditId(null); };
+
+  // Enter-as-Tab across the Add/Edit Cost Center form; Ctrl+Enter/Ctrl+S
+  // saves, Esc cancels. Primary create action on this tab → owns Ctrl+N.
+  const ccFormRef = useRef(null);
+  useEnterNavigation(ccFormRef, {
+    enabled: showForm,
+    autoFocus: true,
+    onSave: save,
+    onCancel: () => { setShowForm(false); setEditId(null); },
+  });
+  useModuleShortcuts({
+    onNew: () => { if (!showForm) openNew(); },
+  });
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <span className="font-mono text-xs text-zinc-500 uppercase">{centers.length} Cost/Profit Centers</span>
-        <button onClick={() => { setShowForm(!showForm); setEditId(null); }}
+        <button onClick={openNew}
           className="flex items-center gap-2 bg-yellow-400 hover:bg-yellow-500 text-black text-xs font-mono font-bold uppercase px-3 py-2 transition-colors">
           <Plus className="w-3.5 h-3.5" /> Add Center
         </button>
       </div>
 
       {showForm && (
-        <Card className="p-5 space-y-4">
+        <Card ref={ccFormRef} className="p-5 space-y-4">
           <div className="font-mono text-xs uppercase tracking-widest text-yellow-400 border-b border-zinc-800 pb-2">
             {editId ? "Edit Cost Center" : "New Cost/Profit Center"}
           </div>
@@ -222,6 +240,36 @@ function BudgetsTab() {
     } catch (e) { toast.error(e.response?.data?.detail || "Save failed"); }
   };
 
+  // Budget lines: 2-column grid (account, amount). Enter on the last cell of
+  // the last row appends a new line; Insert/Ctrl+Delete manage rows.
+  const insertLineAfter = (i) => setForm(f => {
+    const lines = [...f.lines];
+    lines.splice(i + 1, 0, { account_code: "", account_name: "", budgeted_amount: 0, cost_center_code: "" });
+    return { ...f, lines };
+  });
+  const removeLineKeepingNone = (i) => removeLine(i);
+  const linesGrid = useGridKeyNav({
+    rowCount: form.lines.length,
+    colCount: 2,
+    onRowComplete: addLine,
+    onInsertRow: insertLineAfter,
+    onDeleteRow: removeLineKeepingNone,
+  });
+
+  // Enter-as-Tab across the whole New Budget form (header fields + the
+  // budget-lines grid, marked data-grid-managed below). Ctrl+Enter/Ctrl+S
+  // saves, Esc cancels. This is the tab's primary create action → owns Ctrl+N.
+  const budgetFormRef = useRef(null);
+  useEnterNavigation(budgetFormRef, {
+    enabled: showForm,
+    autoFocus: true,
+    onSave: saveBudget,
+    onCancel: () => setShowForm(false),
+  });
+  useModuleShortcuts({
+    onNew: () => { if (!showForm) setShowForm(true); },
+  });
+
   const approveBudget = async (id) => {
     try {
       await api.patch(`/budget/budgets/${id}`, { status: "APPROVED" });
@@ -253,7 +301,7 @@ function BudgetsTab() {
       </div>
 
       {showForm && (
-        <Card className="p-5 space-y-4">
+        <Card ref={budgetFormRef} className="p-5 space-y-4">
           <div className="font-mono text-xs uppercase tracking-widest text-yellow-400 border-b border-zinc-800 pb-2">New Budget</div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <div className="sm:col-span-2">
@@ -304,18 +352,22 @@ function BudgetsTab() {
                 <Plus className="w-3 h-3" /> Add Line
               </button>
             </div>
-            {form.lines.map((line, i) => (
-              <div key={i} className="flex gap-2 mb-2">
-                <select value={line.account_code} onChange={e => updateLine(i, "account_code", e.target.value)}
-                  className="flex-1 bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs px-2 py-1.5 focus:outline-none focus:border-yellow-400">
-                  <option value="">Select account...</option>
-                  {coa.map(a => <option key={a.code} value={a.code}>{a.code} — {a.name}</option>)}
-                </select>
-                <input type="number" value={line.budgeted_amount} onChange={e => updateLine(i, "budgeted_amount", parseFloat(e.target.value))}
-                  placeholder="Amount ₹" className="w-28 bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs px-2 py-1.5 focus:outline-none focus:border-yellow-400" />
-                <button onClick={() => removeLine(i)} className="text-red-500 hover:text-red-400 px-1"><Trash2 className="w-3.5 h-3.5" /></button>
-              </div>
-            ))}
+            <div data-grid-managed>
+              {form.lines.map((line, i) => (
+                <div key={i} className="flex gap-2 mb-2">
+                  <select value={line.account_code} onChange={e => updateLine(i, "account_code", e.target.value)}
+                    ref={linesGrid.registerCell(i, 0)} onKeyDown={linesGrid.handleKeyDown(i, 0)}
+                    className="flex-1 bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs px-2 py-1.5 focus:outline-none focus:border-yellow-400">
+                    <option value="">Select account...</option>
+                    {coa.map(a => <option key={a.code} value={a.code}>{a.code} — {a.name}</option>)}
+                  </select>
+                  <input type="text" inputMode="decimal" value={line.budgeted_amount} onChange={e => updateLine(i, "budgeted_amount", parseFloat(e.target.value))}
+                    ref={linesGrid.registerCell(i, 1)} onKeyDown={linesGrid.handleKeyDown(i, 1)}
+                    placeholder="Amount ₹" className="w-28 bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs px-2 py-1.5 focus:outline-none focus:border-yellow-400" />
+                  <button onClick={() => removeLine(i)} className="text-red-500 hover:text-red-400 px-1"><Trash2 className="w-3.5 h-3.5" /></button>
+                </div>
+              ))}
+            </div>
             {form.lines.length === 0 && (
               <div className="text-xs text-zinc-600 font-mono text-center py-4 border border-dashed border-zinc-800">
                 Add budget lines for each account code you want to budget
@@ -385,16 +437,16 @@ function BudgetsTab() {
                               <div className={`h-full rounded-full ${row.pct_used > 100 ? "bg-red-500" : row.pct_used > 80 ? "bg-yellow-400" : "bg-green-500"}`}
                                 style={{ width: `${Math.min(100, row.pct_used)}%` }} />
                             </div>
-                            <span className={`font-mono ${row.pct_used > 100 ? "text-red-400" : row.pct_used > 80 ? "text-yellow-400" : "text-green-400"}`}>
+                            <span className={`font-mono ${row.pct_used > 100 ? "text-red-600 dark:text-red-400" : row.pct_used > 80 ? "text-yellow-600 dark:text-yellow-400" : "text-green-600 dark:text-green-400"}`}>
                               {row.pct_used}%
                             </span>
                           </div>
                         </td>
                         <td className="py-2">
                           <span className={`text-[9px] font-mono uppercase px-1.5 py-0.5 border ${
-                            row.status === "OVER_BUDGET" ? "border-red-800 text-red-400 bg-red-950/20" :
-                            row.status === "WARNING" ? "border-yellow-800 text-yellow-400 bg-yellow-950/20" :
-                            "border-green-800 text-green-400 bg-green-950/20"
+                            row.status === "OVER_BUDGET" ? "bg-red-950" :
+                            row.status === "WARNING" ? "bg-yellow-950" :
+                            "bg-green-950"
                           }`}>{row.status.replace(/_/g, " ")}</span>
                         </td>
                       </tr>

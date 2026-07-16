@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import api from "@/lib/api";
 import {
   PageHeader,
@@ -10,10 +11,13 @@ import {
   Select,
   Field,
   EmptyState,
+  NumericInput,
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
 import { toast } from "sonner";
-import { Plus, RefreshCw, Search } from "lucide-react";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
+import { Plus, RefreshCw, Search, Pencil, Trash2, X } from "lucide-react";
 
 const inr = (n) =>
   Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
@@ -38,7 +42,10 @@ const TYPE_COLORS = {
   EXPENSE: "border-pink-900 bg-pink-950 text-pink-400",
 };
 
+const VOUCHER_TYPE_VALUES = new Set(VOUCHER_TYPES.map((t) => t.value));
+
 export default function Vouchers() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [vouchers, setVouchers] = useState([]);
   const [stats, setStats] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -50,14 +57,16 @@ export default function Vouchers() {
   const [toDate, setToDate] = useState("");
   const [total, setTotal] = useState(0);
   const [customers, setCustomers] = useState([]);
-  const [suppliers, setSuppliers] = useState([]);
+  const [vendors, setVendors] = useState([]);
 
-  const [form, setForm] = useState({
+  const blankForm = () => ({
     voucher_type: "RECEIPT", date: new Date().toISOString().split("T")[0],
     narration: "", party_name: "", party_id: "",
-    amount: 0, payment_mode: "CASH", party_type: "CUSTOMER",
+    amount: "", payment_mode: "CASH", party_type: "CUSTOMER",
     reference_number: "", status: "DRAFT",
   });
+  const [form, setForm] = useState(blankForm());
+  const [editingId, setEditingId] = useState(null);
 
   const loadVouchers = useCallback(async () => {
     setLoading(true);
@@ -88,7 +97,7 @@ export default function Vouchers() {
         api.get("/suppliers"),
       ]);
       setCustomers(c.data || []);
-      setSuppliers(s.data || []);
+      setVendors(s.data || []);
     } catch {}
   }, []);
 
@@ -98,28 +107,96 @@ export default function Vouchers() {
     loadParties();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const createVoucher = async (e) => {
+  const openNew = (presetType) => {
+    setEditingId(null);
+    setForm({ ...blankForm(), ...(presetType ? { voucher_type: presetType } : {}) });
+    setShowModal(true);
+  };
+
+  // Global F5/F6/F7 (Payment/Receipt/Journal) shortcuts (see useKeyboardShortcuts)
+  // navigate here with ?type=PAYMENT etc. so the new-voucher form opens
+  // pre-set to the right type, matching Tally's F-key behaviour. Consumed
+  // once and stripped from the URL so a later plain visit/refresh doesn't
+  // keep reopening the modal.
+  useEffect(() => {
+    const type = searchParams.get("type");
+    if (type && VOUCHER_TYPE_VALUES.has(type)) {
+      openNew(type);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("type");
+        return next;
+      }, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  const openEdit = (v) => {
+    setEditingId(v.id);
+    setForm({
+      voucher_type: v.voucher_type || "RECEIPT",
+      date: v.date || new Date().toISOString().split("T")[0],
+      narration: v.narration || "",
+      party_name: v.party_name || "",
+      party_id: v.party_id || "",
+      amount: v.amount != null && v.amount !== 0 ? v.amount : "",
+      payment_mode: v.payment_mode || "CASH",
+      party_type: v.party_type || "CUSTOMER",
+      reference_number: v.reference_number || "",
+      status: v.status || "DRAFT",
+    });
+    setShowModal(true);
+  };
+
+  const saveVoucher = async (e) => {
     e.preventDefault();
     try {
-      await api.post("/vouchers", { ...form, amount: parseFloat(form.amount) });
-      toast.success("Voucher created");
+      const payload = { ...form, amount: parseFloat(form.amount) || 0 };
+      if (editingId) {
+        await api.patch(`/vouchers/${editingId}`, payload);
+        toast.success("Voucher updated");
+      } else {
+        await api.post("/vouchers", payload);
+        toast.success("Voucher created");
+      }
       setShowModal(false);
-      setForm({ voucher_type: "RECEIPT", date: new Date().toISOString().split("T")[0], narration: "", party_name: "", party_id: "", amount: 0, payment_mode: "CASH", party_type: "CUSTOMER", reference_number: "", status: "DRAFT" });
+      setEditingId(null);
+      setForm(blankForm());
       loadVouchers();
       loadStats();
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Failed");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
     }
   };
 
-  const cancelVoucher = async (id) => {
-    if (!window.confirm("Cancel this voucher?")) return;
+  // Enter-as-Tab across the whole form; Ctrl+Enter/Ctrl+S saves,
+  // Ctrl+Shift+Enter/Ctrl+Shift+S saves and opens a fresh blank voucher, Esc
+  // cancels, first field auto-focuses when the modal opens.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: showModal,
+    autoFocus: true,
+    onSave: () => saveVoucher(new Event("submit", { cancelable: true })),
+    onSaveAndNew: async () => {
+      await saveVoucher(new Event("submit", { cancelable: true }));
+      openNew();
+    },
+    onCancel: () => { setShowModal(false); setEditingId(null); },
+  });
+
+  useModuleShortcuts({
+    onNew: () => { if (!showModal) openNew(); },
+  });
+
+  const deleteVoucher = async (id) => {
+    if (!window.confirm("Delete / cancel this voucher? This cannot be undone.")) return;
     try {
       await api.delete(`/vouchers/${id}`);
-      toast.success("Voucher cancelled");
+      toast.success("Voucher deleted");
       loadVouchers();
-    } catch (e) {
-      toast.error("Failed");
+      loadStats();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
     }
   };
 
@@ -130,7 +207,7 @@ export default function Vouchers() {
         title="Vouchers"
         description="Receipt, Payment, Contra, Journal and other accounting vouchers."
         actions={
-          <PrimaryButton icon={Plus} onClick={() => setShowModal(true)} testid="add-voucher-btn">
+          <PrimaryButton icon={Plus} onClick={openNew} testid="add-voucher-btn">
             New Voucher
           </PrimaryButton>
         }
@@ -151,7 +228,7 @@ export default function Vouchers() {
             const s = stats.find(x => x._id === vt.value);
             return (
               <div key={vt.value} className="bg-zinc-950 p-3 text-center">
-                <div className={`text-xs font-mono uppercase font-bold ${vt.color}`}>{vt.value.replace("_", " ")}</div>
+                <div className={`text-xs font-mono uppercase keep-caps font-bold ${vt.color}`}>{vt.value.replace("_", " ")}</div>
                 <div className="font-display font-black text-xl text-white mt-1">{s?.count || 0}</div>
                 <div className="text-[10px] text-zinc-500 font-mono">₹{inr(s?.total_amount || 0)}</div>
               </div>
@@ -180,7 +257,7 @@ export default function Vouchers() {
       {loading ? (
         <div className="text-zinc-500 font-mono text-xs uppercase p-8 text-center">Loading...</div>
       ) : vouchers.length === 0 ? (
-        <EmptyState message="No vouchers" action={<PrimaryButton icon={Plus} onClick={() => setShowModal(true)}>Create Voucher</PrimaryButton>} />
+        <EmptyState message="No vouchers" action={<PrimaryButton icon={Plus} onClick={openNew}>Create Voucher</PrimaryButton>} />
       ) : (
         <table className="w-full text-sm border border-zinc-800">
           <thead>
@@ -220,9 +297,24 @@ export default function Vouchers() {
                 </td>
                 <td className="px-4 py-2 text-xs text-zinc-500">{v.created_by_name || "—"}</td>
                 <td className="px-4 py-2">
-                  {v.status !== "CANCELLED" && (
-                    <button onClick={() => cancelVoucher(v.id)} className="text-xs text-red-500 hover:text-red-300 font-mono">Cancel</button>
-                  )}
+                  <div className="inline-flex gap-1">
+                    {v.status !== "CANCELLED" && (
+                      <button
+                        onClick={() => openEdit(v)}
+                        title="Edit"
+                        className="w-7 h-7 border border-zinc-700 hover:border-primary hover:text-primary text-zinc-500 flex items-center justify-center transition-colors"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => deleteVoucher(v.id)}
+                      title="Delete"
+                      className="w-7 h-7 border border-zinc-700 hover:border-red-500 hover:text-red-400 text-zinc-500 flex items-center justify-center transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -230,9 +322,9 @@ export default function Vouchers() {
         </table>
       )}
 
-      {/* Create Voucher Modal */}
-      <Modal open={showModal} onClose={() => setShowModal(false)} title="New Voucher">
-        <form onSubmit={createVoucher} className="space-y-4">
+      {/* Create / Edit Voucher Modal */}
+      <Modal open={showModal} onClose={() => { setShowModal(false); setEditingId(null); }} title={editingId ? "Edit Voucher" : "New Voucher"}>
+        <form ref={formRef} onSubmit={saveVoucher} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <Field label="Voucher Type" required>
               <Select value={form.voucher_type} onChange={e => setForm(f => ({ ...f, voucher_type: e.target.value }))}>
@@ -250,21 +342,24 @@ export default function Vouchers() {
                 onChange={e => setForm(f => ({ ...f, party_type: e.target.value, party_id: "", party_name: "" }))}
               >
                 <option value="CUSTOMER">CUSTOMER</option>
-                <option value="SUPPLIER">SUPPLIER</option>
+                <option value="SUPPLIER">VENDOR</option>
               </Select>
             </Field>
             <Field label="Party" required>
               <Select
                 value={form.party_id}
                 onChange={e => {
-                  const list = form.party_type === "SUPPLIER" ? suppliers : customers;
+                  const list = form.party_type === "SUPPLIER" ? vendors : customers;
                   const p = list.find(x => x.id === e.target.value);
-                  setForm(f => ({ ...f, party_id: e.target.value, party_name: p?.name || "" }));
+                  const name = form.party_type === "SUPPLIER" ? (p?.company || p?.name || "") : (p?.name || "");
+                  setForm(f => ({ ...f, party_id: e.target.value, party_name: name }));
                 }}
               >
-                <option value="">Select {form.party_type === "SUPPLIER" ? "supplier" : "customer"}…</option>
-                {(form.party_type === "SUPPLIER" ? suppliers : customers).map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
+                <option value="">Select {form.party_type === "SUPPLIER" ? "vendor" : "customer"}…</option>
+                {(form.party_type === "SUPPLIER" ? vendors : customers).map(p => (
+                  <option key={p.id} value={p.id}>
+                    {form.party_type === "SUPPLIER" ? (p.company || p.name) : p.name}
+                  </option>
                 ))}
               </Select>
             </Field>
@@ -272,22 +367,27 @@ export default function Vouchers() {
           <Field label="Narration" required>
             <Input value={form.narration} onChange={e => setForm(f => ({ ...f, narration: e.target.value }))} placeholder="Brief description" required />
           </Field>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Field label="Amount (₹)" required>
-              <Input type="number" step="0.01" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} required />
+              <NumericInput value={form.amount} onChange={v => setForm(f => ({ ...f, amount: v }))} placeholder="0.00" align="left" />
             </Field>
             <Field label="Payment Mode">
               <Select value={form.payment_mode} onChange={e => setForm(f => ({ ...f, payment_mode: e.target.value }))}>
-                {["CASH","BANK","CHEQUE","UPI","NEFT","RTGS"].map(m => <option key={m}>{m}</option>)}
+                {["CASH","CHEQUE","UPI","NEFT","RTGS","OTHER"].map(m => <option key={m}>{m}</option>)}
               </Select>
             </Field>
             <Field label="Reference No">
               <Input value={form.reference_number} onChange={e => setForm(f => ({ ...f, reference_number: e.target.value }))} placeholder="Cheque / UTR" />
             </Field>
+            <Field label="Status">
+              <Select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))}>
+                {["DRAFT","PENDING","APPROVED","CANCELLED"].map(s => <option key={s}>{s}</option>)}
+              </Select>
+            </Field>
           </div>
           <div className="flex gap-2 justify-end pt-2">
-            <SecondaryButton onClick={() => setShowModal(false)}>Cancel</SecondaryButton>
-            <PrimaryButton type="submit">Create Voucher</PrimaryButton>
+            <SecondaryButton onClick={() => { setShowModal(false); setEditingId(null); }}>Cancel</SecondaryButton>
+            <PrimaryButton type="submit">{editingId ? "Save Changes" : "Create Voucher"}</PrimaryButton>
           </div>
         </form>
       </Modal>

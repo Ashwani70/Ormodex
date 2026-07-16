@@ -1,32 +1,25 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import api from "@/lib/api";
 import {
   PageHeader,
   StatTile,
   SectionTitle,
-  StatusBadge,
   PrimaryButton,
   SecondaryButton,
   Input,
   Select,
   Field,
   EmptyState,
+  NumericInput,
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
+import BulkDeleteBar, { SelectCheckbox } from "@/components/BulkDeleteBar";
+import useBulkSelect from "@/hooks/useBulkSelect";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import { toast } from "sonner";
-import {
-  BookOpen,
-  Plus,
-  ChevronRight,
-  CheckCircle,
-  Scale,
-  RefreshCw,
-  TrendingUp,
-  DollarSign,
-  FileText,
-  Landmark,
-} from "lucide-react";
+import { Plus, RefreshCw, Pencil, Trash2 } from "lucide-react";
 
 const inr = (n) =>
   Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
@@ -99,12 +92,14 @@ export default function Accounting() {
   const [showJeModal, setShowJeModal] = useState(false);
   const [page, setPage] = useState(1);
 
-  // Sync state with URL search params (e.g. back button / history navigation)
+  // Sync state with URL search params (e.g. back button / history navigation).
+  // Functional updaters mean we don't close over fromDate/toDate, so searchParams
+  // is genuinely the only dependency (no stale-closure risk).
   useEffect(() => {
     const urlFrom = searchParams.get("from") || "";
     const urlTo = searchParams.get("to") || "";
-    if (urlFrom !== fromDate) setFromDate(urlFrom);
-    if (urlTo !== toDate) setToDate(urlTo);
+    setFromDate((prev) => (prev !== urlFrom ? urlFrom : prev));
+    setToDate((prev) => (prev !== urlTo ? urlTo : prev));
   }, [searchParams]);
 
   useEffect(() => {
@@ -112,9 +107,11 @@ export default function Accounting() {
   }, [tab, fromDate, toDate]);
 
   // COA form
-  const [coaForm, setCoaForm] = useState({ code: "", name: "", account_type: "ASSET", opening_balance: 0, currency: "INR" });
+  const [coaForm, setCoaForm] = useState({ code: "", name: "", account_type: "ASSET", opening_balance: "", currency: "INR" });
   // JE form
-  const [jeForm, setJeForm] = useState({ date: new Date().toISOString().split("T")[0], narration: "", lines: [{ account_code: "", account_name: "", debit: 0, credit: 0 }] });
+  const blankJeForm = () => ({ date: new Date().toISOString().split("T")[0], narration: "", lines: [{ account_code: "", account_name: "", debit: "", credit: "" }] });
+  const [jeForm, setJeForm] = useState(blankJeForm());
+  const [editingJeId, setEditingJeId] = useState(null);
 
   const loadAccounts = useCallback(async () => {
     setLoading(true);
@@ -240,39 +237,144 @@ export default function Accounting() {
   const createAccount = async (e) => {
     e.preventDefault();
     try {
-      await api.post("/accounting/chart-of-accounts", { ...coaForm, opening_balance: parseFloat(coaForm.opening_balance), is_active: true, tags: [] });
+      await api.post("/accounting/chart-of-accounts", { ...coaForm, opening_balance: parseFloat(coaForm.opening_balance) || 0, is_active: true, tags: [] });
       toast.success("Account created");
       setShowCoaModal(false);
-      setCoaForm({ code: "", name: "", account_type: "ASSET", opening_balance: 0, currency: "INR" });
+      setCoaForm({ code: "", name: "", account_type: "ASSET", opening_balance: "", currency: "INR" });
       loadAccounts();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed");
     }
   };
 
-  const addJeLine = () => setJeForm(f => ({ ...f, lines: [...f.lines, { account_code: "", account_name: "", debit: 0, credit: 0 }] }));
+  // Enter-as-Tab across the "Add Account" form; Ctrl+Enter/Ctrl+S saves,
+  // Ctrl+Shift+Enter/Ctrl+Shift+S saves and opens a fresh blank account form,
+  // Esc cancels, first field auto-focuses when the modal opens. Secondary
+  // modal (Journal Entry is the page's primary create action), so no
+  // useModuleShortcuts here — Ctrl+N is wired to the JE form only.
+  const coaFormRef = useRef(null);
+  useEnterNavigation(coaFormRef, {
+    enabled: showCoaModal,
+    autoFocus: true,
+    onSave: () => createAccount(new Event("submit", { cancelable: true })),
+    onSaveAndNew: async () => {
+      await createAccount(new Event("submit", { cancelable: true }));
+      setShowCoaModal(true);
+    },
+    onCancel: () => setShowCoaModal(false),
+  });
+
+  const addJeLine = () => setJeForm(f => ({ ...f, lines: [...f.lines, { account_code: "", account_name: "", debit: "", credit: "" }] }));
   const removeJeLine = (i) => setJeForm(f => ({ ...f, lines: f.lines.filter((_, idx) => idx !== i) }));
+  // Debit/credit are mutually exclusive: entering one clears the other.
   const updateJeLine = (i, key, val) => setJeForm(f => {
     const lines = [...f.lines];
-    lines[i] = { ...lines[i], [key]: key === "debit" || key === "credit" ? parseFloat(val) || 0 : val };
+    if (key === "debit") {
+      lines[i] = { ...lines[i], debit: val, credit: val !== "" ? "" : lines[i].credit };
+    } else if (key === "credit") {
+      lines[i] = { ...lines[i], credit: val, debit: val !== "" ? "" : lines[i].debit };
+    } else {
+      lines[i] = { ...lines[i], [key]: val };
+    }
     return { ...f, lines };
   });
 
-  const createJe = async (e) => {
+  const openNewJe = () => {
+    setEditingJeId(null);
+    setJeForm(blankJeForm());
+    setShowJeModal(true);
+  };
+
+  const openEditJe = (je) => {
+    setEditingJeId(je.id);
+    setJeForm({
+      date: je.date || new Date().toISOString().split("T")[0],
+      narration: je.narration || "",
+      lines: (je.lines || []).map(l => ({
+        account_code: l.account_code || "",
+        account_name: l.account_name || "",
+        debit: l.debit != null && l.debit !== 0 ? l.debit : "",
+        credit: l.credit != null && l.credit !== 0 ? l.credit : "",
+      })),
+    });
+    setShowJeModal(true);
+  };
+
+  const saveJe = async (e) => {
     e.preventDefault();
+    // Convert empty-string debit/credit values to 0 before sending to backend.
+    const payload = {
+      ...jeForm,
+      lines: jeForm.lines.map(l => ({
+        ...l,
+        debit: parseFloat(l.debit) || 0,
+        credit: parseFloat(l.credit) || 0,
+      })),
+    };
     try {
-      await api.post("/accounting/journal-entries", { ...jeForm, status: "DRAFT" });
-      toast.success("Journal entry created");
+      if (editingJeId) {
+        await api.patch(`/accounting/journal-entries/${editingJeId}`, payload);
+        toast.success("Journal entry updated");
+      } else {
+        await api.post("/accounting/journal-entries", { ...payload, status: "DRAFT" });
+        toast.success("Journal entry created");
+      }
       setShowJeModal(false);
-      setJeForm({ date: new Date().toISOString().split("T")[0], narration: "", lines: [{ account_code: "", account_name: "", debit: 0, credit: 0 }] });
+      setEditingJeId(null);
+      setJeForm(blankJeForm());
       loadJournalEntries();
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Failed");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
     }
   };
 
-  const totalDebit = jeForm.lines.reduce((s, l) => s + (l.debit || 0), 0);
-  const totalCredit = jeForm.lines.reduce((s, l) => s + (l.credit || 0), 0);
+  // Enter-as-Tab across the journal entry form; Ctrl+Enter/Ctrl+S saves,
+  // Ctrl+Shift+Enter/Ctrl+Shift+S saves and opens a fresh blank entry, Esc
+  // cancels, first field auto-focuses when the modal opens. This is the
+  // page's primary create action (journal tab's main CTA), so Ctrl+N is
+  // wired here rather than on the secondary "Add Account" modal below.
+  const jeFormRef = useRef(null);
+  useEnterNavigation(jeFormRef, {
+    enabled: showJeModal,
+    autoFocus: true,
+    onSave: () => saveJe(new Event("submit", { cancelable: true })),
+    onSaveAndNew: async () => {
+      await saveJe(new Event("submit", { cancelable: true }));
+      openNewJe();
+    },
+    onCancel: () => { setShowJeModal(false); setEditingJeId(null); },
+  });
+
+  useModuleShortcuts({
+    onNew: () => { if (!showJeModal && !showCoaModal) openNewJe(); },
+  });
+
+  const deleteJe = async (id) => {
+    if (!window.confirm("Delete this journal entry? This cannot be undone.")) return;
+    try {
+      await api.delete(`/accounting/journal-entries/${id}`);
+      toast.success("Journal entry deleted");
+      loadJournalEntries();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    }
+  };
+
+  // Only DRAFT/non-POSTED entries can be deleted, so bulk selection is limited
+  // to those (POSTED entries have no checkbox and the backend rejects them).
+  const deletableJes = journalEntries.filter((je) => je.status !== "POSTED");
+  const jeSel = useBulkSelect(deletableJes);
+  const bulkDeleteJe = async () => {
+    const { ok, failed } = await jeSel.runDelete(
+      (id) => api.delete(`/accounting/journal-entries/${id}`),
+      { reload: loadJournalEntries }
+    );
+    if (failed) toast.error(`Deleted ${ok}, failed ${failed}`);
+    else toast.success(`Deleted ${ok} journal entr${ok === 1 ? "y" : "ies"}`);
+  };
+
+  const totalDebit = jeForm.lines.reduce((s, l) => s + (parseFloat(l.debit) || 0), 0);
+  const totalCredit = jeForm.lines.reduce((s, l) => s + (parseFloat(l.credit) || 0), 0);
 
   const accountsByType = ACCOUNT_TYPES.reduce((acc, t) => {
     acc[t] = accounts.filter(a => a.account_type === t);
@@ -320,7 +422,7 @@ export default function Accounting() {
               </>
             )}
             {tab === "journal" && (
-              <PrimaryButton icon={Plus} onClick={() => setShowJeModal(true)} testid="add-je-btn">
+              <PrimaryButton icon={Plus} onClick={openNewJe} testid="add-je-btn">
                 New Journal Entry
               </PrimaryButton>
             )}
@@ -430,22 +532,40 @@ export default function Accounting() {
           {loading ? (
             <div className="text-zinc-500 font-mono text-xs uppercase p-8 text-center">Loading...</div>
           ) : journalEntries.length === 0 ? (
-            <EmptyState message="No journal entries" action={<PrimaryButton icon={Plus} onClick={() => setShowJeModal(true)}>Create Entry</PrimaryButton>} />
+            <EmptyState message="No journal entries" action={<PrimaryButton icon={Plus} onClick={openNewJe}>Create Entry</PrimaryButton>} />
           ) : (
             <table className="w-full text-sm border border-zinc-800">
               <thead>
                 <tr className="label-overline border-b border-zinc-800 bg-zinc-900">
+                  <th className="px-4 py-2 w-10">
+                    <SelectCheckbox
+                      label="Select all deletable journal entries"
+                      checked={jeSel.allSelected}
+                      indeterminate={jeSel.someSelected}
+                      onChange={jeSel.toggleAll}
+                    />
+                  </th>
                   <th className="text-left px-4 py-2">Entry No</th>
                   <th className="text-left px-4 py-2">Date</th>
                   <th className="text-left px-4 py-2">Narration</th>
                   <th className="text-right px-4 py-2">Debit</th>
                   <th className="text-right px-4 py-2">Credit</th>
                   <th className="text-left px-4 py-2">Status</th>
+                  <th className="px-4 py-2"></th>
                 </tr>
               </thead>
               <tbody>
                 {journalEntries.map((je, i) => (
-                  <tr key={je.id} className={`border-b border-zinc-900 hover:bg-zinc-900 ${i % 2 === 1 ? "bg-zinc-900/30" : ""}`}>
+                  <tr key={je.id} className={`border-b border-zinc-900 hover:bg-zinc-900 ${jeSel.isSelected(je.id) ? "bg-zinc-900/50" : i % 2 === 1 ? "bg-zinc-900/30" : ""}`}>
+                    <td className="px-4 py-2">
+                      {je.status !== "POSTED" && (
+                        <SelectCheckbox
+                          label={`Select journal entry ${je.entry_number}`}
+                          checked={jeSel.isSelected(je.id)}
+                          onChange={() => jeSel.toggle(je.id)}
+                        />
+                      )}
+                    </td>
                     <td className="px-4 py-2 font-mono text-yellow-400 text-xs">{je.entry_number}</td>
                     <td className="px-4 py-2 text-zinc-400 font-mono text-xs">{je.date}</td>
                     <td className="px-4 py-2 text-white max-w-xs truncate">{je.narration}</td>
@@ -458,11 +578,41 @@ export default function Accounting() {
                         "border-yellow-700 bg-yellow-950 text-yellow-400"
                       }`}>{je.status}</span>
                     </td>
+                    <td className="px-4 py-2">
+                      <div className="inline-flex gap-1">
+                        {je.status !== "POSTED" && (
+                          <button
+                            onClick={() => openEditJe(je)}
+                            title="Edit"
+                            className="w-7 h-7 border border-zinc-700 hover:border-primary hover:text-primary text-zinc-500 flex items-center justify-center transition-colors"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {je.status !== "POSTED" && (
+                          <button
+                            onClick={() => deleteJe(je.id)}
+                            title="Delete"
+                            className="w-7 h-7 border border-zinc-700 hover:border-red-500 hover:text-red-400 text-zinc-500 flex items-center justify-center transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
+          <BulkDeleteBar
+            count={jeSel.count}
+            deleting={jeSel.deleting}
+            onClear={jeSel.clear}
+            onDelete={bulkDeleteJe}
+            noun="journal entry"
+            nounPlural="journal entries"
+          />
         </div>
       )}
 
@@ -625,6 +775,15 @@ export default function Accounting() {
             <div className="text-zinc-500 font-mono text-xs uppercase p-8 text-center animate-pulse">Loading...</div>
           ) : dayBook ? (
             <>
+              {dayBook.is_default_range && (
+                <div className="flex items-center gap-2 text-xs font-mono px-3 py-2 border border-amber-500/30 bg-amber-500/10 text-amber-600 rounded-md">
+                  <span>
+                    Showing <b>{dayBook.applied_from}</b> only (no date range selected) — backdated
+                    vouchers (e.g. a vendor bill entered today but dated earlier) won't appear here
+                    unless you pick a wider range above.
+                  </span>
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <StatTile label="Journal Entries" value={dayBook.journal_entries_count || 0} />
                 <StatTile label="Vouchers" value={dayBook.vouchers_count || 0} />
@@ -724,7 +883,7 @@ export default function Accounting() {
           <div className="flex flex-wrap items-end gap-4 bg-zinc-950 border border-zinc-850 p-4 font-mono">
             <div className="w-44">
               <span className="label-overline block mb-1">Interest Rate % (Annual)</span>
-              <Input type="number" step="0.5" value={interestRate} onChange={e => setInterestRate(parseFloat(e.target.value) || 0)} className="!h-9" />
+              <NumericInput value={interestRate} onChange={v => setInterestRate(v)} placeholder="12" align="left" className="!h-9" />
             </div>
             <SecondaryButton icon={RefreshCw} onClick={loadInterest} className="h-9">Recalculate</SecondaryButton>
           </div>
@@ -784,7 +943,7 @@ export default function Accounting() {
 
       {/* COA Modal */}
       <Modal open={showCoaModal} onClose={() => setShowCoaModal(false)} title="Add Account">
-        <form onSubmit={createAccount} className="space-y-4">
+        <form ref={coaFormRef} onSubmit={createAccount} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <Field label="Account Code" required><Input value={coaForm.code} onChange={e => setCoaForm(f => ({ ...f, code: e.target.value }))} placeholder="e.g. 1001" required /></Field>
             <Field label="Account Type" required>
@@ -795,7 +954,9 @@ export default function Accounting() {
           </div>
           <Field label="Account Name" required><Input value={coaForm.name} onChange={e => setCoaForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Bank Account - Primary" required /></Field>
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Opening Balance"><Input type="number" step="0.01" value={coaForm.opening_balance} onChange={e => setCoaForm(f => ({ ...f, opening_balance: e.target.value }))} /></Field>
+            <Field label="Opening Balance">
+              <NumericInput value={coaForm.opening_balance} onChange={v => setCoaForm(f => ({ ...f, opening_balance: v }))} placeholder="0.00" align="left" />
+            </Field>
             <Field label="Currency"><Select value={coaForm.currency} onChange={e => setCoaForm(f => ({ ...f, currency: e.target.value }))}><option>INR</option><option>USD</option><option>EUR</option></Select></Field>
           </div>
           <div className="flex gap-2 justify-end pt-2">
@@ -806,8 +967,8 @@ export default function Accounting() {
       </Modal>
 
       {/* Journal Entry Modal */}
-      <Modal open={showJeModal} onClose={() => setShowJeModal(false)} title="New Journal Entry">
-        <form onSubmit={createJe} className="space-y-4">
+      <Modal open={showJeModal} onClose={() => { setShowJeModal(false); setEditingJeId(null); }} title={editingJeId ? "Edit Journal Entry" : "New Journal Entry"}>
+        <form ref={jeFormRef} onSubmit={saveJe} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <Field label="Date" required><Input type="date" value={jeForm.date} onChange={e => setJeForm(f => ({ ...f, date: e.target.value }))} required /></Field>
           </div>
@@ -825,8 +986,8 @@ export default function Accounting() {
                   <tr key={i} className="border-b border-zinc-900">
                     <td className="py-1 pr-2"><Input value={line.account_code} onChange={e => updateJeLine(i, "account_code", e.target.value)} placeholder="1001" className="!text-xs" /></td>
                     <td className="py-1 pr-2"><Input value={line.account_name} onChange={e => updateJeLine(i, "account_name", e.target.value)} placeholder="Cash in Hand" className="!text-xs" /></td>
-                    <td className="py-1 pr-2"><Input type="number" step="0.01" value={line.debit} onChange={e => updateJeLine(i, "debit", e.target.value)} className="!text-xs text-right" /></td>
-                    <td className="py-1 pr-2"><Input type="number" step="0.01" value={line.credit} onChange={e => updateJeLine(i, "credit", e.target.value)} className="!text-xs text-right" /></td>
+                    <td className="py-1 pr-2"><NumericInput compact value={line.debit} onChange={v => updateJeLine(i, "debit", v)} placeholder="0.00" /></td>
+                    <td className="py-1 pr-2"><NumericInput compact value={line.credit} onChange={v => updateJeLine(i, "credit", v)} placeholder="0.00" /></td>
                     <td className="py-1"><button type="button" onClick={() => removeJeLine(i)} className="text-red-500 hover:text-red-300 text-xs">✕</button></td>
                   </tr>
                 ))}
@@ -845,9 +1006,9 @@ export default function Accounting() {
           </div>
 
           <div className="flex gap-2 justify-end pt-2">
-            <SecondaryButton onClick={() => setShowJeModal(false)}>Cancel</SecondaryButton>
+            <SecondaryButton onClick={() => { setShowJeModal(false); setEditingJeId(null); }}>Cancel</SecondaryButton>
             <PrimaryButton type="submit" disabled={Math.abs(totalDebit - totalCredit) > 0.01}>
-              Create Entry
+              {editingJeId ? "Save Changes" : "Create Entry"}
             </PrimaryButton>
           </div>
         </form>

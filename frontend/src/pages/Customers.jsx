@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import {
@@ -9,8 +10,13 @@ import {
   Field,
   Select,
   EmptyState,
+  StatePill,
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
+import BulkDeleteBar, { SelectCheckbox } from "@/components/BulkDeleteBar";
+import useBulkSelect from "@/hooks/useBulkSelect";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import { Plus, Pencil, Trash2, Mail, Phone, MessageCircle, Globe, Sparkles } from "lucide-react";
 
 const blank = {
@@ -24,28 +30,28 @@ const blank = {
   registration_type: "Regular",
   pan_number: "",
   state_code: "",
+  state: "",
   party_type: "CUSTOMER",
   registration_date: "",
   gst_status: "",
+  pincode: "",
   customer_code: "",
   credit_limit: 0,
   payment_terms: "",
   pan_holder_name: "",
   pan_type: "",
   pan_status: "",
-  aadhaar_number: "",
-  aadhaar_holder_name: "",
-  aadhaar_status: ""
 };
 
 export default function Customers() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [items, setItems] = useState([]);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(blank);
   const [editingId, setEditingId] = useState(null);
   const [validating, setValidating] = useState(false);
-  const [verifyingPan, setVerifyingPan] = useState(false);
-  const [verifyingAadhaar, setVerifyingAadhaar] = useState(false);
+
+  const sel = useBulkSelect(items);
 
   const load = async () => {
     const r = await api.get("/customers");
@@ -55,102 +61,87 @@ export default function Customers() {
     load();
   }, []);
 
+  const bulkDelete = async () => {
+    const { ok, failed } = await sel.runDelete(
+      (id) => api.delete(`/customers/${id}`),
+      { reload: load }
+    );
+    if (failed) toast.error(`Deleted ${ok}, failed ${failed}`);
+    else toast.success(`Deleted ${ok} ${ok === 1 ? "party" : "parties"}`);
+  };
+
+  // Auto-open detail modal when navigated here via ?detail=<id> (e.g. from Ctrl+K search).
+  useEffect(() => {
+    const detailId = searchParams.get("detail");
+    if (!detailId || items.length === 0) return;
+    const record = items.find((c) => c.id === detailId);
+    if (record) {
+      setForm({ ...blank, ...record });
+      setEditingId(record.id);
+      setOpen(true);
+      const next = new URLSearchParams(searchParams);
+      next.delete("detail");
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, items]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-open the create form via ?new=1 — the global Alt+C shortcut
+  // (useKeyboardShortcuts) navigates here with this flag so "Create Customer"
+  // is a single keystroke from anywhere in the app.
+  useEffect(() => {
+    if (searchParams.get("new") !== "1") return;
+    setForm(blank);
+    setEditingId(null);
+    setOpen(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete("new");
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  // Client-side GSTIN format check mirrors the backend regex so we never make a
+  // network call for an obviously-malformed GSTIN.
+  const GSTIN_RE = /^[0-3][0-9][A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+
   const handleFetchGstin = async () => {
-    if (!form.gstin || form.gstin.trim().length !== 15) {
-      toast.warning("Please enter a valid 15-digit GSTIN.");
+    const gstin = (form.gstin || "").trim().toUpperCase();
+    if (!GSTIN_RE.test(gstin)) {
+      toast.warning("Please enter a valid 15-character GSTIN before fetching.");
       return;
     }
     setValidating(true);
+    const toastId = toast.loading("Fetching GST details…");
     try {
-      const res = await api.post("/verifications/gst/validate", { gstin: form.gstin });
-      if (res.data && res.data.is_valid) {
-        setForm((prev) => ({
-          ...prev,
-          company: res.data.trade_name || res.data.legal_name || prev.company,
-          name: res.data.legal_name || prev.name,
-          address: res.data.address || prev.address,
-          pan_number: res.data.pan || prev.pan_number,
-          state_code: res.data.state_code || prev.state_code,
-          registration_type: res.data.taxpayer_type || prev.registration_type,
-          registration_date: res.data.registration_date || prev.registration_date,
-          gst_status: res.data.portal_status || prev.gst_status
-        }));
-        toast.success("GSTIN details autofilled and verified!");
+      const res = await api.post("/customers/fetch-gstin", { gstin });
+      const d = res.data || {};
+      // Auto-fill the listed fields; values remain editable before saving.
+      setForm((prev) => ({
+        ...prev,
+        gstin,
+        name: d.company_name || prev.name,
+        company: d.trade_name || d.company_name || prev.company,
+        address: d.address || prev.address,
+        state_code: d.state_code || prev.state_code,
+        state: d.state || prev.state,
+        pincode: d.pincode || prev.pincode,
+        gst_status: d.status || prev.gst_status,
+      }));
+      if (d.notice) {
+        toast.warning(d.notice, { id: toastId });
+      } else if (d.cached) {
+        toast.success("GST details loaded from cache. You can edit before saving.", { id: toastId });
       } else {
-        toast.error("Invalid GSTIN format.");
+        toast.success("GST details fetched. You can edit before saving.", { id: toastId });
       }
     } catch (e) {
-      toast.error("Failed to query GSTIN validation.");
+      toast.error(
+        formatApiErrorDetail(e.response?.data?.detail) || "Failed to fetch GST details.",
+        { id: toastId }
+      );
     } finally {
       setValidating(false);
     }
   };
-
-  const handleVerifyPan = async () => {
-    if (!form.pan_number || form.pan_number.trim().length !== 10) {
-      toast.warning("Please enter a valid 10-character PAN.");
-      return;
-    }
-    setVerifyingPan(true);
-    try {
-      const res = await api.post("/verifications/pan/validate", {
-        pan: form.pan_number,
-        link_party_id: editingId || null
-      });
-      if (res.data && res.data.is_valid) {
-        setForm((prev) => ({
-          ...prev,
-          pan_holder_name: res.data.pan_holder_name || "",
-          pan_type: res.data.pan_type || "",
-          pan_status: res.data.pan_status || "",
-        }));
-        toast.success("PAN verified successfully!");
-      } else {
-        toast.error(res.data.error || "Invalid PAN.");
-      }
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Failed to verify PAN.");
-    } finally {
-      setVerifyingPan(false);
-    }
-  };
-
-  const handleVerifyAadhaar = async () => {
-    const rawAadhaar = form.aadhaar_number?.replace(/\s/g, "") || "";
-    // Masked Aadhaar regex check or 12 digits raw
-    const isMasked = /^XXXX-XXXX-[0-9]{4}$/.test(form.aadhaar_number);
-    if (!isMasked && (rawAadhaar.length !== 12 || isNaN(rawAadhaar))) {
-      toast.warning("Please enter a valid 12-digit Aadhaar number.");
-      return;
-    }
-    if (isMasked) {
-      toast.info("Aadhaar is already verified and masked.");
-      return;
-    }
-    setVerifyingAadhaar(true);
-    try {
-      const res = await api.post("/verifications/aadhaar/validate", {
-        aadhaar: rawAadhaar,
-        link_party_id: editingId || null
-      });
-      if (res.data && res.data.is_valid) {
-        setForm((prev) => ({
-          ...prev,
-          aadhaar_holder_name: res.data.aadhaar_holder_name || "",
-          aadhaar_status: res.data.aadhaar_status || "",
-          aadhaar_number: `XXXX-XXXX-${rawAadhaar.slice(-4)}`
-        }));
-        toast.success("Aadhaar verified successfully!");
-      } else {
-        toast.error(res.data.error || "Invalid Aadhaar.");
-      }
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Failed to verify Aadhaar.");
-    } finally {
-      setVerifyingAadhaar(false);
-    }
-  };
-
 
   const submit = async (e) => {
     e.preventDefault();
@@ -164,6 +155,27 @@ export default function Customers() {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
   };
+
+  const openNew = () => { setForm(blank); setEditingId(null); setOpen(true); };
+
+  // Enter-as-Tab across the whole form; Ctrl+Enter/Ctrl+S saves,
+  // Ctrl+Shift+Enter/Ctrl+Shift+S saves and opens a fresh blank customer, Esc
+  // cancels, first field auto-focuses when the modal opens.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: open,
+    autoFocus: true,
+    onSave: () => submit(new Event("submit", { cancelable: true })),
+    onSaveAndNew: async () => {
+      await submit(new Event("submit", { cancelable: true }));
+      openNew();
+    },
+    onCancel: () => setOpen(false),
+  });
+
+  useModuleShortcuts({
+    onNew: () => { if (!open) openNew(); },
+  });
 
   const onDelete = async (item) => {
     if (!window.confirm(`Delete ${item.company || item.name}?`)) return;
@@ -205,11 +217,7 @@ export default function Customers() {
             <PrimaryButton
               testid="new-customer"
               icon={Plus}
-              onClick={() => {
-                setForm(blank);
-                setEditingId(null);
-                setOpen(true);
-              }}
+              onClick={openNew}
             >
               New customer
             </PrimaryButton>
@@ -224,6 +232,14 @@ export default function Customers() {
           <table className="w-full text-sm font-mono text-left">
             <thead className="bg-zinc-900 text-zinc-400">
               <tr className="border-b border-zinc-800 label-overline">
+                <th className="px-3 py-2.5 w-10">
+                  <SelectCheckbox
+                    label="Select all parties"
+                    checked={sel.allSelected}
+                    indeterminate={sel.someSelected}
+                    onChange={sel.toggleAll}
+                  />
+                </th>
                 <th className="px-3 py-2.5">Company</th>
                 <th className="px-3 py-2.5">Contact</th>
                 <th className="px-3 py-2.5">Type</th>
@@ -240,8 +256,15 @@ export default function Customers() {
                 <tr
                   key={c.id}
                   data-testid={`customer-row-${c.id}`}
-                  className="border-b border-zinc-900 hover:bg-zinc-900/60 text-zinc-100"
+                  className={`border-b border-zinc-900 hover:bg-zinc-900/60 text-zinc-100 ${sel.isSelected(c.id) ? "bg-zinc-900/40" : ""}`}
                 >
+                  <td className="px-3 py-2.5">
+                    <SelectCheckbox
+                      label={`Select ${c.company || c.name}`}
+                      checked={sel.isSelected(c.id)}
+                      onChange={() => sel.toggle(c.id)}
+                    />
+                  </td>
                   <td className="px-3 py-2.5 text-white font-semibold">
                     {c.company || "—"}
                   </td>
@@ -333,7 +356,7 @@ export default function Customers() {
           </>
         }
       >
-        <form onSubmit={submit} className="space-y-6">
+        <form ref={formRef} onSubmit={submit} className="space-y-6">
           {/* Section 1: Business Details */}
           <div>
             <div className="label-overline mb-2 text-yellow-400">Business details</div>
@@ -420,10 +443,10 @@ export default function Customers() {
                     type="button"
                     onClick={handleFetchGstin}
                     disabled={validating}
-                    className="bg-primary text-black font-mono text-[10px] uppercase font-bold px-3 py-2 hover:bg-yellow-500 flex items-center gap-1 flex-shrink-0"
+                    className="bg-primary text-black font-mono text-[10px] uppercase font-bold px-3 py-2 hover:bg-yellow-500 disabled:opacity-60 flex items-center gap-1 flex-shrink-0 whitespace-nowrap"
                   >
                     <Sparkles className="w-3 h-3" />
-                    {validating ? "..." : "AUTOFETCH"}
+                    {validating ? "Fetching…" : "Fetch Details"}
                   </button>
                 </div>
               </Field>
@@ -444,6 +467,20 @@ export default function Customers() {
                   placeholder="e.g. 27"
                 />
               </Field>
+              <Field label="State Name">
+                <Input
+                  value={form.state || ""}
+                  onChange={(e) => setForm({ ...form, state: e.target.value })}
+                  placeholder="e.g. Maharashtra"
+                />
+              </Field>
+              <Field label="Pincode">
+                <Input
+                  value={form.pincode || ""}
+                  onChange={(e) => setForm({ ...form, pincode: e.target.value })}
+                  placeholder="e.g. 411018"
+                />
+              </Field>
               <Field label="GST Status">
                 <div className="flex items-center gap-2">
                   <Input
@@ -453,13 +490,7 @@ export default function Customers() {
                     className="flex-1"
                   />
                   {form.gst_status && (
-                    <span className={`text-[10px] font-mono font-bold px-2 py-1 border flex-shrink-0 ${
-                      form.gst_status === "ACTIVE"
-                        ? "bg-green-950 text-green-400 border-green-800"
-                        : "bg-red-950 text-red-400 border-red-800"
-                    }`}>
-                      {form.gst_status}
-                    </span>
+                    <StatePill value={form.gst_status} className="flex-shrink-0" />
                   )}
                 </div>
               </Field>
@@ -473,98 +504,13 @@ export default function Customers() {
             </div>
           </div>
 
-          {/* Section 4: PAN Verification */}
-          <div>
-            <div className="label-overline mb-2 text-yellow-400">PAN Verification</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-zinc-900/20 p-4 border border-zinc-900">
-              <Field label="PAN Number">
-                <div className="flex gap-2">
-                  <Input
-                    value={form.pan_number || ""}
-                    onChange={(e) => setForm({ ...form, pan_number: e.target.value })}
-                    placeholder="10-character PAN"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleVerifyPan}
-                    disabled={verifyingPan}
-                    className="bg-primary text-black font-mono text-[10px] uppercase font-bold px-3 py-2 hover:bg-yellow-500 flex items-center gap-1 flex-shrink-0"
-                  >
-                    <Sparkles className="w-3 h-3" />
-                    {verifyingPan ? "..." : "VERIFY"}
-                  </button>
-                </div>
-              </Field>
-              <Field label="PAN Holder Name">
-                <Input value={form.pan_holder_name || ""} disabled placeholder="Verified name" />
-              </Field>
-              <Field label="PAN Type">
-                <Input value={form.pan_type || ""} disabled placeholder="Verified type" />
-              </Field>
-              <Field label="PAN Status">
-                <div className="flex items-center h-10">
-                  <span className={`text-[10px] font-mono font-bold px-2 py-1 border ${
-                    form.pan_status === "ACTIVE"
-                      ? "bg-green-950 text-green-400 border-green-800"
-                      : form.pan_status
-                      ? "bg-red-950 text-red-400 border-red-800"
-                      : "bg-zinc-900 text-zinc-500 border-zinc-800"
-                  }`}>
-                    {form.pan_status || "UNVERIFIED"}
-                  </span>
-                </div>
-              </Field>
-            </div>
-          </div>
-
-          {/* Section 5: Aadhaar Verification */}
-          <div>
-            <div className="label-overline mb-2 text-yellow-400">Aadhaar Verification</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-zinc-900/20 p-4 border border-zinc-900">
-              <Field label="Aadhaar Number">
-                <div className="flex gap-2">
-                  <Input
-                    value={form.aadhaar_number || ""}
-                    onChange={(e) => setForm({ ...form, aadhaar_number: e.target.value })}
-                    placeholder="12-digit Aadhaar"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleVerifyAadhaar}
-                    disabled={verifyingAadhaar}
-                    className="bg-primary text-black font-mono text-[10px] uppercase font-bold px-3 py-2 hover:bg-yellow-500 flex items-center gap-1 flex-shrink-0"
-                  >
-                    <Sparkles className="w-3 h-3" />
-                    {verifyingAadhaar ? "..." : "VERIFY"}
-                  </button>
-                </div>
-              </Field>
-              <Field label="Aadhaar Holder Name">
-                <Input value={form.aadhaar_holder_name || ""} disabled placeholder="Verified name" />
-              </Field>
-              <Field label="Aadhaar Status">
-                <div className="flex items-center h-10">
-                  <span className={`text-[10px] font-mono font-bold px-2 py-1 border ${
-                    form.aadhaar_status === "VERIFIED"
-                      ? "bg-green-950 text-green-400 border-green-800"
-                      : form.aadhaar_status
-                      ? "bg-red-950 text-red-400 border-red-800"
-                      : "bg-zinc-900 text-zinc-500 border-zinc-800"
-                  }`}>
-                    {form.aadhaar_status || "UNVERIFIED"}
-                  </span>
-                </div>
-              </Field>
-            </div>
-          </div>
-
-          {/* Section 6: Commercial Rules */}
+          {/* Section 4: Commercial Rules */}
           <div>
             <div className="label-overline mb-2 text-yellow-400">Commercial settings</div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-zinc-900/20 p-4 border border-zinc-900">
               <Field label="Credit Limit (INR)">
                 <Input
-                  type="number"
+                  type="text" inputMode="decimal"
                   value={form.credit_limit || 0}
                   onChange={(e) => setForm({ ...form, credit_limit: parseFloat(e.target.value) || 0 })}
                 />
@@ -580,6 +526,15 @@ export default function Customers() {
           </div>
         </form>
       </Modal>
+
+      <BulkDeleteBar
+        count={sel.count}
+        deleting={sel.deleting}
+        onClear={sel.clear}
+        onDelete={bulkDelete}
+        noun="party"
+        nounPlural="parties"
+      />
     </div>
   );
 }

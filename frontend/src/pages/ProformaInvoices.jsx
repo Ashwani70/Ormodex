@@ -9,10 +9,13 @@ import {
   Field,
   EmptyState,
   StatusBadge,
+  NumericInput,
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
 import { downloadPdf, fmtMoney } from "@/lib/currency";
 import SendEmailButton from "@/components/SendEmailButton";
+import BulkDeleteBar, { SelectCheckbox } from "@/components/BulkDeleteBar";
+import useBulkSelect from "@/hooks/useBulkSelect";
 import {
   Plus,
   Pencil,
@@ -29,9 +32,9 @@ const PI_STATUS = ["DRAFT", "SENT", "ACCEPTED", "CONVERTED", "CANCELLED"];
 const blankItem = {
   container_spec: "",
   description: "",
-  weight_per_unit: 0,
-  quantity: 0,
-  unit_price: 0,
+  weight_per_unit: "",
+  quantity: "",
+  unit_price: "",
 };
 
 const blank = {
@@ -76,22 +79,59 @@ export default function ProformaInvoices() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(blank);
   const [editingId, setEditingId] = useState(null);
+  const [company, setCompany] = useState(null);
+
+  const sel = useBulkSelect(items);
 
   const load = async () => {
     const r = await api.get("/proforma-invoices");
     setItems(r.data);
   };
+
+  const bulkDelete = async () => {
+    const { ok, failed } = await sel.runDelete(
+      (id) => api.delete(`/proforma-invoices/${id}`),
+      { reload: load }
+    );
+    if (failed) toast.error(`Deleted ${ok}, failed ${failed}`);
+    else toast.success(`Deleted ${ok} proforma invoice${ok === 1 ? "" : "s"}`);
+  };
+  const loadCompany = async () => {
+    try {
+      const r = await api.get("/company/active");
+      setCompany(r.data);
+    } catch (err) {
+      console.error("Failed to fetch active company", err);
+    }
+  };
   useEffect(() => {
     load();
+    loadCompany();
   }, []);
 
   const startNew = () => {
-    setForm(blank);
+    setForm({
+      ...blank,
+      exporter_name: company?.name || "GRAVITYONE ERP",
+      exporter_address: company?.address || "Pune, Maharashtra, India",
+      exporter_gstin: company?.gstin || "27AABCG1234F1Z5",
+      bank_name: company?.bank_name || "",
+      bank_account_no: company?.bank_account_no || "",
+      bank_branch: company?.bank_branch || "",
+    });
     setEditingId(null);
     setOpen(true);
   };
   const startEdit = (it) => {
-    setForm({ ...blank, ...it, items: it.items?.length ? it.items : [{ ...blankItem }] });
+    setForm({
+      ...blank, ...it,
+      items: (it.items?.length ? it.items : [{ ...blankItem }]).map((i) => ({
+        ...i,
+        weight_per_unit: i.weight_per_unit != null && i.weight_per_unit !== 0 ? i.weight_per_unit : "",
+        quantity: i.quantity != null && i.quantity !== 0 ? i.quantity : "",
+        unit_price: i.unit_price != null && i.unit_price !== 0 ? i.unit_price : "",
+      })),
+    });
     setEditingId(it.id);
     setOpen(true);
   };
@@ -177,6 +217,14 @@ export default function ProformaInvoices() {
           <table className="w-full text-sm">
             <thead className="bg-muted text-muted-foreground">
               <tr className="text-left label-overline border-b border-border">
+                <th className="px-3 py-2.5 w-10">
+                  <SelectCheckbox
+                    label="Select all proforma invoices"
+                    checked={sel.allSelected}
+                    indeterminate={sel.someSelected}
+                    onChange={sel.toggleAll}
+                  />
+                </th>
                 <th className="px-3 py-2.5">PI No.</th>
                 <th className="px-3 py-2.5">Buyer</th>
                 <th className="px-3 py-2.5">Country</th>
@@ -194,8 +242,15 @@ export default function ProformaInvoices() {
                 <tr
                   key={p.id}
                   data-testid={`pi-row-${p.id}`}
-                  className="border-b border-border hover:bg-muted/60 text-foreground"
+                  className={`border-b border-border hover:bg-muted/60 text-foreground ${sel.isSelected(p.id) ? "bg-primary/5" : ""}`}
                 >
+                  <td className="px-3 py-2.5">
+                    <SelectCheckbox
+                      label={`Select proforma invoice ${p.pi_number}`}
+                      checked={sel.isSelected(p.id)}
+                      onChange={() => sel.toggle(p.id)}
+                    />
+                  </td>
                   <td className="px-3 py-2.5 font-mono text-primary font-bold">
                     {p.pi_number}
                   </td>
@@ -497,35 +552,24 @@ export default function ProformaInvoices() {
                         }
                         className="md:col-span-6 bg-background border border-input text-foreground text-sm px-3 py-2 focus:border-primary focus:outline-none transition-colors"
                       />
-                      <Input
-                        type="number"
-                        step="0.01"
-                        placeholder="Wt/unit"
+                      <NumericInput
                         value={it.weight_per_unit}
-                        onChange={(e) =>
-                          updateItem(idx, { weight_per_unit: e.target.value })
-                        }
-                        className="md:col-span-1 text-right tabular"
+                        onChange={(v) => updateItem(idx, { weight_per_unit: v })}
+                        placeholder="Wt/unit"
+                        className="md:col-span-1"
                       />
-                      <Input
-                        type="number"
-                        step="1"
-                        placeholder="Qty"
+                      <NumericInput
                         value={it.quantity}
-                        onChange={(e) =>
-                          updateItem(idx, { quantity: e.target.value })
-                        }
-                        className="md:col-span-1 text-right tabular"
+                        onChange={(v) => updateItem(idx, { quantity: v })}
+                        placeholder="Qty"
+                        decimals={0}
+                        className="md:col-span-1"
                       />
-                      <Input
-                        type="number"
-                        step="0.01"
-                        placeholder="Unit price"
+                      <NumericInput
                         value={it.unit_price}
-                        onChange={(e) =>
-                          updateItem(idx, { unit_price: e.target.value })
-                        }
-                        className="md:col-span-1 text-right tabular"
+                        onChange={(v) => updateItem(idx, { unit_price: v })}
+                        placeholder="Unit price"
+                        className="md:col-span-1"
                       />
                       <button
                         type="button"
@@ -694,6 +738,14 @@ export default function ProformaInvoices() {
           </section>
         </div>
       </Modal>
+
+      <BulkDeleteBar
+        count={sel.count}
+        deleting={sel.deleting}
+        onClear={sel.clear}
+        onDelete={bulkDelete}
+        noun="proforma invoice"
+      />
     </div>
   );
 }

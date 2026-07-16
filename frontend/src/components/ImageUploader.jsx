@@ -3,7 +3,7 @@ import api from "@/lib/api";
 import { Upload, X, Image as ImageIcon } from "lucide-react";
 import { toast } from "sonner";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 
 export default function ImageUploader({ value, onChange }) {
   // value is the storage path (e.g. "gew-erp/products/.../uuid.png")
@@ -48,9 +48,7 @@ export default function ImageUploader({ value, onChange }) {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const { data } = await api.post("/uploads/product-image", fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const { data } = await api.post("/uploads/product-image", fd);
       onChange(data.path);
       toast.success("Image uploaded");
     } catch (err) {
@@ -64,23 +62,23 @@ export default function ImageUploader({ value, onChange }) {
   return (
     <div className="space-y-2">
       {previewSrc ? (
-        <div className="relative inline-block border border-zinc-800">
+        <div className="relative inline-flex items-center justify-center border border-zinc-800 bg-zinc-900/60 rounded-md w-48 h-32 p-2">
           <img
             src={previewSrc}
-            alt="Product"
-            className="w-32 h-32 object-cover"
+            alt="Uploaded preview"
+            className="max-w-full max-h-full object-contain"
           />
           <button
             type="button"
             data-testid="remove-image"
             onClick={() => onChange("")}
-            className="absolute top-1 right-1 w-6 h-6 bg-black/80 text-zinc-300 hover:text-red-400 border border-zinc-700"
+            className="absolute top-1 right-1 w-6 h-6 bg-black/80 text-zinc-300 hover:text-red-400 border border-zinc-700 rounded"
           >
             <X className="w-3.5 h-3.5 mx-auto" />
           </button>
         </div>
       ) : (
-        <div className="w-32 h-32 border border-dashed border-zinc-700 flex items-center justify-center">
+        <div className="w-48 h-32 border border-dashed border-zinc-700 flex items-center justify-center rounded-md">
           <ImageIcon className="w-6 h-6 text-zinc-700" />
         </div>
       )}

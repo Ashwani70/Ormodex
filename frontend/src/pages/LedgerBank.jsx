@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import api from "@/lib/api";
 import {
   PageHeader,
@@ -10,9 +10,12 @@ import {
   Select,
   Field,
   EmptyState,
+  NumericInput,
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
 import { toast } from "sonner";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import { Plus, RefreshCw, Landmark, ArrowUpDown, GitMerge, BookCopy, CheckCircle2 } from "lucide-react";
 
 const inr = (n) =>
@@ -45,20 +48,20 @@ export default function Ledger() {
 
   const [bankForm, setBankForm] = useState({
     name: "", bank_name: "", account_number: "", ifsc: "",
-    account_type: "CURRENT", opening_balance: 0, currency: "INR",
+    account_type: "CURRENT", opening_balance: "", currency: "INR",
   });
   const [chequeForm, setChequeForm] = useState({
     cheque_number: "", bank_account_code: "", cheque_type: "ISSUED",
-    party_name: "", amount: 0, cheque_date: new Date().toISOString().split("T")[0],
+    party_name: "", amount: "", cheque_date: new Date().toISOString().split("T")[0],
     status: "PENDING", remarks: "",
   });
   const [entryForm, setEntryForm] = useState({
     bank_account_id: "", date: new Date().toISOString().split("T")[0],
-    entry_type: "CREDIT", amount: 0, description: "", reference: "",
+    entry_type: "CREDIT", amount: "", description: "", reference: "",
   });
   const [stmtForm, setStmtForm] = useState({
     bank_account_code: "", transaction_date: new Date().toISOString().split("T")[0],
-    description: "", debit: 0, credit: 0, ref_number: "",
+    description: "", debit: "", credit: "", ref_number: "",
   });
   const [cheques, setCheques] = useState([]);
   const [stmts, setStmts] = useState([]);
@@ -127,10 +130,18 @@ export default function Ledger() {
     if (tab === "outstanding") loadOutstanding();
     if (tab === "ageing") loadAgeing();
     if (tab === "reconciliation") {
-      api.get("/accounting/chart-of-accounts").then(r => setCoa(r.data || []));
-      api.get("/banking/statements").then(r => setStmts(r.data?.items || []));
+      api.get("/accounting/chart-of-accounts")
+        .then(r => setCoa(r.data || []))
+        .catch(() => toast.error("Failed to load chart of accounts"));
+      api.get("/banking/statements")
+        .then(r => setStmts(r.data?.items || []))
+        .catch(() => toast.error("Failed to load banking statements"));
     }
-    if (tab === "cheques") api.get("/banking/cheques").then(r => setCheques(r.data?.items || []));
+    if (tab === "cheques") {
+      api.get("/banking/cheques")
+        .then(r => setCheques(r.data?.items || []))
+        .catch(e => toast.error(e.response?.data?.detail || "Failed to load cheques"));
+    }
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
@@ -140,12 +151,26 @@ export default function Ledger() {
       await api.post("/ledger/bank-accounts", { ...bankForm, opening_balance: parseFloat(bankForm.opening_balance) });
       toast.success("Bank account created");
       setShowBankModal(false);
-      setBankForm({ name: "", bank_name: "", account_number: "", ifsc: "", account_type: "CURRENT", opening_balance: 0, currency: "INR" });
+      setBankForm({ name: "", bank_name: "", account_number: "", ifsc: "", account_type: "CURRENT", opening_balance: "", currency: "INR" });
       loadBankAccounts();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed");
     }
   };
+
+  // Enter-as-Tab across the Add Bank Account form; Ctrl+Enter/Ctrl+S saves,
+  // Esc cancels, first field auto-focuses when the modal opens. This is the
+  // page's primary create action, so it also owns the Ctrl+N shortcut.
+  const bankFormRef = useRef(null);
+  useEnterNavigation(bankFormRef, {
+    enabled: showBankModal,
+    autoFocus: true,
+    onSave: () => createBankAccount(new Event("submit", { cancelable: true })),
+    onCancel: () => setShowBankModal(false),
+  });
+  useModuleShortcuts({
+    onNew: () => { if (!showBankModal) setShowBankModal(true); },
+  });
 
   const createBankEntry = async (e) => {
     e.preventDefault();
@@ -158,6 +183,16 @@ export default function Ledger() {
       toast.error(e.response?.data?.detail || "Failed");
     }
   };
+
+  // Secondary form (Add Entry) — Enter-as-Tab + Ctrl+Enter/Ctrl+S save + Esc
+  // cancel, no Ctrl+N wiring here (owned by the bank-account form above).
+  const entryFormRef = useRef(null);
+  useEnterNavigation(entryFormRef, {
+    enabled: showEntryModal,
+    autoFocus: true,
+    onSave: () => createBankEntry(new Event("submit", { cancelable: true })),
+    onCancel: () => setShowEntryModal(false),
+  });
 
   const createStmt = async () => {
     try {
@@ -241,8 +276,8 @@ export default function Ledger() {
       {["party-ledger", "outstanding", "ageing"].includes(tab) && (
         <div className="flex gap-2 mb-4">
           <span className="label-overline self-center">Party Type:</span>
-          {["CUSTOMER", "SUPPLIER"].map(pt => (
-            <button key={pt} onClick={() => { setPartyType(pt); }} className={`px-3 py-1.5 text-xs font-mono uppercase border transition-colors ${partyType === pt ? "border-yellow-400 bg-yellow-400 text-black" : "border-zinc-700 text-zinc-400 hover:border-yellow-400"}`}>{pt}</button>
+          {[["CUSTOMER", "Customer"], ["SUPPLIER", "Vendor"]].map(([val, label]) => (
+            <button key={val} onClick={() => { setPartyType(val); }} className={`px-3 py-1.5 text-xs font-mono uppercase border transition-colors ${partyType === val ? "border-yellow-400 bg-yellow-400 text-black" : "border-zinc-700 text-zinc-400 hover:border-yellow-400"}`}>{label}</button>
           ))}
           <SecondaryButton icon={RefreshCw} onClick={() => {
             if (tab === "party-ledger") loadPartyLedger();
@@ -473,13 +508,11 @@ export default function Ledger() {
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <span className="label-overline block mb-1">Debit ₹ (Out)</span>
-                    <input type="number" value={stmtForm.debit} onChange={e => setStmtForm(f => ({ ...f, debit: e.target.value }))}
-                      className="w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs px-3 py-2 focus:outline-none focus:border-yellow-400" />
+                    <NumericInput value={stmtForm.debit} onChange={v => setStmtForm(f => ({ ...f, debit: v }))} placeholder="0.00" />
                   </div>
                   <div>
                     <span className="label-overline block mb-1">Credit ₹ (In)</span>
-                    <input type="number" value={stmtForm.credit} onChange={e => setStmtForm(f => ({ ...f, credit: e.target.value }))}
-                      className="w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs px-3 py-2 focus:outline-none focus:border-yellow-400" />
+                    <NumericInput value={stmtForm.credit} onChange={v => setStmtForm(f => ({ ...f, credit: v }))} placeholder="0.00" />
                   </div>
                 </div>
               </div>
@@ -623,28 +656,28 @@ export default function Ledger() {
                     <td className="px-4 py-2 text-zinc-200">{ch.party_name}</td>
                     <td className="px-4 py-2">
                       <span className={`text-[10px] font-mono px-1.5 py-0.5 border ${
-                        ch.cheque_type === "ISSUED" ? "border-red-800 text-red-400 bg-red-950/20" : "border-green-800 text-green-400 bg-green-950/20"
+                        ch.cheque_type === "ISSUED" ? "bg-red-950" : "bg-green-950"
                       }`}>{ch.cheque_type}</span>
                     </td>
                     <td className="px-4 py-2 font-mono text-zinc-400">{ch.cheque_date}</td>
                     <td className="px-4 py-2 text-right font-semibold text-zinc-200">₹{inr(ch.amount)}</td>
                     <td className="px-4 py-2">
                       <span className={`text-[10px] font-mono px-1.5 py-0.5 border ${
-                        ch.status === "CLEARED" ? "border-green-800 text-green-400 bg-green-950/20" :
-                        ch.status === "BOUNCED" ? "border-red-800 text-red-400 bg-red-950/20" :
+                        ch.status === "CLEARED" ? "bg-green-950" :
+                        ch.status === "BOUNCED" ? "bg-red-950" :
                         ch.status === "CANCELLED" ? "border-zinc-700 text-zinc-500" :
-                        "border-yellow-800 text-yellow-400 bg-yellow-950/20"
+                        "bg-yellow-950"
                       }`}>{ch.status}</span>
                     </td>
                     <td className="px-4 py-2">
                       {ch.status === "PENDING" && (
                         <div className="flex gap-1">
                           <button onClick={() => updateChequeStatus(ch.id, "CLEARED")}
-                            className="text-[9px] font-mono uppercase px-1.5 py-0.5 border border-green-800 text-green-400 hover:bg-green-950">
+                            className="text-[9px] font-mono uppercase px-1.5 py-0.5 border border-green-200 text-green-700 bg-green-50 hover:bg-green-100 dark:border-green-800 dark:text-green-400 dark:bg-green-950/20 dark:hover:bg-green-950/40">
                             Clear
                           </button>
                           <button onClick={() => updateChequeStatus(ch.id, "BOUNCED")}
-                            className="text-[9px] font-mono uppercase px-1.5 py-0.5 border border-red-800 text-red-400 hover:bg-red-950">
+                            className="text-[9px] font-mono uppercase px-1.5 py-0.5 border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 dark:border-red-800 dark:text-red-400 dark:bg-red-950/20 dark:hover:bg-red-950/40">
                             Bounce
                           </button>
                         </div>
@@ -659,7 +692,7 @@ export default function Ledger() {
       )}
 
       <Modal open={showBankModal} onClose={() => setShowBankModal(false)} title="Add Bank Account">
-        <form onSubmit={createBankAccount} className="space-y-4">
+        <form ref={bankFormRef} onSubmit={createBankAccount} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <Field label="Account Label" required><Input value={bankForm.name} onChange={e => setBankForm(f => ({ ...f, name: e.target.value }))} placeholder="Primary Current Account" required /></Field>
             <Field label="Bank Name" required><Input value={bankForm.bank_name} onChange={e => setBankForm(f => ({ ...f, bank_name: e.target.value }))} placeholder="HDFC Bank" required /></Field>
@@ -674,7 +707,7 @@ export default function Ledger() {
                 {["CURRENT","SAVINGS","OD","CC"].map(t => <option key={t}>{t}</option>)}
               </Select>
             </Field>
-            <Field label="Opening Balance (₹)"><Input type="number" step="0.01" value={bankForm.opening_balance} onChange={e => setBankForm(f => ({ ...f, opening_balance: e.target.value }))} /></Field>
+            <Field label="Opening Balance (₹)"><NumericInput value={bankForm.opening_balance} onChange={v => setBankForm(f => ({ ...f, opening_balance: v }))} placeholder="0.00" align="left" /></Field>
           </div>
           <div className="flex gap-2 justify-end pt-2">
             <SecondaryButton onClick={() => setShowBankModal(false)}>Cancel</SecondaryButton>
@@ -685,7 +718,7 @@ export default function Ledger() {
 
       {/* Add Bank Entry Modal */}
       <Modal open={showEntryModal} onClose={() => setShowEntryModal(false)} title="Record Bank Entry">
-        <form onSubmit={createBankEntry} className="space-y-4">
+        <form ref={entryFormRef} onSubmit={createBankEntry} className="space-y-4">
           <Field label="Bank Account" required>
             <Select value={entryForm.bank_account_id} onChange={e => setEntryForm(f => ({ ...f, bank_account_id: e.target.value }))} required>
               <option value="">Select account...</option>
@@ -702,7 +735,7 @@ export default function Ledger() {
             </Field>
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Amount (₹)" required><Input type="number" step="0.01" value={entryForm.amount} onChange={e => setEntryForm(f => ({ ...f, amount: e.target.value }))} required /></Field>
+            <Field label="Amount (₹)" required><NumericInput value={entryForm.amount} onChange={v => setEntryForm(f => ({ ...f, amount: v }))} placeholder="0.00" align="left" /></Field>
             <Field label="Reference No"><Input value={entryForm.reference} onChange={e => setEntryForm(f => ({ ...f, reference: e.target.value }))} placeholder="Cheque / UTR number" /></Field>
           </div>
           <Field label="Description"><Input value={entryForm.description} onChange={e => setEntryForm(f => ({ ...f, description: e.target.value }))} /></Field>

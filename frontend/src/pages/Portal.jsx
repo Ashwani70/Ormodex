@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+﻿import { useState, useEffect, useCallback } from "react";
 import portalApi, { setPortalToken, getPortalToken } from "@/lib/portalApi";
 import { toast } from "sonner";
+import axios from "axios";
 
 const fmt = (v) => (v == null ? "—" : Number(v).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 
@@ -33,7 +34,7 @@ const StatusPill = ({ s }) => {
 };
 
 // ── Login ──
-function PortalLogin({ onLogin }) {
+function PortalLogin({ onLogin, company }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -56,7 +57,7 @@ function PortalLogin({ onLogin }) {
     <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-6">
       <Card className="p-8 w-full max-w-sm">
         <div className="mb-6 text-center">
-          <div className="font-display font-black text-2xl text-zinc-50">GravityOne</div>
+          <div className="font-display font-black text-2xl text-zinc-50">{company?.name || "Ormodex"}</div>
           <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-yellow-400">Partner Portal</div>
         </div>
         <form onSubmit={submit} className="space-y-3">
@@ -202,7 +203,7 @@ function VendorDash({ session }) {
       <Card className="p-5 mb-6">
         <h3 className="font-display font-bold text-zinc-50 mb-3">Submit a Bill</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Input placeholder="Amount" type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+          <Input placeholder="Amount" type="text" inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
           <Input placeholder="Bill #" value={form.bill_number} onChange={(e) => setForm({ ...form, bill_number: e.target.value })} />
           <Input placeholder="Bill date" type="date" value={form.bill_date} onChange={(e) => setForm({ ...form, bill_date: e.target.value })} />
           <Input placeholder="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
@@ -237,6 +238,14 @@ function VendorDash({ session }) {
 export default function Portal() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [company, setCompany] = useState(null);
+
+  useEffect(() => {
+    const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
+    axios.get(`${BACKEND_URL}/api/company/active`)
+      .then((res) => setCompany(res.data))
+      .catch((err) => console.error("Failed to fetch active company", err));
+  }, []);
 
   useEffect(() => {
     if (!getPortalToken()) { setLoading(false); return; }
@@ -253,13 +262,13 @@ export default function Portal() {
   };
 
   if (loading) return <div className="min-h-screen bg-zinc-950" />;
-  if (!session) return <PortalLogin onLogin={setSession} />;
+  if (!session) return <PortalLogin onLogin={setSession} company={company} />;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <header className="border-b border-zinc-800 px-6 py-4 flex items-center justify-between">
         <div>
-          <div className="font-display font-black text-lg text-zinc-50">GravityOne Portal</div>
+          <div className="font-display font-black text-lg text-zinc-50">{company?.name || "Ormodex"} Portal</div>
           <div className="font-mono text-[10px] uppercase tracking-widest text-yellow-400">
             {session.party_type} · {session.name || session.email}
           </div>

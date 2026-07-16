@@ -89,12 +89,12 @@ function ProjectsTab({ onOpen }) {
             <Input label="Code" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="PRJ-001" />
             <Input label="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             <Input label="Customer ID" value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })} />
-            <Input label="Budget" type="number" value={form.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
+            <Input label="Budget" type="text" inputMode="decimal" value={form.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
             <Select label="Billing" value={form.billing} onChange={(e) => setForm({ ...form, billing: e.target.value })}>
               <option value="time_and_materials">Time & Materials</option>
               <option value="fixed">Fixed</option>
             </Select>
-            <Input label="Overhead %" type="number" value={form.overhead_pct} onChange={(e) => setForm({ ...form, overhead_pct: e.target.value })} />
+            <Input label="Overhead %" type="text" inputMode="decimal" value={form.overhead_pct} onChange={(e) => setForm({ ...form, overhead_pct: e.target.value })} />
           </div>
           <div className="mt-4"><Btn onClick={create}>Create Project</Btn></div>
         </Card>
@@ -266,9 +266,9 @@ function TimesheetTab() {
             {projects.map((p) => <option key={p.id} value={p.id}>{p.code}</option>)}
           </Select>
           <Input label="Date" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
-          <Input label="Hours" type="number" value={form.hours} onChange={(e) => setForm({ ...form, hours: e.target.value })} />
-          <Input label="Bill Rate" type="number" value={form.rate} onChange={(e) => setForm({ ...form, rate: e.target.value })} />
-          <Input label="Cost Rate" type="number" value={form.cost_rate} onChange={(e) => setForm({ ...form, cost_rate: e.target.value })} />
+          <Input label="Hours" type="text" inputMode="decimal" value={form.hours} onChange={(e) => setForm({ ...form, hours: e.target.value })} />
+          <Input label="Bill Rate" type="text" inputMode="decimal" value={form.rate} onChange={(e) => setForm({ ...form, rate: e.target.value })} />
+          <Input label="Cost Rate" type="text" inputMode="decimal" value={form.cost_rate} onChange={(e) => setForm({ ...form, cost_rate: e.target.value })} />
           <Btn onClick={add}>Log</Btn>
         </div>
         <label className="flex items-center gap-2 text-sm text-zinc-300 mt-3">
@@ -292,7 +292,7 @@ function TimesheetTab() {
                   <td className="text-zinc-300 font-mono text-xs">{e.user_id?.slice(0, 8)}</td>
                   <td className="text-zinc-300">{proj?.code || e.project_id?.slice(0, 8)}</td>
                   <td className="text-right font-mono text-zinc-200">{e.hours}</td>
-                  <td className="text-right font-mono text-zinc-300">₹{fmt(e.hours * e.rate)}</td>
+                  <td className="text-right font-mono text-zinc-300">₹{fmt((e.hours || 0) * (e.rate || 0))}</td>
                   <td>{e.billable ? <span className="text-emerald-400 text-xs">yes</span> : <span className="text-zinc-600 text-xs">no</span>}</td>
                   <td>{e.invoiced ? <span className="text-blue-400 text-xs">✓</span> : <span className="text-zinc-600 text-xs">—</span>}</td>
                 </tr>

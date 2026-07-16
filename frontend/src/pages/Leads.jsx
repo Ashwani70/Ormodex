@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import {
@@ -11,6 +11,8 @@ import {
   StatusBadge,
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import {
   Plus,
   Trash2,
@@ -67,6 +69,28 @@ export default function Leads() {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
   };
+
+  const openNew = () => { setForm(blank); setEditingId(null); setOpen(true); };
+
+  // Enter-as-Tab across the whole form; Ctrl+Enter/Ctrl+S saves,
+  // Ctrl+Shift+Enter/Ctrl+Shift+S saves and opens a fresh blank lead, Esc
+  // cancels, first field auto-focuses when the modal opens.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: open,
+    autoFocus: true,
+    onSave: () => submit(new Event("submit", { cancelable: true })),
+    onSaveAndNew: async () => {
+      await submit(new Event("submit", { cancelable: true }));
+      openNew();
+    },
+    onCancel: () => setOpen(false),
+  });
+
+  useModuleShortcuts({
+    onNew: () => { if (!open) openNew(); },
+  });
+
   const onDelete = async (item) => {
     if (!window.confirm(`Delete lead from ${item.company_name}?`)) return;
     try {
@@ -102,11 +126,7 @@ export default function Leads() {
           <PrimaryButton
             icon={Plus}
             testid="new-lead"
-            onClick={() => {
-              setForm(blank);
-              setEditingId(null);
-              setOpen(true);
-            }}
+            onClick={openNew}
           >
             New lead
           </PrimaryButton>
@@ -252,7 +272,7 @@ export default function Leads() {
           </>
         }
       >
-        <form onSubmit={submit} className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <form ref={formRef} onSubmit={submit} className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label="Company name" required>
             <Input
               required
@@ -306,7 +326,7 @@ export default function Leads() {
           </Field>
           <Field label="Estimated value (₹)">
             <Input
-              type="number"
+              type="text" inputMode="decimal"
               value={form.estimated_value}
               onChange={(e) =>
                 setForm({ ...form, estimated_value: e.target.value })

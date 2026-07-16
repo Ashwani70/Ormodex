@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import api from "@/lib/api";
 import {
   PageHeader,
@@ -13,7 +13,9 @@ import {
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
 import { toast } from "sonner";
-import { Plus, RefreshCw, Download, FileText, Search, Shield } from "lucide-react";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
+import { Plus, RefreshCw, Download, FileText, Search, Shield, Activity, ShieldCheck, AlertTriangle, Clock } from "lucide-react";
 
 const inr = (n) =>
   Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
@@ -26,6 +28,8 @@ const TABS = [
   { id: "itc", label: "ITC Summary" },
   { id: "tds", label: "TDS" },
   { id: "tcs", label: "TCS" },
+  { id: "filing", label: "Filing Status" },
+  { id: "compliance", label: "Filing Compliance" },
   { id: "validate", label: "Validate GSTIN" },
 ];
 
@@ -56,18 +60,30 @@ export default function GstAccounting() {
   const [showTcsForm, setShowTcsForm] = useState(false);
   const [tdsForm, setTdsForm] = useState({
     entry_date: new Date().toISOString().split("T")[0], party_name: "", party_pan: "",
-    tds_section: "194J", base_amount: 0, tds_rate: 10, tds_amount: 0, net_amount: 0,
+    tds_section: "194J", base_amount: "", tds_rate: 10, tds_amount: 0, net_amount: 0,
     return_period: returnPeriod, status: "DEDUCTED", remarks: "",
   });
   const [tcsForm, setTcsForm] = useState({
     entry_date: new Date().toISOString().split("T")[0], party_name: "", party_pan: "",
-    tcs_section: "206C", base_amount: 0, tcs_rate: 0.1, tcs_amount: 0, gross_amount: 0,
+    tcs_section: "206C", base_amount: "", tcs_rate: 0.1, tcs_amount: 0, gross_amount: 0,
     return_period: returnPeriod, status: "COLLECTED", remarks: "",
   });
 
+  // Filing Status tab state
+  const [filingGstin, setFilingGstin] = useState("");
+  const [filingFy, setFilingFy] = useState("2024-25");
+  const [filingData, setFilingData] = useState(null);
+  const [filingLoading, setFilingLoading] = useState(false);
+  const [filingFilter, setFilingFilter] = useState("ALL");
+
+  // Filing Compliance tab state
+  const [complianceData, setComplianceData] = useState(null);
+  const [complianceFy, setComplianceFy] = useState("2024-25");
+  const [complianceLoading, setComplianceLoading] = useState(false);
+
   const [form, setForm] = useState({
     invoice_number: "", invoice_date: new Date().toISOString().split("T")[0],
-    party_name: "", party_gstin: "", taxable_amount: 0,
+    party_name: "", party_gstin: "", taxable_amount: "",
     cgst: 0, sgst: 0, igst: 0, cess: 0,
     gst_type: "SALES", return_period: returnPeriod,
     filing_status: "PENDING", source: "MANUAL",
@@ -148,6 +164,36 @@ export default function GstAccounting() {
     }
   };
 
+  const openNew = () => {
+    setForm({
+      invoice_number: "", invoice_date: new Date().toISOString().split("T")[0],
+      party_name: "", party_gstin: "", taxable_amount: "",
+      cgst: 0, sgst: 0, igst: 0, cess: 0,
+      gst_type: "SALES", return_period: returnPeriod,
+      filing_status: "PENDING", source: "MANUAL",
+    });
+    setShowModal(true);
+  };
+
+  // Enter-as-Tab across the whole form; Ctrl+Enter/Ctrl+S saves,
+  // Ctrl+Shift+Enter/Ctrl+Shift+S saves and opens a fresh blank record, Esc
+  // cancels, first field auto-focuses when the modal opens.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: showModal,
+    autoFocus: true,
+    onSave: () => createRecord(new Event("submit", { cancelable: true })),
+    onSaveAndNew: async () => {
+      await createRecord(new Event("submit", { cancelable: true }));
+      openNew();
+    },
+    onCancel: () => setShowModal(false),
+  });
+
+  useModuleShortcuts({
+    onNew: () => { if (!showModal) openNew(); },
+  });
+
   return (
     <div data-testid="gst-page">
       <PageHeader
@@ -159,7 +205,7 @@ export default function GstAccounting() {
             <SecondaryButton icon={RefreshCw} onClick={syncFromInvoices} testid="sync-gst-btn">
               Sync from Invoices
             </SecondaryButton>
-            <PrimaryButton icon={Plus} onClick={() => setShowModal(true)} testid="add-gst-record-btn">
+            <PrimaryButton icon={Plus} onClick={openNew} testid="add-gst-record-btn">
               Add Record
             </PrimaryButton>
           </>
@@ -209,7 +255,7 @@ export default function GstAccounting() {
             <SecondaryButton icon={Search} onClick={load}>Search</SecondaryButton>
           </div>
           {records.length === 0 ? (
-            <EmptyState message="No GST records" action={<PrimaryButton icon={Plus} onClick={() => setShowModal(true)}>Add Record</PrimaryButton>} />
+            <EmptyState message="No GST records" action={<PrimaryButton icon={Plus} onClick={openNew}>Add Record</PrimaryButton>} />
           ) : (
             <table className="w-full text-sm border border-zinc-800">
               <thead>
@@ -290,7 +336,7 @@ export default function GstAccounting() {
             <SectionTitle>Outward Supplies (Sales)</SectionTitle>
             {Object.entries(gstr3b.outward_supplies || {}).map(([k, v]) => (
               <div key={k} className="flex justify-between py-1 border-b border-zinc-800 text-sm">
-                <span className="text-zinc-400 font-mono uppercase text-xs">{k.replace("_", " ")}</span>
+                <span className="text-zinc-400 font-mono uppercase keep-caps text-xs">{k.replace("_", " ")}</span>
                 <span className="tabular text-white font-mono">₹{inr(v)}</span>
               </div>
             ))}
@@ -299,7 +345,7 @@ export default function GstAccounting() {
             <SectionTitle>ITC Available (Purchases)</SectionTitle>
             {Object.entries(gstr3b.itc_available || {}).map(([k, v]) => (
               <div key={k} className="flex justify-between py-1 border-b border-zinc-800 text-sm">
-                <span className="text-zinc-400 font-mono uppercase text-xs">{k.replace("_", " ")}</span>
+                <span className="text-zinc-400 font-mono uppercase keep-caps text-xs">{k.replace("_", " ")}</span>
                 <span className="tabular text-white font-mono">₹{inr(v)}</span>
               </div>
             ))}
@@ -308,7 +354,7 @@ export default function GstAccounting() {
             <SectionTitle>Net Tax Payable</SectionTitle>
             {Object.entries(gstr3b.net_tax_payable || {}).map(([k, v]) => (
               <div key={k} className="flex justify-between py-1 border-b border-zinc-800 text-sm">
-                <span className="text-zinc-400 font-mono uppercase text-xs">{k.replace("_", " ")}</span>
+                <span className="text-zinc-400 font-mono uppercase keep-caps text-xs">{k.replace("_", " ")}</span>
                 <span className={`tabular font-mono font-bold ${v > 0 ? "text-red-400" : "text-green-400"}`}>₹{inr(v)}</span>
               </div>
             ))}
@@ -389,7 +435,7 @@ export default function GstAccounting() {
                 </div>
                 <div>
                   <span className="label-overline block mb-1">Base Amount ₹</span>
-                  <input type="number" value={tdsForm.base_amount}
+                  <input type="text" inputMode="decimal" value={tdsForm.base_amount}
                     onChange={e => {
                       const base = parseFloat(e.target.value) || 0;
                       const tds = parseFloat((base * tdsForm.tds_rate / 100).toFixed(2));
@@ -399,7 +445,7 @@ export default function GstAccounting() {
                 </div>
                 <div>
                   <span className="label-overline block mb-1">TDS Rate %</span>
-                  <input type="number" step="0.01" value={tdsForm.tds_rate}
+                  <input type="text" inputMode="decimal" step="0.01" value={tdsForm.tds_rate}
                     onChange={e => {
                       const rate = parseFloat(e.target.value) || 0;
                       const tds = parseFloat((tdsForm.base_amount * rate / 100).toFixed(2));
@@ -409,12 +455,12 @@ export default function GstAccounting() {
                 </div>
                 <div>
                   <span className="label-overline block mb-1">TDS Amount ₹</span>
-                  <input type="number" value={tdsForm.tds_amount} readOnly
+                  <input type="text" inputMode="decimal" value={tdsForm.tds_amount} readOnly
                     className="w-full bg-zinc-900 border border-zinc-600 text-yellow-400 text-xs px-3 py-2 opacity-80" />
                 </div>
                 <div>
                   <span className="label-overline block mb-1">Net Amount ₹</span>
-                  <input type="number" value={tdsForm.net_amount} readOnly
+                  <input type="text" inputMode="decimal" value={tdsForm.net_amount} readOnly
                     className="w-full bg-zinc-900 border border-zinc-600 text-green-400 text-xs px-3 py-2 opacity-80" />
                 </div>
               </div>
@@ -457,7 +503,7 @@ export default function GstAccounting() {
                     <td className="px-4 py-2 text-right tabular text-green-400">{inr(t.net_amount)}</td>
                     <td className="px-4 py-2">
                       <span className={`text-[10px] font-mono px-1.5 py-0.5 border ${
-                        t.status === "DEPOSITED" ? "border-green-800 text-green-400 bg-green-950/20" : "border-yellow-800 text-yellow-400 bg-yellow-950/20"
+                        t.status === "DEPOSITED" ? "bg-green-950" : "bg-yellow-950"
                       }`}>{t.status}</span>
                     </td>
                   </tr>
@@ -483,7 +529,7 @@ export default function GstAccounting() {
                       <td className="px-4 py-2 font-mono text-yellow-400">{s._id?.section}</td>
                       <td className="px-4 py-2">
                         <span className={`text-[10px] font-mono px-1.5 py-0.5 border ${
-                          s._id?.status === "DEPOSITED" ? "border-green-800 text-green-400 bg-green-950/20" : "border-yellow-800 text-yellow-400 bg-yellow-950/20"
+                          s._id?.status === "DEPOSITED" ? "bg-green-950" : "bg-yellow-950"
                         }`}>{s._id?.status}</span>
                       </td>
                       <td className="px-4 py-2 text-right tabular text-zinc-300">{inr(s.total_base)}</td>
@@ -596,7 +642,7 @@ export default function GstAccounting() {
                     <td className="px-4 py-2 text-right tabular text-zinc-200">{inr(t.gross_amount)}</td>
                     <td className="px-4 py-2">
                       <span className={`text-[10px] font-mono px-1.5 py-0.5 border ${
-                        t.status === "DEPOSITED" ? "border-green-800 text-green-400 bg-green-950/20" : "border-blue-800 text-blue-400 bg-blue-950/20"
+                        t.status === "DEPOSITED" ? "bg-green-950" : "bg-blue-950"
                       }`}>{t.status}</span>
                     </td>
                   </tr>
@@ -604,6 +650,281 @@ export default function GstAccounting() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* Filing Status Tab */}
+      {tab === "filing" && (
+        <div className="space-y-6">
+          <div className="border border-zinc-800 bg-zinc-950 p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <Activity className="w-4 h-4 text-yellow-400" />
+              <span className="font-mono text-xs uppercase tracking-widest text-zinc-300 font-bold">GST Return Filing Status Lookup</span>
+            </div>
+            <p className="text-xs text-zinc-500 font-mono mb-4">Check whether a taxpayer has filed GSTR-1, GSTR-3B, GSTR-2X and other returns for a financial year.</p>
+            <div className="flex flex-wrap gap-3 items-end">
+              <div>
+                <span className="label-overline block mb-1">GSTIN</span>
+                <input value={filingGstin} onChange={e => setFilingGstin(e.target.value.toUpperCase())}
+                  placeholder="e.g. 24AABCA2804L1Z0" maxLength={15}
+                  className="w-56 bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs px-3 py-2 font-mono focus:outline-none focus:border-yellow-400" />
+              </div>
+              <div>
+                <span className="label-overline block mb-1">Financial Year</span>
+                <select value={filingFy} onChange={e => setFilingFy(e.target.value)}
+                  className="bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs px-3 py-2 font-mono focus:outline-none focus:border-yellow-400">
+                  {["2025-26","2024-25","2023-24","2022-23","2021-22"].map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+              </div>
+              <button
+                onClick={async () => {
+                  if (!filingGstin || filingGstin.length < 15) { toast.error("Enter a valid 15-character GSTIN"); return; }
+                  setFilingLoading(true); setFilingData(null);
+                  try {
+                    const r = await api.get(`/gst/filing-status/${filingGstin}/${filingFy}`);
+                    setFilingData(r.data);
+                  } catch (e) {
+                    toast.error(e.response?.data?.detail || "Filing status lookup failed");
+                  } finally { setFilingLoading(false); }
+                }}
+                disabled={filingLoading}
+                className="bg-yellow-400 hover:bg-yellow-500 text-black text-xs font-mono font-bold uppercase px-4 py-2 disabled:opacity-50 flex items-center gap-2"
+              >
+                {filingLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+                {filingLoading ? "Checking..." : "Check Filing Status"}
+              </button>
+            </div>
+          </div>
+
+          {filingLoading && (
+            <div className="flex flex-col items-center justify-center py-16 border border-zinc-800 bg-zinc-950">
+              <RefreshCw className="w-8 h-8 text-yellow-400 animate-spin mb-3" />
+              <p className="font-mono text-xs uppercase text-zinc-500 tracking-widest">Fetching filing data from GST portal...</p>
+            </div>
+          )}
+
+          {filingData && !filingLoading && (
+            <>
+              {/* Summary cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <StatTile label="Total Filings" value={filingData.total_filings || 0} />
+                {Object.entries(filingData.summary || {}).slice(0, 3).map(([rt, s]) => (
+                  <StatTile key={rt} label={rt} value={`${s.filed}/${s.total}`} accent={rt === "GSTR1"} />
+                ))}
+              </div>
+
+              {filingData.from_cache && (
+                <div className="flex items-center gap-2 text-[10px] font-mono text-zinc-500 bg-zinc-900 border border-zinc-800 px-3 py-1.5 w-fit">
+                  <Clock className="w-3 h-3" /> Cached result · Fetched {new Date(filingData.cached_at).toLocaleString("en-IN")}
+                </div>
+              )}
+
+              {/* Filter tabs */}
+              <div className="flex gap-1">
+                {["ALL", "GSTR1", "GSTR3B", "GSTR2X", "GSTR1A"].map(f => (
+                  <button key={f} onClick={() => setFilingFilter(f)}
+                    className={`text-[10px] font-mono uppercase px-3 py-1.5 border transition-colors ${
+                      filingFilter === f ? "border-yellow-400 bg-yellow-400/10 text-yellow-400" : "border-zinc-800 text-zinc-500 hover:text-white hover:border-zinc-600"
+                    }`}>{f === "ALL" ? "All Returns" : f}</button>
+                ))}
+              </div>
+
+              {/* Filing records table */}
+              <div className="border border-zinc-800 bg-zinc-950 overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="label-overline border-b border-zinc-800 bg-zinc-900">
+                      <th className="text-left px-4 py-2.5">Return Type</th>
+                      <th className="text-left px-4 py-2.5">Period</th>
+                      <th className="text-left px-4 py-2.5">Status</th>
+                      <th className="text-left px-4 py-2.5">Date of Filing</th>
+                      <th className="text-left px-4 py-2.5">Mode</th>
+                      <th className="text-left px-4 py-2.5">ARN</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(filingData.filings || []).filter(f => filingFilter === "ALL" || f.return_type === filingFilter).map((f, i) => (
+                      <tr key={`${f.return_type}-${f.return_period}-${i}`}
+                        className={`border-b border-zinc-900 hover:bg-zinc-900/80 transition-colors ${i % 2 === 1 ? "bg-zinc-900/20" : ""}`}>
+                        <td className="px-4 py-2.5">
+                          <span className={`text-[10px] font-mono font-bold px-2 py-0.5 border ${
+                            f.return_type === "GSTR1" ? "border-blue-800 bg-blue-950/40 text-blue-400" :
+                            f.return_type === "GSTR3B" ? "border-purple-800 bg-purple-950/40 text-purple-400" :
+                            f.return_type === "GSTR2X" ? "border-cyan-800 bg-cyan-950/40 text-cyan-400" :
+                            "border-zinc-700 bg-zinc-800/40 text-zinc-400"
+                          }`}>{f.return_type}</span>
+                        </td>
+                        <td className="px-4 py-2.5 text-zinc-300 font-mono">{f.return_period_formatted || f.return_period}</td>
+                        <td className="px-4 py-2.5">
+                          <span className={`text-[10px] font-mono px-2 py-0.5 border ${
+                            f.status === "Filed" ? "border-green-800 bg-green-950/30 text-green-400" :
+                            "border-red-800 bg-red-950/30 text-red-400"
+                          }`}>{f.status}</span>
+                        </td>
+                        <td className="px-4 py-2.5 text-zinc-300 font-mono">{f.date_of_filing || "—"}</td>
+                        <td className="px-4 py-2.5 text-zinc-500 font-mono">{f.mode_of_filing || "—"}</td>
+                        <td className="px-4 py-2.5 text-zinc-600 font-mono text-[10px]">{f.acknowledgement_number || "—"}</td>
+                      </tr>
+                    ))}
+                    {(filingData.filings || []).filter(f => filingFilter === "ALL" || f.return_type === filingFilter).length === 0 && (
+                      <tr><td colSpan={6} className="px-4 py-8 text-center text-zinc-600 font-mono">No records for this filter</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Filing Compliance Tab */}
+      {tab === "compliance" && (
+        <div className="space-y-6">
+          <div className="border border-zinc-800 bg-zinc-950 p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <ShieldCheck className="w-4 h-4 text-yellow-400" />
+              <span className="font-mono text-xs uppercase tracking-widest text-zinc-300 font-bold">Vendor Filing Compliance Check</span>
+            </div>
+            <p className="text-xs text-zinc-500 font-mono mb-4">Checks if your vendors have filed GSTR-1 and GSTR-3B. Vendors who haven't filed put your ITC at risk.</p>
+            <div className="flex flex-wrap gap-3 items-end">
+              <div>
+                <span className="label-overline block mb-1">Return Period (MMYYYY)</span>
+                <input value={returnPeriod} onChange={e => setReturnPeriod(e.target.value)}
+                  placeholder="052024" maxLength={6}
+                  className="w-28 bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs px-3 py-2 font-mono focus:outline-none focus:border-yellow-400" />
+              </div>
+              <div>
+                <span className="label-overline block mb-1">Financial Year</span>
+                <select value={complianceFy} onChange={e => setComplianceFy(e.target.value)}
+                  className="bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs px-3 py-2 font-mono focus:outline-none focus:border-yellow-400">
+                  {["2025-26","2024-25","2023-24","2022-23"].map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+              </div>
+              <button
+                onClick={async () => {
+                  setComplianceLoading(true); setComplianceData(null);
+                  try {
+                    const r = await api.post(`/gst/reconciliation/filing-check?return_period=${returnPeriod}&financial_year=${complianceFy}`);
+                    setComplianceData(r.data);
+                    toast.success(`Checked ${r.data.total_vendors} vendors`);
+                  } catch (e) {
+                    toast.error(e.response?.data?.detail || "Compliance check failed");
+                  } finally { setComplianceLoading(false); }
+                }}
+                disabled={complianceLoading}
+                className="bg-yellow-400 hover:bg-yellow-500 text-black text-xs font-mono font-bold uppercase px-4 py-2 disabled:opacity-50 flex items-center gap-2"
+              >
+                {complianceLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                {complianceLoading ? "Checking Vendors..." : "Run Compliance Check"}
+              </button>
+            </div>
+          </div>
+
+          {complianceLoading && (
+            <div className="flex flex-col items-center justify-center py-16 border border-zinc-800 bg-zinc-950">
+              <RefreshCw className="w-8 h-8 text-yellow-400 animate-spin mb-3" />
+              <p className="font-mono text-xs uppercase text-zinc-500 tracking-widest">Checking vendor filing status...</p>
+              <p className="font-mono text-[10px] text-zinc-600 mt-1">This may take a moment if there are many vendors</p>
+            </div>
+          )}
+
+          {complianceData && !complianceLoading && (
+            <>
+              {/* Summary Stats */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <StatTile label="Total Vendors" value={complianceData.total_vendors} />
+                <div className="border border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/20 p-4">
+                  <div className="label-overline text-green-700 dark:text-green-400 mb-1">Compliant</div>
+                  <div className="font-display font-black text-2xl text-green-700 dark:text-green-400">{complianceData.compliant}</div>
+                </div>
+                <div className="border border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/20 p-4">
+                  <div className="label-overline text-red-700 dark:text-red-400 mb-1">Non-Compliant</div>
+                  <div className="font-display font-black text-2xl text-red-700 dark:text-red-400">{complianceData.non_compliant}</div>
+                </div>
+                <div className="border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20 p-4">
+                  <div className="label-overline text-amber-700 dark:text-amber-400 mb-1">At Risk</div>
+                  <div className="font-display font-black text-2xl text-amber-700 dark:text-amber-400">{complianceData.at_risk}</div>
+                </div>
+              </div>
+
+              {/* Vendor compliance table */}
+              <div className="border border-zinc-800 bg-zinc-950 overflow-hidden">
+                <div className="border-b border-zinc-800 px-5 py-3 flex items-center justify-between">
+                  <span className="font-mono text-[10px] uppercase tracking-widest text-zinc-400">
+                    Vendor Filing Compliance — {complianceData.return_period} / {complianceData.financial_year}
+                  </span>
+                  {complianceData.non_compliant > 0 && (
+                    <span className="flex items-center gap-1.5 text-[10px] font-mono text-red-400">
+                      <AlertTriangle className="w-3 h-3" /> {complianceData.non_compliant} vendor(s) not filed — ITC at risk
+                    </span>
+                  )}
+                </div>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="label-overline border-b border-zinc-800 bg-zinc-900">
+                      <th className="text-left px-4 py-2.5">Vendor</th>
+                      <th className="text-left px-4 py-2.5">GSTIN</th>
+                      <th className="text-center px-4 py-2.5">GSTR-1</th>
+                      <th className="text-left px-4 py-2.5">Filed On</th>
+                      <th className="text-center px-4 py-2.5">GSTR-3B</th>
+                      <th className="text-left px-4 py-2.5">Filed On</th>
+                      <th className="text-right px-4 py-2.5">Purchase ₹</th>
+                      <th className="text-right px-4 py-2.5">Tax ₹</th>
+                      <th className="text-center px-4 py-2.5">ITC Risk</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(complianceData.vendors || []).map((v, i) => (
+                      <tr key={v.gstin}
+                        className={`border-b border-zinc-900 hover:bg-zinc-900/80 transition-colors ${i % 2 === 1 ? "bg-zinc-900/20" : ""} ${
+                          v.itc_risk === "HIGH" ? "bg-red-950/10" : ""
+                        }`}>
+                        <td className="px-4 py-2.5 text-zinc-200 font-medium">{v.vendor_name}</td>
+                        <td className="px-4 py-2.5 font-mono text-zinc-400">{v.gstin}</td>
+                        <td className="px-4 py-2.5 text-center">
+                          {v.gstr1_filed ? (
+                            <span className="text-green-400 text-[10px] font-mono font-bold">✓ FILED</span>
+                          ) : (
+                            <span className="text-red-400 text-[10px] font-mono font-bold">✗ NOT FILED</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-zinc-500">{v.gstr1_date || "—"}</td>
+                        <td className="px-4 py-2.5 text-center">
+                          {v.gstr3b_filed ? (
+                            <span className="text-green-400 text-[10px] font-mono font-bold">✓ FILED</span>
+                          ) : (
+                            <span className="text-red-400 text-[10px] font-mono font-bold">✗ NOT FILED</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-zinc-500">{v.gstr3b_date || "—"}</td>
+                        <td className="px-4 py-2.5 text-right tabular text-zinc-300">₹{inr(v.purchase_taxable)}</td>
+                        <td className="px-4 py-2.5 text-right tabular text-zinc-400">₹{inr(v.purchase_tax)}</td>
+                        <td className="px-4 py-2.5 text-center">
+                          <span className={`text-[10px] font-mono font-bold px-2 py-0.5 border ${
+                            v.itc_risk === "HIGH" ? "border-red-700 bg-red-950/40 text-red-400 animate-pulse" :
+                            v.itc_risk === "MEDIUM" ? "border-amber-700 bg-amber-950/40 text-amber-400" :
+                            v.itc_risk === "LOW" ? "border-green-700 bg-green-950/40 text-green-400" :
+                            "border-zinc-700 bg-zinc-800 text-zinc-400"
+                          }`}>{v.itc_risk}</span>
+                        </td>
+                      </tr>
+                    ))}
+                    {(complianceData.vendors || []).length === 0 && (
+                      <tr><td colSpan={9} className="px-4 py-12 text-center text-zinc-600 font-mono">No vendor GSTINs found in purchase records for this period</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              {complianceData.vendors?.some(v => v.error) && (
+                <div className="border border-amber-900 bg-amber-950/10 p-3">
+                  <p className="text-[10px] font-mono text-amber-400 mb-1">⚠ Some vendor lookups encountered errors:</p>
+                  {complianceData.vendors.filter(v => v.error).map(v => (
+                    <p key={v.gstin} className="text-[10px] font-mono text-zinc-500">• {v.gstin}: {v.error}</p>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
 
@@ -623,7 +944,7 @@ export default function GstAccounting() {
               </div>
               {Object.entries(gstinResult).filter(([k]) => !["is_valid","error"].includes(k)).map(([k, v]) => (
                 <div key={k} className="flex justify-between text-sm border-b border-zinc-800 pb-1">
-                  <span className="text-zinc-400 font-mono text-xs uppercase">{k.replace(/_/g, " ")}</span>
+                  <span className="text-zinc-400 font-mono text-xs uppercase keep-caps">{k.replace(/_/g, " ")}</span>
                   <span className="text-white font-mono">{String(v)}</span>
                 </div>
               ))}
@@ -634,7 +955,7 @@ export default function GstAccounting() {
 
       {/* Add Record Modal */}
       <Modal open={showModal} onClose={() => setShowModal(false)} title="Add GST Record">
-        <form onSubmit={createRecord} className="space-y-4">
+        <form ref={formRef} onSubmit={createRecord} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <Field label="Invoice Number" required><Input value={form.invoice_number} onChange={e => setForm(f => ({ ...f, invoice_number: e.target.value }))} required /></Field>
             <Field label="Invoice Date" required><Input type="date" value={form.invoice_date} onChange={e => setForm(f => ({ ...f, invoice_date: e.target.value }))} required /></Field>
@@ -648,12 +969,12 @@ export default function GstAccounting() {
             <Field label="Filing Status"><Select value={form.filing_status} onChange={e => setForm(f => ({ ...f, filing_status: e.target.value }))}>{FILING_STATUSES.map(s => <option key={s}>{s}</option>)}</Select></Field>
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Taxable Amount"><Input type="number" step="0.01" value={form.taxable_amount} onChange={e => setForm(f => ({ ...f, taxable_amount: e.target.value }))} /></Field>
+            <Field label="Taxable Amount"><Input type="text" inputMode="decimal" step="0.01" value={form.taxable_amount} onChange={e => setForm(f => ({ ...f, taxable_amount: e.target.value }))} /></Field>
             <Field label="Return Period"><Input value={form.return_period} onChange={e => setForm(f => ({ ...f, return_period: e.target.value }))} placeholder="MMYYYY" /></Field>
           </div>
           <div className="grid grid-cols-4 gap-2">
             {["cgst","sgst","igst","cess"].map(k => (
-              <Field key={k} label={k.toUpperCase()}><Input type="number" step="0.01" value={form[k]} onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))} /></Field>
+              <Field key={k} label={k.toUpperCase()}><Input type="text" inputMode="decimal" step="0.01" value={form[k]} onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))} /></Field>
             ))}
           </div>
           <div className="flex gap-2 justify-end pt-2">

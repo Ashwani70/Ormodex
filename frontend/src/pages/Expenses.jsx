@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import api from "@/lib/api";
 import {
   PageHeader,
@@ -14,6 +14,8 @@ import {
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
 import { toast } from "sonner";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import { Plus, RefreshCw, CheckCircle, XCircle, Clock, Search } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell,
@@ -48,11 +50,11 @@ export default function Expenses() {
   const [total, setTotal] = useState(0);
 
   const [form, setForm] = useState({
-    description: "", amount: 0, date: new Date().toISOString().split("T")[0],
+    description: "", amount: "", date: new Date().toISOString().split("T")[0],
     category: "", department: "", payment_mode: "CASH",
     is_recurring: false, status: "PENDING", notes: "",
   });
-  const [catForm, setCatForm] = useState({ name: "", description: "", budget_monthly: 0 });
+  const [catForm, setCatForm] = useState({ name: "", description: "", budget_monthly: "" });
 
   const loadExpenses = useCallback(async () => {
     setLoading(true);
@@ -96,12 +98,26 @@ export default function Expenses() {
       await api.post("/expenses", { ...form, amount: parseFloat(form.amount) });
       toast.success("Expense submitted");
       setShowModal(false);
-      setForm({ description: "", amount: 0, date: new Date().toISOString().split("T")[0], category: "", department: "", payment_mode: "CASH", is_recurring: false, status: "PENDING", notes: "" });
+      setForm({ description: "", amount: "", date: new Date().toISOString().split("T")[0], category: "", department: "", payment_mode: "CASH", is_recurring: false, status: "PENDING", notes: "" });
       loadExpenses();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed");
     }
   };
+
+  // Enter-as-Tab across the New Expense form; Ctrl+Enter/Ctrl+S saves, Esc
+  // cancels, first field auto-focuses when the modal opens. This is the
+  // page's primary create action, so it also owns the Ctrl+N shortcut.
+  const expenseFormRef = useRef(null);
+  useEnterNavigation(expenseFormRef, {
+    enabled: showModal,
+    autoFocus: true,
+    onSave: () => createExpense(new Event("submit", { cancelable: true })),
+    onCancel: () => setShowModal(false),
+  });
+  useModuleShortcuts({
+    onNew: () => { if (!showModal) setShowModal(true); },
+  });
 
   const approveExpense = async (id, status) => {
     try {
@@ -130,12 +146,22 @@ export default function Expenses() {
       await api.post("/expenses/categories", { ...catForm, budget_monthly: parseFloat(catForm.budget_monthly) });
       toast.success("Category created");
       setShowCatModal(false);
-      setCatForm({ name: "", description: "", budget_monthly: 0 });
+      setCatForm({ name: "", description: "", budget_monthly: "" });
       loadCategories();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed");
     }
   };
+
+  // Secondary form (Add Category) — Enter-as-Tab + Ctrl+Enter/Ctrl+S save +
+  // Esc cancel, no Ctrl+N wiring here (owned by the expense form above).
+  const catFormRef = useRef(null);
+  useEnterNavigation(catFormRef, {
+    enabled: showCatModal,
+    autoFocus: true,
+    onSave: () => createCategory(new Event("submit", { cancelable: true })),
+    onCancel: () => setShowCatModal(false),
+  });
 
   const pendingExpenses = expenses.filter(e => e.status === "PENDING");
   const approvedTotal = expenses.filter(e => e.status === "APPROVED").reduce((s, e) => s + (e.amount || 0), 0);
@@ -329,10 +355,10 @@ export default function Expenses() {
 
       {/* Add Expense Modal */}
       <Modal open={showModal} onClose={() => setShowModal(false)} title="New Expense">
-        <form onSubmit={createExpense} className="space-y-4">
+        <form ref={expenseFormRef} onSubmit={createExpense} className="space-y-4">
           <Field label="Description" required><Input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} required /></Field>
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Amount (₹)" required><Input type="number" step="0.01" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} required /></Field>
+            <Field label="Amount (₹)" required><Input type="text" inputMode="decimal" step="0.01" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} required /></Field>
             <Field label="Date" required><Input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} required /></Field>
           </div>
           <div className="grid grid-cols-2 gap-4">
@@ -365,10 +391,10 @@ export default function Expenses() {
 
       {/* Add Category Modal */}
       <Modal open={showCatModal} onClose={() => setShowCatModal(false)} title="Add Expense Category">
-        <form onSubmit={createCategory} className="space-y-4">
+        <form ref={catFormRef} onSubmit={createCategory} className="space-y-4">
           <Field label="Category Name" required><Input value={catForm.name} onChange={e => setCatForm(f => ({ ...f, name: e.target.value }))} required /></Field>
           <Field label="Description"><Input value={catForm.description} onChange={e => setCatForm(f => ({ ...f, description: e.target.value }))} /></Field>
-          <Field label="Monthly Budget Limit (₹)"><Input type="number" step="0.01" value={catForm.budget_monthly} onChange={e => setCatForm(f => ({ ...f, budget_monthly: e.target.value }))} /></Field>
+          <Field label="Monthly Budget Limit (₹)"><Input type="text" inputMode="decimal" step="0.01" value={catForm.budget_monthly} onChange={e => setCatForm(f => ({ ...f, budget_monthly: e.target.value }))} /></Field>
           <div className="flex gap-2 justify-end pt-2">
             <SecondaryButton onClick={() => setShowCatModal(false)}>Cancel</SecondaryButton>
             <PrimaryButton type="submit">Create</PrimaryButton>

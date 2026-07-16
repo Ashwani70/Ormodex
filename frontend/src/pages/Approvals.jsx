@@ -368,7 +368,7 @@ function PolicyTab() {
               </Select>
               <Input
                 label="SLA hours"
-                type="number"
+                type="text" inputMode="decimal"
                 value={stepForm[p.id]?.sla_hours || ""}
                 onChange={(e) => setStepForm((s) => ({ ...s, [p.id]: { ...s[p.id], sla_hours: e.target.value } }))}
                 placeholder="24"

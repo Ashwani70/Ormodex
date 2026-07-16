@@ -1,4 +1,4 @@
-import { Field, Input } from "@/components/ui-kit";
+import { Field, NumericInput } from "@/components/ui-kit";
 import api from "@/lib/api";
 
 export const CURRENCIES = ["INR", "USD", "AED", "EUR", "GBP"];
@@ -33,14 +33,14 @@ export function CurrencyFields({ form, setForm }) {
       </Field>
       {form.currency && form.currency !== "INR" && (
         <Field label={`Exchange rate (1 ${form.currency} = ? INR)`}>
-          <Input
-            type="number"
-            step="0.0001"
+          <NumericInput
+            decimals={4}
             data-testid="form-exchange-rate"
-            value={form.exchange_rate || 1}
-            onChange={(e) =>
-              setForm({ ...form, exchange_rate: Number(e.target.value) })
+            value={form.exchange_rate != null && form.exchange_rate !== 1 ? form.exchange_rate : ""}
+            onChange={(v) =>
+              setForm({ ...form, exchange_rate: v === "" ? 1 : parseFloat(v) })
             }
+            placeholder="1.0000"
           />
         </Field>
       )}
@@ -48,17 +48,39 @@ export function CurrencyFields({ form, setForm }) {
   );
 }
 
-export async function downloadPdf(endpoint, filename) {
+/**
+ * Fetch a PDF from an authenticated endpoint and either download it or open it
+ * in a new browser tab. Uses the shared `api` axios instance, so the
+ * `gew_access_token` Bearer + cookies are attached automatically — a plain
+ * window.open(url) would not carry auth for cookie-blocked clients.
+ *
+ * Throws on failure so callers can surface a toast.
+ *
+ * @param {string} endpoint  API path, e.g. "/invoices/123/pdf"
+ * @param {string} filename  Suggested filename for download mode.
+ * @param {{ newTab?: boolean }} [opts]  newTab: open in a new tab instead of downloading.
+ */
+export async function downloadPdf(endpoint, filename, opts = {}) {
   const resp = await api.get(endpoint, { responseType: "blob" });
   const blob = new Blob([resp.data], { type: "application/pdf" });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  if (opts.newTab) {
+    window.open(url, "_blank", "noopener,noreferrer");
+  } else {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+  // Give the tab/download time to consume the URL before revoking it.
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/** Open a PDF in a new tab. Thin wrapper over downloadPdf for readability. */
+export function openPdf(endpoint, filename = "document.pdf") {
+  return downloadPdf(endpoint, filename, { newTab: true });
 }
 
 export function fmtMoney(amount, currency = "INR") {

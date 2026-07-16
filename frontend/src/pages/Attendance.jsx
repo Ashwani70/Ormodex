@@ -179,7 +179,7 @@ export default function Attendance() {
                       className="bg-black border border-zinc-700 text-white text-sm px-2 py-1 w-28" />
                   </td>
                   <td className="px-3 py-1.5">
-                    <input type="number" step="0.25" value={a.overtime_hours || 0} onChange={(ev) => updateRow(e.id, { overtime_hours: ev.target.value })}
+                    <input type="text" inputMode="decimal" step="0.25" value={a.overtime_hours || 0} onChange={(ev) => updateRow(e.id, { overtime_hours: ev.target.value })}
                       className="bg-black border border-zinc-700 text-white text-sm px-2 py-1 w-20 text-right tabular" />
                   </td>
                   <td className="px-3 py-1.5">

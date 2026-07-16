@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import api from "@/lib/api";
 
-const TABS = ["Dashboard", "Pay Components", "Salary Structures", "Payroll Runs", "Payslips", "Statutory", "Form 16", "F&F Settlement"];
+const TABS = ["Dashboard", "Pay Components", "Salary Structures", "Payroll Runs", "Payslips", "Advances & OT", "Statutory", "Form 16", "F&F Settlement"];
 
 const Card = ({ children, className = "" }) => (
   <div className={`bg-zinc-900 border border-zinc-800 rounded-xl p-4 ${className}`}>{children}</div>
@@ -253,8 +253,8 @@ function SalaryStructuresTab() {
                     </div>
                     <div className="col-span-5">
                       {comp?.calc === "percent_of_basic"
-                        ? <Input type="number" placeholder="Percent %" value={line.percent} onChange={e => updateLine(i, "percent", e.target.value)} />
-                        : <Input type="number" placeholder="Amount" value={line.amount} onChange={e => updateLine(i, "amount", e.target.value)} />}
+                        ? <Input inputMode="decimal" placeholder="Percent %" value={line.percent} onChange={e => updateLine(i, "percent", e.target.value)} />
+                        : <Input inputMode="decimal" placeholder="Amount" value={line.amount} onChange={e => updateLine(i, "amount", e.target.value)} />}
                     </div>
                     <div className="col-span-2">
                       <button onClick={() => setForm(f => ({ ...f, lines: f.lines.filter((_, idx) => idx !== i) }))} className="w-full py-2 text-red-400 hover:text-red-300 text-sm">✕</button>
@@ -458,24 +458,33 @@ function PayslipsTab() {
       <Card>
         <table className="w-full text-sm">
           <thead><tr className="text-zinc-400 border-b border-zinc-800">
-            <th className="text-left py-2 pr-3">Employee</th><th className="text-left py-2 pr-3">Period</th>
-            <th className="text-right py-2 pr-3">Gross</th><th className="text-right py-2 pr-3">PF</th><th className="text-right py-2 pr-3">ESI</th>
-            <th className="text-right py-2 pr-3">TDS</th><th className="text-right py-2 pr-3">Net</th><th className="text-left py-2">Status</th>
+            <th className="text-left py-2 pr-3">Employee</th>
+            <th className="text-left py-2 pr-3">Period</th>
+            <th className="text-right py-2 pr-3">OT Hrs</th>
+            <th className="text-right py-2 pr-3">Gross Salary</th>
+            <th className="text-right py-2 pr-3">PF</th>
+            <th className="text-right py-2 pr-3">ESI</th>
+            <th className="text-right py-2 pr-3">TDS</th>
+            <th className="text-right py-2 pr-3">Advance Rec.</th>
+            <th className="text-right py-2 pr-3">Net Salary</th>
+            <th className="text-left py-2">Status</th>
           </tr></thead>
           <tbody className="divide-y divide-zinc-800">
             {payslips.map(p => (
               <tr key={p.id} className="hover:bg-zinc-800/40 cursor-pointer" onClick={() => setSelected(p)}>
-                <td className="py-2 pr-3 text-white">{p.employee_name}</td>
-                <td className="py-2 pr-3 text-zinc-400 font-mono">{p.period}</td>
-                <td className="py-2 pr-3 text-right">{fmt(p.gross)}</td>
-                <td className="py-2 pr-3 text-right text-blue-400">{fmt(p.pf)}</td>
-                <td className="py-2 pr-3 text-right text-purple-400">{fmt(p.esi)}</td>
-                <td className="py-2 pr-3 text-right text-amber-400">{fmt(p.tds)}</td>
-                <td className="py-2 pr-3 text-right text-emerald-400 font-semibold">{fmt(p.net)}</td>
+                <td className="py-2 pr-3 text-white font-medium">{p.employee_name}</td>
+                <td className="py-2 pr-3 text-zinc-400 font-mono text-xs">{p.period || p.month}</td>
+                <td className="py-2 pr-3 text-right text-xs text-zinc-400">{p.overtime_hours > 0 ? `${p.overtime_hours}h` : "—"}</td>
+                <td className="py-2 pr-3 text-right font-semibold text-white">{fmt(p.gross_salary ?? p.gross)}</td>
+                <td className="py-2 pr-3 text-right text-blue-400 text-xs">{fmt(p.deductions?.pf ?? p.pf)}</td>
+                <td className="py-2 pr-3 text-right text-purple-400 text-xs">{fmt(p.deductions?.esi_employee ?? p.esi)}</td>
+                <td className="py-2 pr-3 text-right text-amber-400 text-xs">{fmt(p.deductions?.tds ?? p.tds)}</td>
+                <td className="py-2 pr-3 text-right text-red-400 text-xs">{(p.deductions?.advance_recovered > 0) ? fmt(p.deductions.advance_recovered) : "—"}</td>
+                <td className="py-2 pr-3 text-right text-emerald-400 font-bold">{fmt(p.net_salary ?? p.net)}</td>
                 <td className="py-2"><StatusBadge status={p.status} /></td>
               </tr>
             ))}
-            {payslips.length === 0 && <tr><td colSpan={8} className="py-6 text-center text-zinc-500">No payslips found</td></tr>}
+            {payslips.length === 0 && <tr><td colSpan={10} className="py-6 text-center text-zinc-500">No payslips found</td></tr>}
           </tbody>
         </table>
       </Card>
@@ -627,9 +636,9 @@ function FNFTab() {
           </Select>
           <Input label="Last Working Day *" type="date" value={form.last_working_day} onChange={e => setForm(f => ({ ...f, last_working_day: e.target.value }))} />
           <Input label="Financial Year" value={form.financial_year} onChange={e => setForm(f => ({ ...f, financial_year: e.target.value }))} />
-          <Input label="Leave Encashment Days" type="number" value={form.leave_encashment_days} onChange={e => setForm(f => ({ ...f, leave_encashment_days: e.target.value }))} />
-          <Input label="Notice Recovery (₹)" type="number" value={form.notice_recovery} onChange={e => setForm(f => ({ ...f, notice_recovery: e.target.value }))} />
-          <Input label="Other Recoveries (₹)" type="number" value={form.other_recoveries} onChange={e => setForm(f => ({ ...f, other_recoveries: e.target.value }))} />
+          <Input label="Leave Encashment Days" inputMode="decimal" value={form.leave_encashment_days} onChange={e => setForm(f => ({ ...f, leave_encashment_days: e.target.value }))} />
+          <Input label="Notice Recovery (₹)" inputMode="decimal" value={form.notice_recovery} onChange={e => setForm(f => ({ ...f, notice_recovery: e.target.value }))} />
+          <Input label="Other Recoveries (₹)" inputMode="decimal" value={form.other_recoveries} onChange={e => setForm(f => ({ ...f, other_recoveries: e.target.value }))} />
           <div className="col-span-3"><Input label="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} /></div>
         </div>
         <div className="mt-4"><Btn onClick={compute}>Compute F&amp;F Settlement</Btn></div>
@@ -674,6 +683,364 @@ function FNFTab() {
   );
 }
 
+// ── Advances & Overtime ──────────────────────────────────────────────
+function AdvancesOTTab() {
+  const [employees, setEmployees] = useState([]);
+  const [advances, setAdvances] = useState([]);
+  const [overtime, setOvertime] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [section, setSection] = useState("advances"); // "advances" | "overtime" | "payments"
+
+  // modal states
+  const [showAdvForm, setShowAdvForm] = useState(false);
+  const [showPayAdvForm, setShowPayAdvForm] = useState(null); // advance doc
+  const [showOTForm, setShowOTForm] = useState(false);
+  const [showPayForm, setShowPayForm] = useState(false);
+
+  const [advForm, setAdvForm] = useState({ employee_id: "", amount: "", advance_date: new Date().toISOString().split("T")[0], recovery_month: "", reason: "" });
+  const [otForm, setOtForm] = useState({ employee_id: "", date: new Date().toISOString().split("T")[0], hours: "", reason: "" });
+  const [payForm, setPayForm] = useState({ employee_id: "", month: "", amount: "", payment_date: new Date().toISOString().split("T")[0], payment_type: "FULL_PAYMENT", payment_mode: "BANK", reference: "", notes: "" });
+  const [payAdvForm, setPayAdvForm] = useState({ paid_amount: "", paid_date: new Date().toISOString().split("T")[0], payment_mode: "CASH", reference: "" });
+
+  const loadAll = () => {
+    api.get("/hr/employees").then(r => setEmployees(r.data)).catch(() => {});
+    api.get("/hr/advances").then(r => setAdvances(r.data)).catch(() => {});
+    api.get("/hr/overtime").then(r => setOvertime(r.data)).catch(() => {});
+    api.get("/hr/salary-payments").then(r => setPayments(r.data)).catch(() => {});
+  };
+  useEffect(() => { loadAll(); }, []);
+
+  const empName = (id) => employees.find(e => e.id === id)?.name || id;
+
+  const saveAdvance = async () => {
+    try {
+      await api.post("/hr/advances", { ...advForm, amount: parseFloat(advForm.amount) });
+      setShowAdvForm(false);
+      setAdvForm({ employee_id: "", amount: "", advance_date: new Date().toISOString().split("T")[0], recovery_month: "", reason: "" });
+      loadAll();
+    } catch (e) { alert(e.response?.data?.detail || "Error"); }
+  };
+
+  const payAdvance = async () => {
+    if (!showPayAdvForm) return;
+    try {
+      await api.post(`/hr/advances/${showPayAdvForm.id}/pay`, {
+        ...payAdvForm,
+        paid_amount: parseFloat(payAdvForm.paid_amount) || showPayAdvForm.amount,
+      });
+      setShowPayAdvForm(null);
+      loadAll();
+    } catch (e) { alert(e.response?.data?.detail || "Error"); }
+  };
+
+  const deleteAdvance = async (id) => {
+    if (!confirm("Delete this advance?")) return;
+    try { await api.delete(`/hr/advances/${id}`); loadAll(); }
+    catch (e) { alert(e.response?.data?.detail || "Error"); }
+  };
+
+  const saveOT = async () => {
+    try {
+      await api.post("/hr/overtime", { ...otForm, hours: parseFloat(otForm.hours) });
+      setShowOTForm(false);
+      setOtForm({ employee_id: "", date: new Date().toISOString().split("T")[0], hours: "", reason: "" });
+      loadAll();
+    } catch (e) { alert(e.response?.data?.detail || "Error"); }
+  };
+
+  const approveOT = async (id) => {
+    try { await api.patch(`/hr/overtime/${id}/approve`); loadAll(); }
+    catch (e) { alert(e.response?.data?.detail || "Error"); }
+  };
+
+  const deleteOT = async (id) => {
+    if (!confirm("Delete this overtime entry?")) return;
+    try { await api.delete(`/hr/overtime/${id}`); loadAll(); }
+    catch (e) { alert(e.response?.data?.detail || "Error"); }
+  };
+
+  const savePayment = async () => {
+    try {
+      await api.post("/hr/salary-payments", { ...payForm, amount: parseFloat(payForm.amount) });
+      setShowPayForm(false);
+      setPayForm({ employee_id: "", month: "", amount: "", payment_date: new Date().toISOString().split("T")[0], payment_type: "FULL_PAYMENT", payment_mode: "BANK", reference: "", notes: "" });
+      loadAll();
+    } catch (e) { alert(e.response?.data?.detail || "Error"); }
+  };
+
+  const SECTION_TABS = [
+    { key: "advances", label: "Salary Advances" },
+    { key: "overtime", label: "Overtime Hours" },
+    { key: "payments", label: "Salary Payments" },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <SectionHeader title="Advances, Overtime & Payments" />
+
+      {/* Sub-tabs */}
+      <div className="flex gap-1 bg-zinc-900 border border-zinc-800 rounded-xl p-1 w-fit">
+        {SECTION_TABS.map(t => (
+          <button key={t.key} onClick={() => setSection(t.key)}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${section === t.key ? "bg-yellow-400 text-zinc-950" : "text-zinc-400 hover:text-white"}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── ADVANCES ── */}
+      {section === "advances" && (
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <Btn onClick={() => setShowAdvForm(true)}>+ New Advance</Btn>
+          </div>
+          <Card>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-zinc-400 border-b border-zinc-800">
+                  <th className="text-left py-2 pr-3">Employee</th>
+                  <th className="text-left py-2 pr-3">Date</th>
+                  <th className="text-left py-2 pr-3">Recovery Month</th>
+                  <th className="text-left py-2 pr-3">Reason</th>
+                  <th className="text-right py-2 pr-3">Amount</th>
+                  <th className="text-left py-2 pr-3">Status</th>
+                  <th className="text-left py-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-800">
+                {advances.map(a => (
+                  <tr key={a.id} className="hover:bg-zinc-800/40">
+                    <td className="py-2 pr-3 text-white font-medium">{empName(a.employee_id)}</td>
+                    <td className="py-2 pr-3 text-zinc-400 font-mono text-xs">{a.advance_date}</td>
+                    <td className="py-2 pr-3 text-zinc-400 font-mono text-xs">{a.recovery_month || "—"}</td>
+                    <td className="py-2 pr-3 text-zinc-300 text-xs max-w-xs truncate">{a.reason || "—"}</td>
+                    <td className="py-2 pr-3 text-right font-semibold text-yellow-400">{fmt(a.amount)}</td>
+                    <td className="py-2 pr-3">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        a.status === "PAID" ? "bg-emerald-900 text-emerald-300" :
+                        a.status === "PENDING" ? "bg-amber-900 text-amber-300" :
+                        "bg-zinc-700 text-zinc-300"
+                      }`}>{a.status}</span>
+                    </td>
+                    <td className="py-2 flex gap-2">
+                      {a.status !== "PAID" && (
+                        <Btn variant="success" className="text-xs !px-2 !py-1"
+                          onClick={() => { setShowPayAdvForm(a); setPayAdvForm({ paid_amount: String(a.amount), paid_date: new Date().toISOString().split("T")[0], payment_mode: "CASH", reference: "" }); }}>
+                          Pay
+                        </Btn>
+                      )}
+                      {a.status !== "PAID" && (
+                        <Btn variant="danger" className="text-xs !px-2 !py-1" onClick={() => deleteAdvance(a.id)}>Delete</Btn>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {advances.length === 0 && <tr><td colSpan={7} className="py-6 text-center text-zinc-500">No salary advances</td></tr>}
+              </tbody>
+            </table>
+          </Card>
+
+          {/* New Advance Modal */}
+          {showAdvForm && (
+            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+              <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-md space-y-4">
+                <h3 className="text-white font-semibold">New Salary Advance</h3>
+                <Select label="Employee *" value={advForm.employee_id} onChange={e => setAdvForm(f => ({ ...f, employee_id: e.target.value }))}>
+                  <option value="">Select employee…</option>
+                  {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                </Select>
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label="Advance Date *" type="date" value={advForm.advance_date} onChange={e => setAdvForm(f => ({ ...f, advance_date: e.target.value }))} />
+                  <Input label="Amount (₹) *" inputMode="decimal" value={advForm.amount} onChange={e => setAdvForm(f => ({ ...f, amount: e.target.value }))} placeholder="0" />
+                </div>
+                <Input label="Recovery Month (YYYY-MM)" value={advForm.recovery_month} onChange={e => setAdvForm(f => ({ ...f, recovery_month: e.target.value }))} placeholder="e.g. 2026-07" />
+                <Input label="Reason" value={advForm.reason} onChange={e => setAdvForm(f => ({ ...f, reason: e.target.value }))} />
+                <div className="flex justify-end gap-3">
+                  <Btn variant="secondary" onClick={() => setShowAdvForm(false)}>Cancel</Btn>
+                  <Btn onClick={saveAdvance}>Create Advance</Btn>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Pay Advance Modal */}
+          {showPayAdvForm && (
+            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+              <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-sm space-y-4">
+                <h3 className="text-white font-semibold">Record Advance Payment</h3>
+                <p className="text-zinc-400 text-sm">Employee: <span className="text-white">{empName(showPayAdvForm.employee_id)}</span> · Advance: <span className="text-yellow-400">{fmt(showPayAdvForm.amount)}</span></p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label="Paid Amount (₹)" inputMode="decimal" value={payAdvForm.paid_amount} onChange={e => setPayAdvForm(f => ({ ...f, paid_amount: e.target.value }))} />
+                  <Input label="Payment Date" type="date" value={payAdvForm.paid_date} onChange={e => setPayAdvForm(f => ({ ...f, paid_date: e.target.value }))} />
+                </div>
+                <Select label="Payment Mode" value={payAdvForm.payment_mode} onChange={e => setPayAdvForm(f => ({ ...f, payment_mode: e.target.value }))}>
+                  {["CASH", "BANK", "UPI", "CHEQUE", "NEFT", "RTGS"].map(m => <option key={m}>{m}</option>)}
+                </Select>
+                <Input label="Reference / UTR" value={payAdvForm.reference} onChange={e => setPayAdvForm(f => ({ ...f, reference: e.target.value }))} />
+                <div className="flex justify-end gap-3">
+                  <Btn variant="secondary" onClick={() => setShowPayAdvForm(null)}>Cancel</Btn>
+                  <Btn variant="success" onClick={payAdvance}>Confirm Payment</Btn>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── OVERTIME ── */}
+      {section === "overtime" && (
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <Btn onClick={() => setShowOTForm(true)}>+ Log Overtime</Btn>
+          </div>
+          <Card>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-zinc-400 border-b border-zinc-800">
+                  <th className="text-left py-2 pr-3">Employee</th>
+                  <th className="text-left py-2 pr-3">Date</th>
+                  <th className="text-left py-2 pr-3">Month</th>
+                  <th className="text-right py-2 pr-3">OT Hours</th>
+                  <th className="text-left py-2 pr-3">Reason</th>
+                  <th className="text-left py-2 pr-3">Approved</th>
+                  <th className="text-left py-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-800">
+                {overtime.map(o => (
+                  <tr key={o.id} className="hover:bg-zinc-800/40">
+                    <td className="py-2 pr-3 text-white font-medium">{empName(o.employee_id)}</td>
+                    <td className="py-2 pr-3 text-zinc-400 font-mono text-xs">{o.date}</td>
+                    <td className="py-2 pr-3 text-zinc-400 font-mono text-xs">{o.month}</td>
+                    <td className="py-2 pr-3 text-right font-semibold text-yellow-400">{o.hours} hrs</td>
+                    <td className="py-2 pr-3 text-zinc-300 text-xs max-w-xs truncate">{o.reason || "—"}</td>
+                    <td className="py-2 pr-3">
+                      {o.approved
+                        ? <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-900 text-emerald-300">✓ Approved</span>
+                        : <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-700 text-zinc-400">Pending</span>}
+                    </td>
+                    <td className="py-2 flex gap-2">
+                      {!o.approved && <Btn variant="success" className="text-xs !px-2 !py-1" onClick={() => approveOT(o.id)}>Approve</Btn>}
+                      <Btn variant="danger" className="text-xs !px-2 !py-1" onClick={() => deleteOT(o.id)}>Delete</Btn>
+                    </td>
+                  </tr>
+                ))}
+                {overtime.length === 0 && <tr><td colSpan={7} className="py-6 text-center text-zinc-500">No overtime entries</td></tr>}
+              </tbody>
+            </table>
+          </Card>
+
+          {/* Log OT Modal */}
+          {showOTForm && (
+            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+              <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-md space-y-4">
+                <h3 className="text-white font-semibold">Log Overtime Hours</h3>
+                <Select label="Employee *" value={otForm.employee_id} onChange={e => setOtForm(f => ({ ...f, employee_id: e.target.value }))}>
+                  <option value="">Select employee…</option>
+                  {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                </Select>
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label="Date *" type="date" value={otForm.date} onChange={e => setOtForm(f => ({ ...f, date: e.target.value }))} />
+                  <Input label="Overtime Hours *" inputMode="decimal" step="0.5" value={otForm.hours} onChange={e => setOtForm(f => ({ ...f, hours: e.target.value }))} placeholder="e.g. 2.5" />
+                </div>
+                <Input label="Reason" value={otForm.reason} onChange={e => setOtForm(f => ({ ...f, reason: e.target.value }))} placeholder="Project deadline, urgent work…" />
+                <div className="flex justify-end gap-3">
+                  <Btn variant="secondary" onClick={() => setShowOTForm(false)}>Cancel</Btn>
+                  <Btn onClick={saveOT}>Save</Btn>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── SALARY PAYMENTS ── */}
+      {section === "payments" && (
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <Btn onClick={() => setShowPayForm(true)}>+ Record Payment</Btn>
+          </div>
+          <Card>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-zinc-400 border-b border-zinc-800">
+                  <th className="text-left py-2 pr-3">Employee</th>
+                  <th className="text-left py-2 pr-3">Month</th>
+                  <th className="text-left py-2 pr-3">Date</th>
+                  <th className="text-left py-2 pr-3">Type</th>
+                  <th className="text-right py-2 pr-3">Gross Salary</th>
+                  <th className="text-right py-2 pr-3">Net Salary</th>
+                  <th className="text-right py-2 pr-3">Paid Amount</th>
+                  <th className="text-left py-2 pr-3">Mode</th>
+                  <th className="text-left py-2">Ref</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-800">
+                {payments.map(p => (
+                  <tr key={p.id} className="hover:bg-zinc-800/40">
+                    <td className="py-2 pr-3 text-white font-medium">{empName(p.employee_id)}</td>
+                    <td className="py-2 pr-3 text-zinc-400 font-mono text-xs">{p.month}</td>
+                    <td className="py-2 pr-3 text-zinc-400 font-mono text-xs">{p.payment_date}</td>
+                    <td className="py-2 pr-3">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        p.payment_type === "FULL_PAYMENT" ? "bg-emerald-900 text-emerald-300" :
+                        p.payment_type === "ADVANCE_PAYMENT" ? "bg-amber-900 text-amber-300" :
+                        "bg-blue-900 text-blue-300"
+                      }`}>{p.payment_type?.replace(/_/g, " ")}</span>
+                    </td>
+                    <td className="py-2 pr-3 text-right text-zinc-300">{p.gross_salary != null ? fmt(p.gross_salary) : "—"}</td>
+                    <td className="py-2 pr-3 text-right text-emerald-400 font-semibold">{p.net_salary != null ? fmt(p.net_salary) : "—"}</td>
+                    <td className="py-2 pr-3 text-right font-bold text-yellow-400">{fmt(p.amount)}</td>
+                    <td className="py-2 pr-3 text-zinc-400 text-xs font-mono">{p.payment_mode}</td>
+                    <td className="py-2 text-zinc-400 text-xs">{p.reference || "—"}</td>
+                  </tr>
+                ))}
+                {payments.length === 0 && <tr><td colSpan={9} className="py-6 text-center text-zinc-500">No salary payments recorded</td></tr>}
+              </tbody>
+            </table>
+          </Card>
+
+          {/* Record Payment Modal */}
+          {showPayForm && (
+            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+              <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-lg space-y-4">
+                <h3 className="text-white font-semibold">Record Salary Payment</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <Select label="Employee *" value={payForm.employee_id} onChange={e => setPayForm(f => ({ ...f, employee_id: e.target.value }))}>
+                    <option value="">Select employee…</option>
+                    {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                  </Select>
+                  <Input label="Month (YYYY-MM) *" value={payForm.month} onChange={e => setPayForm(f => ({ ...f, month: e.target.value }))} placeholder="2026-06" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Select label="Payment Type *" value={payForm.payment_type} onChange={e => setPayForm(f => ({ ...f, payment_type: e.target.value }))}>
+                    <option value="FULL_PAYMENT">Full Payment</option>
+                    <option value="PARTIAL_PAYMENT">Partial Payment</option>
+                    <option value="ADVANCE_PAYMENT">Advance Payment</option>
+                  </Select>
+                  <Input label="Amount (₹) *" inputMode="decimal" value={payForm.amount} onChange={e => setPayForm(f => ({ ...f, amount: e.target.value }))} placeholder="0" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label="Payment Date *" type="date" value={payForm.payment_date} onChange={e => setPayForm(f => ({ ...f, payment_date: e.target.value }))} />
+                  <Select label="Payment Mode" value={payForm.payment_mode} onChange={e => setPayForm(f => ({ ...f, payment_mode: e.target.value }))}>
+                    {["BANK", "CASH", "UPI", "CHEQUE", "NEFT", "RTGS"].map(m => <option key={m}>{m}</option>)}
+                  </Select>
+                </div>
+                <Input label="Reference / UTR / Cheque No" value={payForm.reference} onChange={e => setPayForm(f => ({ ...f, reference: e.target.value }))} />
+                <Input label="Notes" value={payForm.notes} onChange={e => setPayForm(f => ({ ...f, notes: e.target.value }))} />
+                <div className="flex justify-end gap-3">
+                  <Btn variant="secondary" onClick={() => setShowPayForm(false)}>Cancel</Btn>
+                  <Btn onClick={savePayment}>Record Payment</Btn>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Payroll() {
   const [activeTab, setActiveTab] = useState(0);
 
@@ -683,6 +1050,7 @@ export default function Payroll() {
     <SalaryStructuresTab key="struct" />,
     <PayrollRunsTab key="runs" />,
     <PayslipsTab key="slips" />,
+    <AdvancesOTTab key="adv" />,
     <StatutoryTab key="stat" />,
     <Form16Tab key="f16" />,
     <FNFTab key="fnf" />,

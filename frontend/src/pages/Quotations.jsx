@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import {
@@ -12,8 +12,12 @@ import {
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
 import LineItemsEditor from "@/components/LineItemsEditor";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import { CurrencyFields, downloadPdf, fmtMoney } from "@/lib/currency";
 import SendEmailButton from "@/components/SendEmailButton";
+import BulkDeleteBar, { SelectCheckbox } from "@/components/BulkDeleteBar";
+import useBulkSelect from "@/hooks/useBulkSelect";
 import { Plus, Pencil, Trash2, Download } from "lucide-react";
 
 const blank = {
@@ -34,9 +38,20 @@ export default function Quotations() {
   const [form, setForm] = useState(blank);
   const [editingId, setEditingId] = useState(null);
 
+  const sel = useBulkSelect(items);
+
   const load = async () => {
     const r = await api.get("/quotations");
     setItems(r.data);
+  };
+
+  const bulkDelete = async () => {
+    const { ok, failed } = await sel.runDelete(
+      (id) => api.delete(`/quotations/${id}`),
+      { reload: load }
+    );
+    if (failed) toast.error(`Deleted ${ok}, failed ${failed}`);
+    else toast.success(`Deleted ${ok} quotation${ok === 1 ? "" : "s"}`);
   };
   useEffect(() => {
     load();
@@ -50,12 +65,16 @@ export default function Quotations() {
     if (form.items.length === 0) return toast.error("Add line items");
     const payload = {
       ...form,
-      items: form.items.map((i) => ({
-        ...i,
-        quantity: Number(i.quantity),
-        unit_price: Number(i.unit_price),
-        gst_rate: Number(i.gst_rate),
-      })),
+      items: form.items
+        .filter((i) => (i._manual ? i.product_name?.trim() : i.product_id) && Number(i.quantity) > 0)
+        .map(({ _manual, ...i }) => ({
+          ...i,
+          product_id: _manual ? null : (i.product_id || null),
+          product_name: i.product_name || "",
+          quantity: Number(i.quantity),
+          unit_price: Number(i.unit_price),
+          gst_rate: Number(i.gst_rate),
+        })),
     };
     try {
       if (editingId) await api.put(`/quotations/${editingId}`, payload);
@@ -67,6 +86,28 @@ export default function Quotations() {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
   };
+
+  const openNew = () => { setForm(blank); setEditingId(null); setOpen(true); };
+
+  // Enter-as-Tab across the whole modal body (header fields + the
+  // LineItemsEditor grid, which is marked data-grid-managed so its own Enter/
+  // Arrow handling isn't swallowed here). Ctrl+Enter/Ctrl+S saves,
+  // Ctrl+Shift+Enter/Ctrl+Shift+S saves and opens a fresh blank quotation.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: open,
+    autoFocus: true,
+    onSave: () => submit(new Event("submit", { cancelable: true })),
+    onSaveAndNew: async () => {
+      await submit(new Event("submit", { cancelable: true }));
+      openNew();
+    },
+    onCancel: () => setOpen(false),
+  });
+
+  useModuleShortcuts({
+    onNew: () => { if (!open) openNew(); },
+  });
 
   const onDelete = async (item) => {
     if (!window.confirm(`Delete ${item.quote_number}?`)) return;
@@ -89,11 +130,7 @@ export default function Quotations() {
           <PrimaryButton
             icon={Plus}
             testid="new-quotation"
-            onClick={() => {
-              setForm(blank);
-              setEditingId(null);
-              setOpen(true);
-            }}
+            onClick={openNew}
           >
             New quotation
           </PrimaryButton>
@@ -107,6 +144,14 @@ export default function Quotations() {
           <table className="w-full text-sm">
             <thead className="bg-muted text-muted-foreground">
               <tr className="text-left label-overline border-b border-border">
+                <th className="px-3 py-2.5 w-10">
+                  <SelectCheckbox
+                    label="Select all quotations"
+                    checked={sel.allSelected}
+                    indeterminate={sel.someSelected}
+                    onChange={sel.toggleAll}
+                  />
+                </th>
                 <th className="px-3 py-2.5">Quote#</th>
                 <th className="px-3 py-2.5">Customer</th>
                 <th className="px-3 py-2.5">Items</th>
@@ -120,8 +165,15 @@ export default function Quotations() {
               {items.map((q) => (
                 <tr
                   key={q.id}
-                  className="border-b border-border hover:bg-muted/60 text-foreground"
+                  className={`border-b border-border hover:bg-muted/60 text-foreground ${sel.isSelected(q.id) ? "bg-primary/5" : ""}`}
                 >
+                  <td className="px-3 py-2.5">
+                    <SelectCheckbox
+                      label={`Select quotation ${q.quote_number}`}
+                      checked={sel.isSelected(q.id)}
+                      onChange={() => sel.toggle(q.id)}
+                    />
+                  </td>
                   <td className="px-3 py-2.5 font-mono text-primary font-bold">
                     {q.quote_number}
                   </td>
@@ -162,7 +214,10 @@ export default function Quotations() {
                       />
                       <button
                         onClick={() => {
-                          setForm({ ...blank, ...q });
+                          setForm({
+                            ...blank, ...q,
+                            items: (q.items || []).map((i) => ({ ...i, _manual: !i.product_id })),
+                          });
                           setEditingId(q.id);
                           setOpen(true);
                         }}
@@ -201,7 +256,7 @@ export default function Quotations() {
           </>
         }
       >
-        <div className="space-y-4">
+        <div ref={formRef} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <Field label="Customer" required>
               <select
@@ -258,6 +313,14 @@ export default function Quotations() {
           </Field>
         </div>
       </Modal>
+
+      <BulkDeleteBar
+        count={sel.count}
+        deleting={sel.deleting}
+        onClear={sel.clear}
+        onDelete={bulkDelete}
+        noun="quotation"
+      />
     </div>
   );
 }

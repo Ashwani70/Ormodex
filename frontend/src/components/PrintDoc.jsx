@@ -1,6 +1,20 @@
+﻿import { useState, useEffect } from "react";
 import { Printer, X } from "lucide-react";
+import api from "@/lib/api";
+import { useImageBlob } from "@/components/ImageUploader";
 
 export default function PrintDoc({ docType, doc, docNumber, onClose }) {
+  const [company, setCompany] = useState(null);
+  // Authenticated blob-fetch — a raw <img src="{API}/files/..."> never sends
+  // the SameSite=Lax access_token cookie cross-origin in dev, so the logo
+  // would 401 and fail to render here even though it saved correctly.
+  const logoSrc = useImageBlob(company?.logo_url);
+
+  useEffect(() => {
+    api.get("/company/active")
+      .then((res) => setCompany(res.data))
+      .catch((err) => console.error("Failed to fetch active company", err));
+  }, []);
   if (!doc) return null;
 
   const subtotal = doc.subtotal || 0;
@@ -34,13 +48,19 @@ export default function PrintDoc({ docType, doc, docNumber, onClose }) {
 
         <div className="print-area p-8 bg-white text-black">
           <div className="flex justify-between items-start border-b-4 border-black pb-4 mb-6">
-            <div>
-              <div className="text-3xl font-black tracking-tight">GRAVITYONE ERP</div>
-              <div className="text-xs uppercase tracking-widest text-zinc-700 mt-1">
-                AI-Powered Business Management Platform
-              </div>
-              <div className="text-xs text-zinc-600 mt-2">
-                Pune, Maharashtra · GSTIN: 27AABCG1234F1Z5
+            <div className="flex items-start gap-4">
+              {logoSrc && (
+                <img
+                  src={logoSrc}
+                  alt="Company Logo"
+                  className="h-16 w-auto max-w-[12rem] object-contain"
+                />
+              )}
+              <div>
+                <div className="text-3xl font-black tracking-tight">{company?.name || "GRAVITYONE ERP"}</div>
+                <div className="text-xs text-zinc-600 mt-2">
+                  {company?.address || "Pune, Maharashtra"} · GSTIN: {company?.gstin || "27AABCG1234F1Z5"}
+                </div>
               </div>
             </div>
             <div className="text-right">
@@ -141,7 +161,7 @@ export default function PrintDoc({ docType, doc, docNumber, onClose }) {
             </div>
             <div className="text-right">
               <div className="border-t border-black pt-2 uppercase tracking-widest font-bold text-[10px]">
-                For GravityOne ERP
+                For {company?.name || "Ormodex ERP"}
               </div>
             </div>
           </div>

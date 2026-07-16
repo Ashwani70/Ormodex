@@ -1,4 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import useGridKeyNav from "@/hooks/useGridKeyNav";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import api from "@/lib/api";
 import { toast } from "sonner";
 
@@ -58,13 +61,26 @@ function BranchesTab({ branches, reload }) {
     } catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
   };
 
+  // Enter-as-Tab across the New Branch form; Ctrl+Enter/Ctrl+S saves, Esc
+  // cancels. Primary create action on this tab → owns Ctrl+N.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: show,
+    autoFocus: true,
+    onSave: create,
+    onCancel: () => setShow(false),
+  });
+  useModuleShortcuts({
+    onNew: () => { if (!show) setShow(true); },
+  });
+
   return (
     <div>
       <SectionHeader title="Branch Master" subtitle="Each branch may have its own GSTIN / state"
         right={<Btn onClick={() => setShow((v) => !v)}>{show ? "Cancel" : "+ New Branch"}</Btn>} />
       {show && (
         <Card className="p-5 mb-5">
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <div ref={formRef} className="grid grid-cols-2 md:grid-cols-3 gap-3">
             <Input label="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             <Input label="Code" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="MUM" />
             <Input label="GSTIN" value={form.gstin} onChange={(e) => setForm({ ...form, gstin: e.target.value })} />
@@ -124,36 +140,71 @@ function TransferTab({ branches }) {
     } catch (e) { toast.error(e?.response?.data?.detail || "Transfer failed"); }
   };
 
+  // Items grid: item_id, name, qty, rate, gst — 5 columns. Enter on the last
+  // cell of the last row appends a new item.
+  const addItem = () => setItems((prev) => [...prev, { item_id: "", name: "", qty: "", rate: "", gst_rate: "18" }]);
+  const insertItemAfter = (i) => setItems((prev) => {
+    const next = [...prev];
+    next.splice(i + 1, 0, { item_id: "", name: "", qty: "", rate: "", gst_rate: "18" });
+    return next;
+  });
+  const removeItemKeepingOne = (i) => setItems((prev) =>
+    prev.length > 1 ? prev.filter((_, j) => j !== i) : [{ item_id: "", name: "", qty: "", rate: "", gst_rate: "18" }]);
+  const itemsGrid = useGridKeyNav({
+    rowCount: items.length,
+    colCount: 5,
+    onRowComplete: addItem,
+    onInsertRow: insertItemAfter,
+    onDeleteRow: removeItemKeepingOne,
+  });
+
+  // Enter-as-Tab across the whole transfer form (header fields + items
+  // grid, marked data-grid-managed). Ctrl+Enter/Ctrl+S raises the transfer.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: true,
+    onSave: submit,
+  });
+
   return (
     <div>
       <SectionHeader title="Inter-Branch Transfer" subtitle="GST-taxable supply between distinct GSTINs (IGST if different states)" />
       <Card className="p-5 mb-5">
-        <div className="grid grid-cols-2 gap-3 mb-4">
-          <Select label="From Branch" value={form.from_branch} onChange={(e) => setForm({ ...form, from_branch: e.target.value })}>
-            <option value="">—</option>{branches.map((b) => <option key={b.id} value={b.id}>{b.code} ({b.state_code})</option>)}
-          </Select>
-          <Select label="To Branch" value={form.to_branch} onChange={(e) => setForm({ ...form, to_branch: e.target.value })}>
-            <option value="">—</option>{branches.map((b) => <option key={b.id} value={b.id}>{b.code} ({b.state_code})</option>)}
-          </Select>
-        </div>
-        <span className="block text-xs font-mono uppercase text-zinc-500 mb-2">Items</span>
-        {items.map((it, i) => (
-          <div key={i} className="grid grid-cols-12 gap-2 mb-2">
-            <input className="col-span-4 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100" placeholder="item_id"
-              value={it.item_id} onChange={(e) => setItems(items.map((x, j) => j === i ? { ...x, item_id: e.target.value } : x))} />
-            <input className="col-span-3 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100" placeholder="name"
-              value={it.name} onChange={(e) => setItems(items.map((x, j) => j === i ? { ...x, name: e.target.value } : x))} />
-            <input className="col-span-2 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100" placeholder="qty" type="number"
-              value={it.qty} onChange={(e) => setItems(items.map((x, j) => j === i ? { ...x, qty: e.target.value } : x))} />
-            <input className="col-span-2 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100" placeholder="rate" type="number"
-              value={it.rate} onChange={(e) => setItems(items.map((x, j) => j === i ? { ...x, rate: e.target.value } : x))} />
-            <input className="col-span-1 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100" placeholder="gst" type="number"
-              value={it.gst_rate} onChange={(e) => setItems(items.map((x, j) => j === i ? { ...x, gst_rate: e.target.value } : x))} />
+        <div ref={formRef}>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <Select label="From Branch" value={form.from_branch} onChange={(e) => setForm({ ...form, from_branch: e.target.value })}>
+              <option value="">—</option>{branches.map((b) => <option key={b.id} value={b.id}>{b.code} ({b.state_code})</option>)}
+            </Select>
+            <Select label="To Branch" value={form.to_branch} onChange={(e) => setForm({ ...form, to_branch: e.target.value })}>
+              <option value="">—</option>{branches.map((b) => <option key={b.id} value={b.id}>{b.code} ({b.state_code})</option>)}
+            </Select>
           </div>
-        ))}
-        <button onClick={() => setItems([...items, { item_id: "", name: "", qty: "", rate: "", gst_rate: "18" }])}
-          className="text-xs font-mono text-yellow-400 hover:text-yellow-300">+ add item</button>
-        <div className="mt-4"><Btn onClick={submit}>Raise Transfer</Btn></div>
+          <span className="block text-xs font-mono uppercase text-zinc-500 mb-2">Items</span>
+          <div data-grid-managed>
+            {items.map((it, i) => (
+              <div key={i} className="grid grid-cols-12 gap-2 mb-2">
+                <input className="col-span-4 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100" placeholder="item_id"
+                  value={it.item_id} onChange={(e) => setItems(items.map((x, j) => j === i ? { ...x, item_id: e.target.value } : x))}
+                  ref={itemsGrid.registerCell(i, 0)} onKeyDown={itemsGrid.handleKeyDown(i, 0)} />
+                <input className="col-span-3 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100" placeholder="name"
+                  value={it.name} onChange={(e) => setItems(items.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}
+                  ref={itemsGrid.registerCell(i, 1)} onKeyDown={itemsGrid.handleKeyDown(i, 1)} />
+                <input className="col-span-2 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100" placeholder="qty" type="text" inputMode="decimal"
+                  value={it.qty} onChange={(e) => setItems(items.map((x, j) => j === i ? { ...x, qty: e.target.value } : x))}
+                  ref={itemsGrid.registerCell(i, 2)} onKeyDown={itemsGrid.handleKeyDown(i, 2)} />
+                <input className="col-span-2 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100" placeholder="rate" type="text" inputMode="decimal"
+                  value={it.rate} onChange={(e) => setItems(items.map((x, j) => j === i ? { ...x, rate: e.target.value } : x))}
+                  ref={itemsGrid.registerCell(i, 3)} onKeyDown={itemsGrid.handleKeyDown(i, 3)} />
+                <input className="col-span-1 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100" placeholder="gst" type="text" inputMode="decimal"
+                  value={it.gst_rate} onChange={(e) => setItems(items.map((x, j) => j === i ? { ...x, gst_rate: e.target.value } : x))}
+                  ref={itemsGrid.registerCell(i, 4)} onKeyDown={itemsGrid.handleKeyDown(i, 4)} />
+              </div>
+            ))}
+          </div>
+          <button onClick={addItem}
+            className="text-xs font-mono text-yellow-400 hover:text-yellow-300">+ add item</button>
+          <div className="mt-4"><Btn onClick={submit}>Raise Transfer</Btn></div>
+        </div>
       </Card>
 
       {result && (

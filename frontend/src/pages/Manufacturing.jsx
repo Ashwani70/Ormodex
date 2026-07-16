@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import api from "@/lib/api";
+import { useState, useEffect, useCallback, useRef, forwardRef } from "react";
+import api, { formatApiErrorDetail } from "@/lib/api";
 import { toast } from "sonner";
 import {
   Factory, ClipboardList, Package, FlaskConical, BarChart3,
@@ -8,6 +8,8 @@ import {
   TrendingUp, BookOpen, Trash2, Edit2, Zap, GitBranch,
   ArrowRight, Boxes, Send, Lock,
 } from "lucide-react";
+import useGridKeyNav from "@/hooks/useGridKeyNav";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
 
 const inr = (n) => Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 const num = (n, d = 4) => Number(n || 0).toFixed(d).replace(/\.?0+$/, "") || "0";
@@ -38,9 +40,11 @@ function StatusBadge({ status }) {
   );
 }
 
-function Card({ children, className = "" }) {
-  return <div className={`bg-zinc-950 border border-zinc-800 ${className}`}>{children}</div>;
-}
+// forwardRef so a form panel's outer Card can host a useEnterNavigation
+// container ref (additive — unused ref is a no-op for callers that don't pass one).
+const Card = forwardRef(function Card({ children, className = "" }, ref) {
+  return <div ref={ref} className={`bg-zinc-950 border border-zinc-800 ${className}`}>{children}</div>;
+});
 
 function SectionHeader({ title, action }) {
   return (
@@ -55,25 +59,30 @@ function FieldLabel({ children }) {
   return <label className="block font-mono text-[10px] uppercase tracking-wider text-zinc-500 mb-1">{children}</label>;
 }
 
-function Input({ className = "", ...props }) {
+// forwardRef-wrapped (previously plain functions) so keyboard-nav hooks
+// (useGridKeyNav / useEnterNavigation) can attach a real DOM ref for
+// focus/select — purely additive, rendering is unchanged when no ref is passed.
+const Input = forwardRef(function Input({ className = "", ...props }, ref) {
   return (
     <input
+      ref={ref}
       className={`w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs px-3 py-2 focus:outline-none focus:border-yellow-400 ${className}`}
       {...props}
     />
   );
-}
+});
 
-function Select({ children, className = "", ...props }) {
+const Select = forwardRef(function Select({ children, className = "", ...props }, ref) {
   return (
     <select
+      ref={ref}
       className={`w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs px-3 py-2 focus:outline-none focus:border-yellow-400 ${className}`}
       {...props}
     >
       {children}
     </select>
   );
-}
+});
 
 function Btn({ onClick, children, variant = "primary", className = "", ...props }) {
   const base = "text-xs font-mono font-bold uppercase px-3 py-2 transition-colors flex items-center gap-1.5";
@@ -101,7 +110,9 @@ function MfgDashboard() {
       ]);
       setData(dash.data);
       setMrp(mrpRes.data || []);
-    } catch { toast.error("Failed to load manufacturing dashboard"); }
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Failed to load manufacturing dashboard");
+    }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
@@ -186,7 +197,7 @@ function BOMTab() {
 
   const blankForm = () => ({
     finished_product_id: "", finished_product_name: "", sku: "",
-    output_qty: 1, version: "1.0", status: "DRAFT",
+    output_qty: "", version: "1.0", status: "DRAFT",
     valuation_method: "WEIGHTED_AVG",
     components: [], co_products: [], by_products: [],
     routing_steps: [], notes: "",
@@ -203,7 +214,9 @@ function BOMTab() {
       ]);
       setBoms(bomRes.data || []);
       setProducts(prodRes.data?.items || prodRes.data || []);
-    } catch { toast.error("Failed to load BOM data"); }
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Failed to load BOM data");
+    }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
@@ -255,13 +268,39 @@ function BOMTab() {
     return { ...f, by_products: arr };
   });
 
+  // Keyboard-first grid nav for the three repeating-row tables in this form.
+  // Each row is a fixed 4-column shape: item picker → qty → uom → 4th field
+  // (scrap% / cost-alloc% / realizable-value), so a plain numeric colCount works.
+  const compGrid = useGridKeyNav({
+    rowCount: form.components?.length || 0,
+    colCount: 4,
+    onRowComplete: addComp,
+    onInsertRow: (i) => { addComp(); },
+    onDeleteRow: (i) => removeComp(i),
+  });
+  const coProdGrid = useGridKeyNav({
+    rowCount: form.co_products?.length || 0,
+    colCount: 4,
+    onRowComplete: addCoProd,
+    onInsertRow: () => addCoProd(),
+    onDeleteRow: (i) => removeCoProd(i),
+  });
+  const byProdGrid = useGridKeyNav({
+    rowCount: form.by_products?.length || 0,
+    colCount: 4,
+    onRowComplete: addByProd,
+    onInsertRow: () => addByProd(),
+    onDeleteRow: (i) => removeByProd(i),
+  });
+
   const save = async () => {
     try {
+      const payload = { ...form, output_qty: parseFloat(form.output_qty) || 1 };
       if (editId) {
-        await api.put(`/manufacturing/bom/${editId}`, form);
+        await api.put(`/manufacturing/bom/${editId}`, payload);
         toast.success("BOM updated");
       } else {
-        await api.post("/manufacturing/bom", form);
+        await api.post("/manufacturing/bom", payload);
         toast.success("BOM created");
       }
       setShowForm(false); setEditId(null); setForm(blankForm()); load();
@@ -298,6 +337,18 @@ function BOMTab() {
     catch (e) { toast.error(e.response?.data?.detail || "Delete failed"); }
   };
 
+  // Enter-as-Tab across the whole New/Edit BOM panel — Ctrl+Enter saves,
+  // Escape cancels. The three line-item tables below are marked
+  // data-grid-managed so their own useGridKeyNav Enter/Arrow handling isn't
+  // swallowed by this form-level capture listener.
+  const bomFormRef = useRef(null);
+  useEnterNavigation(bomFormRef, {
+    enabled: showForm,
+    autoFocus: true,
+    onSave: save,
+    onCancel: () => { setShowForm(false); setEditId(null); },
+  });
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
@@ -306,7 +357,7 @@ function BOMTab() {
       </div>
 
       {showForm && (
-        <Card className="p-5 space-y-5">
+        <Card ref={bomFormRef} className="p-5 space-y-5">
           <div className="font-mono text-xs uppercase tracking-widest text-yellow-400 border-b border-zinc-800 pb-2">
             {editId ? "Edit BOM" : "New Bill of Materials"}
           </div>
@@ -320,8 +371,11 @@ function BOMTab() {
             </div>
             <div>
               <FieldLabel>Output Qty</FieldLabel>
-              <Input type="number" value={form.output_qty} min="0.001" step="any"
-                onChange={e => setForm(f => ({ ...f, output_qty: parseFloat(e.target.value) }))} />
+              <Input type="text" inputMode="decimal" value={form.output_qty} placeholder="1"
+                onChange={e => {
+                  const v = e.target.value;
+                  if (v === "" || /^-?\d*\.?\d*$/.test(v)) setForm(f => ({ ...f, output_qty: v }));
+                }} />
             </div>
             <div>
               <FieldLabel>Version</FieldLabel>
@@ -348,18 +402,22 @@ function BOMTab() {
               <FieldLabel>Components / Raw Materials</FieldLabel>
               <Btn variant="ghost" onClick={addComp}><Plus className="w-3 h-3" /> Add</Btn>
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-1.5" data-grid-managed>
               {(form.components || []).map((c, i) => (
                 <div key={i} className="grid grid-cols-12 gap-1.5 items-center">
                   <div className="col-span-4">
-                    <Select value={c.component_item_id} onChange={e => updateComp(i, "component_item_id", e.target.value)}>
+                    <Select value={c.component_item_id} onChange={e => updateComp(i, "component_item_id", e.target.value)}
+                      ref={compGrid.registerCell(i, 0)} onKeyDown={compGrid.handleKeyDown(i, 0)}>
                       <option value="">Select component…</option>
                       {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                     </Select>
                   </div>
-                  <div className="col-span-2"><Input type="number" value={c.qty_per} placeholder="Qty/unit" step="any" min="0" onChange={e => updateComp(i, "qty_per", parseFloat(e.target.value) || 0)} /></div>
-                  <div className="col-span-2"><Input value={c.uom} placeholder="UOM" onChange={e => updateComp(i, "uom", e.target.value)} /></div>
-                  <div className="col-span-2"><Input type="number" value={c.scrap_pct} placeholder="Scrap %" step="any" min="0" max="100" onChange={e => updateComp(i, "scrap_pct", parseFloat(e.target.value) || 0)} /></div>
+                  <div className="col-span-2"><Input type="text" inputMode="decimal" value={c.qty_per} placeholder="Qty/unit" step="any" min="0" onChange={e => updateComp(i, "qty_per", parseFloat(e.target.value) || 0)}
+                    ref={compGrid.registerCell(i, 1)} onKeyDown={compGrid.handleKeyDown(i, 1)} /></div>
+                  <div className="col-span-2"><Input value={c.uom} placeholder="UOM" onChange={e => updateComp(i, "uom", e.target.value)}
+                    ref={compGrid.registerCell(i, 2)} onKeyDown={compGrid.handleKeyDown(i, 2)} /></div>
+                  <div className="col-span-2"><Input type="text" inputMode="decimal" value={c.scrap_pct} placeholder="Scrap %" step="any" min="0" max="100" onChange={e => updateComp(i, "scrap_pct", parseFloat(e.target.value) || 0)}
+                    ref={compGrid.registerCell(i, 3)} onKeyDown={compGrid.handleKeyDown(i, 3)} /></div>
                   <div className="col-span-1 flex items-center gap-1">
                     <input type="checkbox" checked={c.is_optional} onChange={e => updateComp(i, "is_optional", e.target.checked)} className="accent-yellow-400" title="Optional" />
                   </div>
@@ -386,22 +444,28 @@ function BOMTab() {
               <FieldLabel>Co-Products (joint output)</FieldLabel>
               <Btn variant="ghost" onClick={addCoProd}><Plus className="w-3 h-3" /> Add</Btn>
             </div>
-            {(form.co_products || []).map((cp, i) => (
-              <div key={i} className="grid grid-cols-10 gap-1.5 items-center mb-1.5">
-                <div className="col-span-4">
-                  <Select value={cp.item_id} onChange={e => updateCoProd(i, "item_id", e.target.value)}>
-                    <option value="">Select co-product…</option>
-                    {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </Select>
+            <div data-grid-managed>
+              {(form.co_products || []).map((cp, i) => (
+                <div key={i} className="grid grid-cols-10 gap-1.5 items-center mb-1.5">
+                  <div className="col-span-4">
+                    <Select value={cp.item_id} onChange={e => updateCoProd(i, "item_id", e.target.value)}
+                      ref={coProdGrid.registerCell(i, 0)} onKeyDown={coProdGrid.handleKeyDown(i, 0)}>
+                      <option value="">Select co-product…</option>
+                      {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </Select>
+                  </div>
+                  <div className="col-span-2"><Input type="text" inputMode="decimal" value={cp.qty_per} placeholder="Qty/unit" step="any" min="0" onChange={e => updateCoProd(i, "qty_per", parseFloat(e.target.value) || 0)}
+                    ref={coProdGrid.registerCell(i, 1)} onKeyDown={coProdGrid.handleKeyDown(i, 1)} /></div>
+                  <div className="col-span-2"><Input value={cp.uom} placeholder="UOM" onChange={e => updateCoProd(i, "uom", e.target.value)}
+                    ref={coProdGrid.registerCell(i, 2)} onKeyDown={coProdGrid.handleKeyDown(i, 2)} /></div>
+                  <div className="col-span-1"><Input type="text" inputMode="decimal" value={cp.cost_allocation_pct} placeholder="Cost%" step="any" min="0" max="100" onChange={e => updateCoProd(i, "cost_allocation_pct", parseFloat(e.target.value) || 0)}
+                    ref={coProdGrid.registerCell(i, 3)} onKeyDown={coProdGrid.handleKeyDown(i, 3)} /></div>
+                  <div className="col-span-1 flex justify-end">
+                    <button onClick={() => removeCoProd(i)} className="text-zinc-600 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button>
+                  </div>
                 </div>
-                <div className="col-span-2"><Input type="number" value={cp.qty_per} placeholder="Qty/unit" step="any" min="0" onChange={e => updateCoProd(i, "qty_per", parseFloat(e.target.value) || 0)} /></div>
-                <div className="col-span-2"><Input value={cp.uom} placeholder="UOM" onChange={e => updateCoProd(i, "uom", e.target.value)} /></div>
-                <div className="col-span-1"><Input type="number" value={cp.cost_allocation_pct} placeholder="Cost%" step="any" min="0" max="100" onChange={e => updateCoProd(i, "cost_allocation_pct", parseFloat(e.target.value) || 0)} /></div>
-                <div className="col-span-1 flex justify-end">
-                  <button onClick={() => removeCoProd(i)} className="text-zinc-600 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button>
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
 
           {/* By-Products */}
@@ -410,22 +474,28 @@ function BOMTab() {
               <FieldLabel>By-Products (credited at realizable value)</FieldLabel>
               <Btn variant="ghost" onClick={addByProd}><Plus className="w-3 h-3" /> Add</Btn>
             </div>
-            {(form.by_products || []).map((bp, i) => (
-              <div key={i} className="grid grid-cols-10 gap-1.5 items-center mb-1.5">
-                <div className="col-span-4">
-                  <Select value={bp.item_id} onChange={e => updateByProd(i, "item_id", e.target.value)}>
-                    <option value="">Select by-product…</option>
-                    {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </Select>
+            <div data-grid-managed>
+              {(form.by_products || []).map((bp, i) => (
+                <div key={i} className="grid grid-cols-10 gap-1.5 items-center mb-1.5">
+                  <div className="col-span-4">
+                    <Select value={bp.item_id} onChange={e => updateByProd(i, "item_id", e.target.value)}
+                      ref={byProdGrid.registerCell(i, 0)} onKeyDown={byProdGrid.handleKeyDown(i, 0)}>
+                      <option value="">Select by-product…</option>
+                      {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </Select>
+                  </div>
+                  <div className="col-span-2"><Input type="text" inputMode="decimal" value={bp.qty_per} placeholder="Qty/unit" step="any" min="0" onChange={e => updateByProd(i, "qty_per", parseFloat(e.target.value) || 0)}
+                    ref={byProdGrid.registerCell(i, 1)} onKeyDown={byProdGrid.handleKeyDown(i, 1)} /></div>
+                  <div className="col-span-2"><Input value={bp.uom} placeholder="UOM" onChange={e => updateByProd(i, "uom", e.target.value)}
+                    ref={byProdGrid.registerCell(i, 2)} onKeyDown={byProdGrid.handleKeyDown(i, 2)} /></div>
+                  <div className="col-span-1"><Input type="text" inputMode="decimal" value={bp.realizable_value_per} placeholder="₹/unit" step="any" min="0" onChange={e => updateByProd(i, "realizable_value_per", parseFloat(e.target.value) || 0)}
+                    ref={byProdGrid.registerCell(i, 3)} onKeyDown={byProdGrid.handleKeyDown(i, 3)} /></div>
+                  <div className="col-span-1 flex justify-end">
+                    <button onClick={() => removeByProd(i)} className="text-zinc-600 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button>
+                  </div>
                 </div>
-                <div className="col-span-2"><Input type="number" value={bp.qty_per} placeholder="Qty/unit" step="any" min="0" onChange={e => updateByProd(i, "qty_per", parseFloat(e.target.value) || 0)} /></div>
-                <div className="col-span-2"><Input value={bp.uom} placeholder="UOM" onChange={e => updateByProd(i, "uom", e.target.value)} /></div>
-                <div className="col-span-1"><Input type="number" value={bp.realizable_value_per} placeholder="₹/unit" step="any" min="0" onChange={e => updateByProd(i, "realizable_value_per", parseFloat(e.target.value) || 0)} /></div>
-                <div className="col-span-1 flex justify-end">
-                  <button onClick={() => removeByProd(i)} className="text-zinc-600 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button>
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
 
           <textarea value={form.notes || ""} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
@@ -577,7 +647,9 @@ function WorkOrdersTab() {
       setWos(woRes.data || []);
       setBoms(bomRes.data || []);
       setProducts(prodRes.data?.items || prodRes.data || []);
-    } catch { toast.error("Failed to load work orders"); }
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Failed to load work orders");
+    }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
@@ -627,7 +699,7 @@ function WorkOrdersTab() {
             </div>
             <div>
               <FieldLabel>Planned Quantity</FieldLabel>
-              <Input type="number" value={form.quantity_planned} min="0.001" step="any"
+              <Input type="text" inputMode="decimal" value={form.quantity_planned} min="0.001" step="any"
                 onChange={e => setForm(f => ({ ...f, quantity_planned: parseFloat(e.target.value) }))} />
             </div>
           </div>
@@ -723,7 +795,9 @@ function ProductionJournalTab() {
       setJournals(jRes.data || []);
       setWos((woRes.data || []).filter(w => ["RELEASED","IN_PROGRESS"].includes(w.status)));
       setProducts(pRes.data?.items || pRes.data || []);
-    } catch { toast.error("Failed to load journals"); }
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Failed to load journals");
+    }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
@@ -809,7 +883,7 @@ function ProductionJournalTab() {
                         {products.map(p => <option key={p.id} value={p.id}>{p.name} (Stock: {p.quantity})</option>)}
                       </Select>
                     </div>
-                    <Input type="number" value={c.qty} placeholder="Qty" step="any" min="0" className="w-20"
+                    <Input type="text" inputMode="decimal" value={c.qty} placeholder="Qty" step="any" min="0" className="w-20"
                       onChange={e => updateConsumption(i, "qty", parseFloat(e.target.value) || 0)} />
                     <Input value={c.batch_no || ""} placeholder="Batch" className="w-20"
                       onChange={e => updateConsumption(i, "batch_no", e.target.value)} />
@@ -835,7 +909,7 @@ function ProductionJournalTab() {
                         {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                       </Select>
                     </div>
-                    <Input type="number" value={o.qty} placeholder="Qty" step="any" min="0" className="w-20"
+                    <Input type="text" inputMode="decimal" value={o.qty} placeholder="Qty" step="any" min="0" className="w-20"
                       onChange={e => updateOutput(i, "qty", parseFloat(e.target.value) || 0)} />
                     <select value={o.is_by_product ? "by" : o.is_co_product ? "co" : "fg"}
                       onChange={e => updateOutput(i, e.target.value === "by" ? "is_by_product" : "is_co_product",
@@ -923,7 +997,9 @@ function WastageTab() {
       setEntries(wRes.data || []);
       setWos(woRes.data || []);
       setProducts(pRes.data?.items || pRes.data || []);
-    } catch { toast.error("Failed to load wastage entries"); }
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Failed to load wastage entries");
+    }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
@@ -973,7 +1049,7 @@ function WastageTab() {
             </div>
             <div>
               <FieldLabel>Qty</FieldLabel>
-              <Input type="number" value={form.qty} min="0" step="any" onChange={e => setForm(f => ({ ...f, qty: parseFloat(e.target.value) || 0 }))} />
+              <Input type="text" inputMode="decimal" value={form.qty} min="0" step="any" onChange={e => setForm(f => ({ ...f, qty: parseFloat(e.target.value) || 0 }))} />
             </div>
             <div>
               <FieldLabel>UOM</FieldLabel>
@@ -987,11 +1063,11 @@ function WastageTab() {
             </div>
             <div>
               <FieldLabel>Valuation (₹)</FieldLabel>
-              <Input type="number" value={form.valuation} min="0" step="any" onChange={e => setForm(f => ({ ...f, valuation: parseFloat(e.target.value) || 0 }))} />
+              <Input type="text" inputMode="decimal" value={form.valuation} min="0" step="any" onChange={e => setForm(f => ({ ...f, valuation: parseFloat(e.target.value) || 0 }))} />
             </div>
           </div>
           {form.reason_code === "ABNORMAL" && (
-            <div className="flex items-center gap-2 text-xs text-red-400 bg-red-950/20 border border-red-900 px-3 py-2">
+            <div className="flex items-center gap-2 text-xs bg-red-950 px-3 py-2">
               <AlertTriangle className="w-3.5 h-3.5" /> Abnormal wastage will be flagged for P&amp;L expense posting via the accounting module.
             </div>
           )}
@@ -1057,7 +1133,9 @@ function QCTab() {
       ]);
       setReports(qcRes.data || []);
       setPendingWOs((woRes.data || []).filter(w => w.status === "QC_PENDING"));
-    } catch { toast.error("Failed to load QC data"); }
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Failed to load QC data");
+    }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
@@ -1091,9 +1169,9 @@ function QCTab() {
               </Select>
             </div>
             <div><FieldLabel>Inspector Name</FieldLabel><Input value={form.inspector_name} onChange={e => setForm(f => ({ ...f, inspector_name: e.target.value }))} /></div>
-            <div><FieldLabel>Qty Checked</FieldLabel><Input type="number" value={form.quantity_checked} onChange={e => setForm(f => ({ ...f, quantity_checked: parseFloat(e.target.value) }))} /></div>
+            <div><FieldLabel>Qty Checked</FieldLabel><Input type="text" inputMode="decimal" value={form.quantity_checked} onChange={e => setForm(f => ({ ...f, quantity_checked: parseFloat(e.target.value) }))} /></div>
             <div><FieldLabel>Qty Passed</FieldLabel>
-              <Input type="number" value={form.quantity_passed} onChange={e => {
+              <Input type="text" inputMode="decimal" value={form.quantity_passed} onChange={e => {
                 const p = parseFloat(e.target.value);
                 setForm(f => ({ ...f, quantity_passed: p, quantity_failed: Math.max(0, f.quantity_checked - p), status: p >= f.quantity_checked ? "PASSED" : (p > 0 ? "PARTIAL" : "FAILED") }));
               }} />

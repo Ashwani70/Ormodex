@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import {
@@ -12,6 +12,8 @@ import {
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
 import LineItemsEditor from "@/components/LineItemsEditor";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import { Plus, Pencil, Trash2, PackageCheck } from "lucide-react";
 
 const blank = {
@@ -24,7 +26,7 @@ const blank = {
 
 export default function PurchaseOrders() {
   const [items, setItems] = useState([]);
-  const [suppliers, setSuppliers] = useState([]);
+  const [vendors, setVendors] = useState([]);
   const [products, setProducts] = useState([]);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(blank);
@@ -49,13 +51,13 @@ export default function PurchaseOrders() {
   };
   useEffect(() => {
     load();
-    api.get("/suppliers").then((r) => setSuppliers(r.data));
+    api.get("/suppliers").then((r) => setVendors(r.data));
     api.get("/products").then((r) => setProducts(r.data));
   }, []);
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!form.supplier_id) return toast.error("Select a supplier");
+    if (!form.supplier_id) return toast.error("Select a vendor");
     if (form.items.length === 0) return toast.error("Add at least one line item");
     const payload = {
       ...form,
@@ -76,6 +78,28 @@ export default function PurchaseOrders() {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
   };
+
+  const openNew = () => { setForm(blank); setEditingId(null); setOpen(true); };
+
+  // Enter-as-Tab across the whole PO modal body — this is the page's primary
+  // create action, so it also owns the Ctrl+N shortcut. The LineItemsEditor
+  // grid inside is marked data-grid-managed so its own Enter/Arrow handling
+  // isn't swallowed here.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: open,
+    autoFocus: true,
+    onSave: () => submit(new Event("submit", { cancelable: true })),
+    onSaveAndNew: async () => {
+      await submit(new Event("submit", { cancelable: true }));
+      openNew();
+    },
+    onCancel: () => setOpen(false),
+  });
+
+  useModuleShortcuts({
+    onNew: () => { if (!open) openNew(); },
+  });
 
   const onDelete = async (item) => {
     if (!window.confirm(`Delete ${item.po_number}?`)) return;
@@ -115,7 +139,7 @@ export default function PurchaseOrders() {
     e.preventDefault();
     if (!grnForm.received_by) return toast.error("Enter receiver's name");
     try {
-      await api.post("/purchase/grn", grnForm);
+      await api.post("/grn", grnForm);
       toast.success("Goods received and GRN generated!");
       setShowGrnModal(false);
       load();
@@ -123,6 +147,17 @@ export default function PurchaseOrders() {
       toast.error(err.response?.data?.detail || "Failed to submit GRN");
     }
   };
+
+  // Secondary form (opened from a PO row action, not the page's primary
+  // create action) — Enter-as-Tab + Ctrl+Enter/Ctrl+S save + Esc cancel, but
+  // no Ctrl+N wiring here (that's owned by the PO form above).
+  const grnFormRef = useRef(null);
+  useEnterNavigation(grnFormRef, {
+    enabled: showGrnModal,
+    autoFocus: true,
+    onSave: () => submitGrn(new Event("submit", { cancelable: true })),
+    onCancel: () => setShowGrnModal(false),
+  });
 
   return (
     <div data-testid="po-page">
@@ -134,11 +169,7 @@ export default function PurchaseOrders() {
           <PrimaryButton
             icon={Plus}
             testid="new-po"
-            onClick={() => {
-              setForm(blank);
-              setEditingId(null);
-              setOpen(true);
-            }}
+            onClick={openNew}
           >
             New PO
           </PrimaryButton>
@@ -153,7 +184,7 @@ export default function PurchaseOrders() {
             <thead className="bg-muted text-muted-foreground">
               <tr className="text-left label-overline border-b border-border">
                 <th className="px-3 py-2.5">PO#</th>
-                <th className="px-3 py-2.5">Supplier</th>
+                <th className="px-3 py-2.5">Vendor</th>
                 <th className="px-3 py-2.5">Items</th>
                 <th className="px-3 py-2.5 text-right">Total</th>
                 <th className="px-3 py-2.5">Status</th>
@@ -233,9 +264,9 @@ export default function PurchaseOrders() {
           </>
         }
       >
-        <div className="space-y-4">
+        <div ref={formRef} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <Field label="Supplier" required>
+            <Field label="Vendor" required>
               <select
                 required
                 data-testid="form-po-supplier"
@@ -244,7 +275,7 @@ export default function PurchaseOrders() {
                 className="w-full bg-background border border-input text-foreground text-sm px-3 py-2 focus:border-primary focus:outline-none transition-colors"
               >
                 <option value="">— select —</option>
-                {suppliers.map((s) => (
+                {vendors.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.company || s.name}
                   </option>
@@ -304,7 +335,7 @@ export default function PurchaseOrders() {
           </>
         }
       >
-        <form onSubmit={submitGrn} className="space-y-4">
+        <form ref={grnFormRef} onSubmit={submitGrn} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <Field label="Received Date" required>
               <Input type="date" required value={grnForm.received_date} onChange={e => setGrnForm(f => ({ ...f, received_date: e.target.value }))} />
@@ -338,7 +369,7 @@ export default function PurchaseOrders() {
                       <td className="px-3 py-2 text-right tabular text-muted-foreground">{item.quantity_ordered}</td>
                       <td className="px-3 py-2 text-right pr-2">
                         <input
-                          type="number"
+                          type="text" inputMode="decimal"
                           step="0.001"
                           value={item.quantity_received}
                           onChange={e => {

@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Chivo:wght@400;600;700;800;900&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
 
 @import "tailwindcss/base";
 @import "tailwindcss/components";
@@ -13,9 +13,11 @@ body,
 
 body {
     margin: 0;
-    font-family: "IBM Plex Sans", system-ui, sans-serif;
-    background-color: rgb(var(--zinc-950));
-    color: rgb(var(--zinc-50));
+    font-family: "Inter", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     scroll-behavior: smooth;
@@ -23,77 +25,129 @@ body {
 
 @layer base {
     :root {
-        /* Default theme variables matching Industrial Black/White/Yellow */
-        --zinc-50: 255 255 255;
-        --zinc-100: 245 245 245;
-        --zinc-200: 229 229 229;
-        --zinc-300: 212 212 212;
-        --zinc-400: 163 163 163;
-        --zinc-500: 115 115 115;
-        --zinc-600: 82 82 82;
-        --zinc-700: 64 64 64;
-        --zinc-800: 42 42 42;
-        --zinc-900: 23 23 23;
-        --zinc-950: 17 17 17;
+        /* Synergy — neutral slate scale */
+        --zinc-50: 248 250 252;
+        --zinc-100: 241 245 249;
+        --zinc-200: 226 232 240;
+        --zinc-300: 203 213 225;
+        --zinc-400: 148 163 184;
+        --zinc-500: 100 116 139;
+        --zinc-600: 71 85 105;
+        --zinc-700: 51 65 85;
+        --zinc-800: 30 41 59;
+        --zinc-900: 15 23 42;
+        --zinc-950: 2 6 23;
 
-        --yellow-50: 254 252 232;
-        --yellow-100: 254 249 195;
-        --yellow-200: 254 240 138;
-        --yellow-300: 253 224 71;
-        --yellow-400: 250 204 21;
-        --yellow-500: 234 179 8;
-        --yellow-600: 202 138 4;
-        --yellow-700: 161 98 7;
-        --yellow-800: 133 77 14;
-        --yellow-900: 113 63 18;
-        --yellow-950: 66 32 6;
+        /* Teal accent scale */
+        --yellow-50: 240 253 250;
+        --yellow-100: 204 251 241;
+        --yellow-200: 153 246 228;
+        --yellow-300: 94 234 212;
+        --yellow-400: 45 212 191;
+        --yellow-500: 20 184 166;
+        --yellow-600: 13 148 136;
+        --yellow-700: 15 118 110;
+        --yellow-800: 17 94 89;
+        --yellow-900: 19 78 74;
+        --yellow-950: 4 47 46;
 
-        --background: 0 0% 4.3%;
-        --foreground: 0 0% 100%;
-        --card: 0 0% 9%;
-        --card-foreground: 0 0% 100%;
-        --popover: 0 0% 9%;
-        --popover-foreground: 0 0% 100%;
-        --primary: 47.6 95.5% 52.9%;
-        --primary-foreground: 0 0% 0%;
-        --secondary: 0 0% 9%;
+        /* Synergy theme tokens */
+        --background: 210 20% 97%;       /* #F4F6F9 soft gray page bg */
+        --foreground: 220 20% 14%;       /* #1C2333 near-black text */
+        --card: 0 0% 100%;               /* white cards */
+        --card-foreground: 220 20% 14%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 220 20% 14%;
+        --primary: 173 72% 38%;          /* Teal #0D9488 */
+        --primary-foreground: 0 0% 100%;
+        --secondary: 220 20% 14%;
         --secondary-foreground: 0 0% 100%;
-        --muted: 0 0% 9%;
-        --muted-foreground: 0 0% 64%;
-        --accent: 142 70.6% 45.3%;
+        --muted: 210 20% 94%;
+        --muted-foreground: 220 9% 46%;
+        --accent: 173 72% 38%;           /* Teal */
         --accent-foreground: 0 0% 100%;
-        --destructive: 0 84.3% 60.2%;
+        --destructive: 0 72% 51%;
         --destructive-foreground: 0 0% 100%;
-        --border: 0 0% 16.5%;
-        --input: 0 0% 16.5%;
-        --ring: 47.6 95.5% 52.9%;
-        --chart-1: 47.6 95.5% 52.9%;
-        --chart-2: 142 70.6% 45.3%;
-        --chart-3: 0 84.3% 60.2%;
-        --chart-4: 280 65% 60%;
-        --chart-5: 0 84% 60%;
-        --radius: 0px;
-    }
-    .dark {
-        --background: 0 0% 4.3%;
-        --foreground: 0 0% 100%;
-        --card: 0 0% 9%;
-        --card-foreground: 0 0% 100%;
-        --popover: 0 0% 9%;
-        --popover-foreground: 0 0% 100%;
-        --primary: 47.6 95.5% 52.9%;
-        --primary-foreground: 0 0% 0%;
-        --secondary: 0 0% 9%;
-        --secondary-foreground: 0 0% 100%;
-        --muted: 0 0% 9%;
-        --muted-foreground: 0 0% 64%;
-        --accent: 142 70.6% 45.3%;
-        --accent-foreground: 0 0% 100%;
-        --destructive: 0 84.3% 60.2%;
-        --destructive-foreground: 0 0% 100%;
-        --border: 0 0% 16.5%;
-        --input: 0 0% 16.5%;
-        --ring: 47.6 95.5% 52.9%;
+        --border: 214 15% 90%;           /* #E4E8EF */
+        --input: 214 15% 90%;
+        --ring: 173 72% 38%;             /* Teal */
+        --chart-1: 173 72% 38%;          /* Teal */
+        --chart-2: 220 20% 14%;          /* Dark (bar pairs) */
+        --chart-3: 0 72% 51%;            /* Danger */
+        --chart-4: 38 92% 50%;           /* Warning */
+        --chart-5: 262 83% 58%;          /* Purple */
+        --radius: 10px;
+
+        /* ============================================================
+           Synergy Design System — semantic tokens (hex)
+           ============================================================ */
+        --bg: #f4f6f9;
+        --surface: #ffffff;
+
+        --primary-color: #0d9488;    /* Teal */
+        --primary-hover: #0f766e;
+        --primary-soft: #f0fdfa;
+
+        --accent-color: #0d9488;
+        --accent-hover: #0f766e;
+
+        --text: #1c2333;
+        --text-secondary: #374151;
+        --text-muted: #6b7280;
+
+        --border-color: #e4e8ef;
+        --border-strong: #d1d5db;
+
+        --success: #16a34a;
+        --warning: #f59e0b;
+        --danger: #dc2626;
+        --info: #0d9488;
+
+        /* Sidebar — white light sidebar (Synergy style) */
+        --sidebar-bg: #ffffff;
+        --sidebar-hover: #f0fdfa;
+        --sidebar-active: #0d9488;
+        --sidebar-active-soft: rgba(13, 148, 136, 0.10);
+        --sidebar-text: #4b5563;
+
+        /* Sidebar HSL tokens */
+        --sidebar-background: 0 0% 100%;    /* white */
+        --sidebar-foreground: 220 9% 35%;   /* #4B5563 */
+        --sidebar-border: 214 15% 91%;      /* light border */
+
+        /* Radius scale */
+        --radius-sm: 6px;
+        --radius-md: 10px;
+        --radius-lg: 12px;
+
+        /* Enterprise control / grid dimensions */
+        --control-height: 40px;
+        --row-height: 48px;
+        --table-header-height: 44px;
+        --grid-gap: 20px;
+        --section-gap: 24px;
+
+        /* Shadows — softer, more modern */
+        --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+        --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+        --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.10), 0 4px 12px rgba(0, 0, 0, 0.06);
+
+        /* Spacing scale */
+        --space-1: 4px;
+        --space-2: 8px;
+        --space-3: 12px;
+        --space-4: 16px;
+        --space-5: 20px;
+        --space-6: 24px;
+
+        /* Typography */
+        --font-sans: "Inter", system-ui, sans-serif;
+
+        /* Layout */
+        --sidebar-width: 240px;
+        --header-height: 64px;
+        --content-padding: 24px;
+        --content-max-width: 1600px;
     }
 }
 
@@ -107,77 +161,220 @@ body {
     }
 }
 
-/* Industrial typography helpers */
-.font-display {
-    font-family: "Chivo", sans-serif;
+/* ============================================================
+   Aurora typography
+   ============================================================ */
+h1 {
+    font-size: 28px;
+    font-weight: 700;
     letter-spacing: -0.02em;
 }
+h2 {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+h3 {
+    font-size: 18px;
+    font-weight: 600;
+}
+.caption {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* Typography helpers (kept for compatibility — now Inter-based & soft) */
+.font-display {
+    font-family: "Inter", system-ui, sans-serif;
+    letter-spacing: -0.02em;
+}
+/*
+ * `.font-mono` was historically applied to ~820 labels, table headers, hints
+ * and badges across the app, rendering them in IBM Plex Mono. That typewriter
+ * look read as "not a professional ERP". It is now remapped to the same clean
+ * Inter sans used everywhere else, with tabular figures so codes/amounts still
+ * align in columns. This single change re-skins every screen at once.
+ *
+ * If a specific spot genuinely needs a true monospace font (rare — e.g. a raw
+ * code block), use `.font-code` below instead.
+ */
 .font-mono {
+    font-family: "Inter", system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+}
+.font-code {
     font-family: "IBM Plex Mono", monospace;
 }
 .label-overline {
-    font-family: "IBM Plex Mono", monospace;
-    font-size: 0.7rem;
+    font-family: "Inter", system-ui, sans-serif;
+    font-size: 0.72rem;
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: rgb(var(--zinc-400));
+    /* No text-transform: labels render in the case they're written (Title/
+       sentence case) for a cleaner, premium feel. Acronyms typed in the label
+       string (GST, HSN, PAN, GSTIN…) stay uppercase as written. */
+    letter-spacing: 0.01em;
+    color: var(--text-muted);
 }
 
-/* Scrollbar — thin industrial style for panel-based layout */
+/* Scrollbar — subtle, light-theme friendly */
 ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 10px;
+    height: 10px;
 }
 ::-webkit-scrollbar-track {
     background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-    background: rgb(var(--zinc-800));
-    border-radius: 0;
+    background: var(--border-strong);
+    border-radius: 999px;
+    border: 2px solid var(--bg);
 }
 ::-webkit-scrollbar-thumb:hover {
-    background: rgb(var(--yellow-400));
+    background: var(--text-muted);
 }
 * {
     scrollbar-width: thin;
-    scrollbar-color: rgb(var(--zinc-800)) transparent;
+    scrollbar-color: var(--border-strong) transparent;
 }
 
-/* Industrial corner cuts on key cards */
+/* Legacy "industrial-corner" → now a plain rounded surface (no corner ticks) */
 .industrial-corner {
     position: relative;
-    border-radius: var(--radius) !important;
-}
-.industrial-corner::before,
-.industrial-corner::after {
-    content: "";
-    position: absolute;
-    width: 10px;
-    height: 10px;
-    border-color: rgb(var(--yellow-400));
-    border-style: solid;
-    border-width: 0;
-}
-.industrial-corner::before {
-    top: -1px;
-    left: -1px;
-    border-top-width: 2px;
-    border-left-width: 2px;
-}
-.industrial-corner::after {
-    bottom: -1px;
-    right: -1px;
-    border-bottom-width: 2px;
-    border-right-width: 2px;
+    border-radius: var(--radius-lg) !important;
 }
 
-/* Sharp focus ring */
+/* ============================================================
+   Aurora shared component classes
+   (usable from raw HTML; React components map to the same tokens)
+   ============================================================ */
+
+/* Buttons */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    height: 40px;
+    padding: 0 var(--space-4);
+    border-radius: var(--radius-md);
+    font-weight: 500;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border: 1px solid transparent;
+}
+.btn:hover {
+    transform: translateY(-1px);
+}
+.btn:active {
+    transform: translateY(0);
+}
+.btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    transform: none;
+}
+.btn-primary {
+    background: var(--primary-color);
+    color: #fff;
+}
+.btn-primary:hover {
+    background: var(--primary-hover);
+}
+.btn-secondary {
+    background: var(--surface);
+    border-color: var(--border-color);
+    color: var(--text);
+}
+.btn-secondary:hover {
+    border-color: var(--border-strong);
+}
+.btn-success {
+    background: var(--accent-color);
+    color: #fff;
+}
+.btn-success:hover {
+    background: var(--accent-hover);
+}
+.btn-danger {
+    background: var(--danger);
+    color: #fff;
+}
+
+/* Inputs */
+.input {
+    width: 100%;
+    height: 40px;
+    padding: 0 var(--space-3);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 14px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+textarea.input {
+    height: auto;
+    padding: var(--space-2) var(--space-3);
+}
+
+/* Unified focus state — visible 3px teal ring */
+.input:focus,
+.btn:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
-    outline: 1px solid hsl(var(--primary));
-    outline-offset: 1px;
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.15);
+}
+
+/* Cards */
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    padding: var(--space-6);
+}
+
+/* Modals */
+.modal {
+    background: var(--surface);
+    border-radius: 16px;
+    box-shadow: var(--shadow-md);
+}
+
+/* Status badges */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
+}
+.badge-success {
+    background: #dcfce7;
+    color: #166534;
+}
+.badge-warning {
+    background: #fef3c7;
+    color: #92400e;
+}
+.badge-danger {
+    background: #fee2e2;
+    color: #991b1b;
+}
+.badge-info {
+    background: #ccfbf1;
+    color: #0f766e;
+}
+.badge-neutral {
+    background: var(--primary-soft);
+    color: var(--primary-color);
 }
 
 /* Print styles for invoices/quotations */
@@ -203,15 +400,14 @@ select:focus-visible {
     }
 }
 
-/* Diagonal theme-based accent stripe */
+/* Accent stripe — teal gradient bar */
 .hazard-stripe {
-    background-image: repeating-linear-gradient(
-        45deg,
-        hsl(var(--primary)) 0,
-        hsl(var(--primary)) 12px,
-        hsl(var(--background)) 12px,
-        hsl(var(--background)) 24px
+    background-image: linear-gradient(
+        90deg,
+        var(--primary-color),
+        #14b8a6
     );
+    border-radius: 999px;
 }
 
 /* Tabular nums for financial figures */
@@ -219,96 +415,305 @@ select:focus-visible {
     font-variant-numeric: tabular-nums;
 }
 
-/* Small mechanical pulse */
+/* Soft status pulse (kept class name for compatibility) */
 @keyframes pulse-yellow {
     0%,
     100% {
-        box-shadow: 0 0 0 0 rgba(250, 204, 21, 0.6);
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5);
     }
     50% {
-        box-shadow: 0 0 0 6px rgba(250, 204, 21, 0);
+        box-shadow: 0 0 0 5px rgba(16, 185, 129, 0);
     }
 }
 .pulse-yellow {
     animation: pulse-yellow 2s infinite;
 }
 
+/* Smooth page transition — plays on every route change (including
+   global "Back Navigation": Esc / Alt+Left / Cmd+[ / mouse back). */
+@keyframes page-transition-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+.page-transition {
+    animation: page-transition-in 180ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+    .page-transition {
+        animation: none;
+    }
+}
+
+/* Slide-over panel (Warehouse full-screen editor) */
+@keyframes slideover-in {
+    from { transform: translateX(24px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+@keyframes slideover-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+.slideover-panel {
+    animation: slideover-in 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.slideover-backdrop {
+    animation: slideover-fade 200ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+    .slideover-panel, .slideover-backdrop {
+        animation: none;
+    }
+}
+
 /* ==========================================
-   Premium Locked Corporate Dark Theme Overrides
+   Aurora component overrides (light)
    ========================================== */
 
-/* Recharts Tooltip custom style for dark mode */
+/* Recharts tooltip */
 .recharts-default-tooltip {
-    background-color: hsl(var(--card)) !important;
-    border: 1px solid hsl(var(--border)) !important;
-    border-radius: var(--radius) !important;
-    color: hsl(var(--foreground)) !important;
-    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4) !important;
+    background-color: var(--surface) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: var(--radius-md) !important;
+    color: var(--text) !important;
+    box-shadow: var(--shadow-md) !important;
 }
 .recharts-tooltip-label {
-    color: rgb(var(--yellow-400)) !important;
+    color: var(--primary-color) !important;
     font-weight: 600 !important;
 }
 .recharts-tooltip-item {
-    color: hsl(var(--foreground)) !important;
+    color: var(--text) !important;
 }
 
-/* Flat Theme-Adaptive Table Overrides */
+/* Aurora table system — dense, readable, sticky headers, zebra + soft hover */
 table {
-    background-color: hsl(var(--card)) !important;
-    border-color: hsl(var(--border)) !important;
+    background-color: var(--surface) !important;
+    border-color: var(--border-color) !important;
 }
-thead, 
+thead,
 .bg-zinc-900 {
-    background-color: rgb(var(--zinc-950)) !important;
+    background-color: #f8fafc !important;
+}
+thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
 }
 th {
-    color: rgb(var(--zinc-400)) !important;
+    background-color: #f8fafc !important;
+    color: var(--text-secondary) !important;
+    font-size: 13px !important;
     font-weight: 600 !important;
-    border-bottom: 1px solid hsl(var(--border)) !important;
+    text-align: left;
+    text-transform: none !important;
+    letter-spacing: 0.01em;
+    height: var(--table-header-height);   /* 48px enterprise header */
+    padding: 0 16px !important;
+    border-bottom: 1px solid var(--border-color) !important;
 }
 tr {
-    background-color: hsl(var(--card)) !important;
-    border-color: hsl(var(--border)) !important;
+    background-color: var(--surface) !important;
+    border-color: var(--border-color) !important;
 }
-tr:hover {
-    background-color: hsl(var(--muted)) !important;
+tbody tr:nth-child(even) {
+    background-color: #fafbfc !important;
+}
+tbody tr:hover {
+    background-color: #f0fdfa !important;
 }
 td {
-    color: hsl(var(--foreground)) !important;
-    border-bottom: 1px solid hsl(var(--border)) !important;
+    color: var(--text) !important;
+    /* ~52px enterprise row for single-line cells; min-height (not fixed) so
+       cells with stacked inputs/controls can grow without clipping. */
+    height: var(--row-height);
+    padding: 10px 16px !important;
+    border-bottom: 1px solid var(--border-color) !important;
 }
 
-/* Status Badge dark-contrast styles */
+/* ============================================================
+   Legacy dark-theme compatibility layer
+   Older screens (Dashboard, Banking, etc.) hard-code dark panel
+   backgrounds + light "text-on-dark" + yellow industrial accents.
+   This maps those utility classes to Aurora light equivalents so
+   every legacy screen renders light & readable without a rewrite.
+
+   SCOPED TO `main` (the page content area in Layout). The sidebar,
+   header and other chrome live OUTSIDE <main>, so their intentional
+   colors are untouched. New code should use semantic tokens.
+   ============================================================ */
+
+/* Dark panel backgrounds → light surfaces */
+main .bg-black,
+main .bg-zinc-950,
+main .bg-zinc-900,
+main .bg-zinc-800,
+main .bg-zinc-700,
+main [class*="bg-black/"],
+main [class*="bg-zinc-950/"],
+main [class*="bg-zinc-900/"],
+main [class*="bg-zinc-800/"],
+main [class*="bg-zinc-700/"] {
+    background-color: var(--surface) !important;
+}
+
+/* Hover background states → light background states */
+main .hover\:bg-zinc-600:hover,
+main .hover\:bg-zinc-700:hover,
+main .hover\:bg-zinc-800:hover,
+main .hover\:bg-black:hover,
+main [class*="hover:bg-zinc-600"]:hover,
+main [class*="hover:bg-zinc-700"]:hover,
+main [class*="hover:bg-zinc-800"]:hover,
+main [class*="hover:bg-black"]:hover {
+    background-color: var(--bg) !important;
+}
+
+/* Dark borders → light borders */
+main .border-zinc-700,
+main .border-zinc-800,
+main .border-zinc-900,
+main [class*="border-zinc-800/"],
+main [class*="border-zinc-900/"] {
+    border-color: var(--border-color) !important;
+}
+
+/* Light "text-on-dark" → readable dark text */
+main .text-white,
+main .text-zinc-50,
+main .text-zinc-100,
+main .text-zinc-200,
+main .text-zinc-300 {
+    color: var(--text) !important;
+}
+main .text-zinc-400,
+main .text-zinc-500,
+main .text-zinc-600,
+main .text-zinc-700 {
+    color: var(--text-secondary) !important;
+}
+
+/* Old industrial yellow accents → teal primary */
+main .text-yellow-400,
+main .text-yellow-500 {
+    color: var(--primary-color) !important;
+}
+main .bg-yellow-400,
+main .bg-yellow-500 {
+    background-color: var(--primary-color) !important;
+    color: #fff !important;
+}
+main .bg-yellow-400 .text-black,
+main .bg-yellow-500 .text-black {
+    color: #fff !important;
+}
+/* Blue utility overrides → teal */
+main .text-blue-500,
+main .text-blue-600 {
+    color: var(--primary-color) !important;
+}
+main .bg-blue-500,
+main .bg-blue-600 {
+    background-color: var(--primary-color) !important;
+}
+main .border-blue-500,
+main .border-blue-600 {
+    border-color: var(--primary-color) !important;
+}
+
+/* Pale dark-theme warning/danger text → readable Aurora tokens on white.
+   amber-300/400 and red-300/400 were tuned for dark panels; on the light
+   surfaces they wash out (the "No GSTIN on file…" notice, delete-row icons).
+   Map them to the proper saturated warning/danger colors that hold contrast. */
+main .text-amber-300,
+main .text-amber-400,
+main .text-amber-500 {
+    color: var(--warning) !important;
+}
+main .text-red-300,
+main .text-red-400 {
+    color: var(--danger) !important;
+}
+main .hover\:text-red-300:hover,
+main .hover\:text-red-400:hover {
+    color: var(--danger) !important;
+}
+
+/* Neutralize decorative ALL-CAPS in the page content area.
+   Overline labels, tab labels, table headers and section captions across the
+   app used the Tailwind `uppercase` utility purely for styling, which read as
+   "shouty" rather than premium. `text-transform: none` only affects the casing
+   of letters the author typed in lowercase — acronyms and codes typed in caps
+   (GST, HSN, UOM, PO, GRN, PDF, GSTIN, status values like PAID/DRAFT) are real
+   uppercase characters and stay uppercase. Scoped to `main` so the dark sidebar
+   /header chrome and the print/PDF preview overlay (rendered outside <main>)
+   keep their intentional casing. */
+main .uppercase {
+    text-transform: none !important;
+}
+/* Opt back in for the rare case where the content is a short DATA TOKEN
+   (a status value, a GST schedule key like cgst/igst, a severity) for which
+   uppercase is the correct ERP convention rather than decoration. */
+main .keep-caps {
+    text-transform: uppercase !important;
+}
+
+/* ── Intentionally-dark panels inside <main> (opt-out) ──────────────
+   Some surfaces (the Dashboard welcome banner, hero cards) are MEANT to be
+   dark with light text. The legacy compat layer above remaps `.text-white`
+   /slate text to dark for old light-on-dark screens, which would turn this
+   banner's heading invisible. Wrapping such a panel in `.dark-surface`
+   restores the real light-on-dark utilities so the text stays readable. */
+main .dark-surface .text-white { color: #ffffff !important; }
+main .dark-surface .text-zinc-50,
+main .dark-surface .text-zinc-100,
+main .dark-surface .text-slate-100,
+main .dark-surface .text-slate-200 { color: #f1f5f9 !important; }
+main .dark-surface .text-zinc-200,
+main .dark-surface .text-zinc-300,
+main .dark-surface .text-slate-300,
+main .dark-surface .text-slate-400 { color: #cbd5e1 !important; }
+
+/* Status Badge light-mode styles (soft tint + readable dark text) */
 .bg-zinc-800 {
-    background-color: rgb(var(--zinc-800)) !important;
-    color: rgb(var(--zinc-300)) !important;
-    border: 1px solid rgb(var(--zinc-700)) !important;
+    background-color: rgb(var(--zinc-100)) !important;
+    color: rgb(var(--zinc-700)) !important;
+    border: 1px solid rgb(var(--zinc-200)) !important;
 }
 .bg-blue-950 {
-    background-color: rgba(59, 130, 246, 0.15) !important;
-    color: #60a5fa !important;
-    border: 1px solid rgba(59, 130, 246, 0.4) !important;
+    background-color: #f0fdfa !important;
+    color: #0f766e !important;
+    border: 1px solid #99f6e4 !important;
 }
 .bg-yellow-950 {
-    background-color: rgba(250, 204, 21, 0.1) !important;
-    color: #facc15 !important;
-    border: 1px solid rgba(250, 204, 21, 0.3) !important;
+    background-color: #fffbeb !important;
+    color: #b45309 !important;
+    border: 1px solid #fde68a !important;
 }
 .bg-green-950 {
-    background-color: rgba(34, 197, 94, 0.1) !important;
-    color: #22c55e !important;
-    border: 1px solid rgba(34, 197, 94, 0.3) !important;
+    background-color: #ecfdf5 !important;
+    color: #047857 !important;
+    border: 1px solid #a7f3d0 !important;
 }
 .bg-red-950 {
-    background-color: rgba(239, 68, 68, 0.1) !important;
-    color: #ef4444 !important;
-    border: 1px solid rgba(239, 68, 68, 0.3) !important;
+    background-color: #fef2f2 !important;
+    color: #b91c1c !important;
+    border: 1px solid #fecaca !important;
 }
 .bg-purple-950 {
-    background-color: rgba(168, 85, 247, 0.1) !important;
-    color: #c084fc !important;
-    border: 1px solid rgba(168, 85, 247, 0.3) !important;
+    background-color: #faf5ff !important;
+    color: #7e22ce !important;
+    border: 1px solid #e9d5ff !important;
+}
+.bg-indigo-950 {
+    background-color: #e0e7ff !important;
+    color: #4338ca !important;
+    border: 1px solid #c7d2fe !important;
 }
 
 /* Hide native up/down spinner buttons on number inputs */

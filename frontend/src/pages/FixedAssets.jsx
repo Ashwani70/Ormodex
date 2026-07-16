@@ -1,17 +1,19 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import api from "@/lib/api";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 
 const TABS = ["Asset Register", "Categories", "IT Blocks", "Depreciation", "Disposals", "Schedule"];
 
 const StatusBadge = ({ status }) => {
   const colors = {
-    ACTIVE: "bg-emerald-900 text-emerald-300",
-    DISPOSED: "bg-red-900 text-red-300",
-    TRANSFERRED: "bg-blue-900 text-blue-300",
-    WRITTEN_OFF: "bg-zinc-700 text-zinc-300",
+    ACTIVE: "bg-green-950",
+    DISPOSED: "bg-red-950",
+    TRANSFERRED: "bg-blue-950",
+    WRITTEN_OFF: "bg-zinc-800",
   };
   return (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${colors[status] ?? "bg-zinc-700 text-zinc-300"}`}>
+    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${colors[status] ?? "bg-zinc-800 text-zinc-400"}`}>
       {status}
     </span>
   );
@@ -114,6 +116,20 @@ function AssetRegisterTab({ categories }) {
     }
   };
 
+  // Enter-as-Tab across the Add Asset form; Ctrl+Enter/Ctrl+S saves, Esc
+  // cancels, first field auto-focuses when the modal opens. This is the
+  // page's primary create action, so it also owns the Ctrl+N shortcut.
+  const assetFormRef = useRef(null);
+  useEnterNavigation(assetFormRef, {
+    enabled: showForm,
+    autoFocus: true,
+    onSave: () => save(),
+    onCancel: () => setShowForm(false),
+  });
+  useModuleShortcuts({
+    onNew: () => { if (!showForm) setShowForm(true); },
+  });
+
   return (
     <div className="space-y-4">
       <SectionHeader
@@ -181,7 +197,7 @@ function AssetRegisterTab({ categories }) {
       {/* Add Form Modal */}
       {showForm && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-lg space-y-4">
+          <div ref={assetFormRef} className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-lg space-y-4">
             <h3 className="text-white font-semibold text-lg">Add Fixed Asset</h3>
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2">
@@ -193,8 +209,8 @@ function AssetRegisterTab({ categories }) {
               </Select>
               <Input label="Purchase Date *" type="date" value={form.purchase_date} onChange={e => setForm(f => ({ ...f, purchase_date: e.target.value }))} />
               <Input label="Capitalized / Put to Use Date *" type="date" value={form.capitalized_date} onChange={e => setForm(f => ({ ...f, capitalized_date: e.target.value }))} />
-              <Input label="Gross Value (₹) *" type="number" value={form.gross_value} onChange={e => setForm(f => ({ ...f, gross_value: e.target.value }))} />
-              <Input label="Salvage Value (₹) — leave 0 for category default" type="number" value={form.salvage_value} onChange={e => setForm(f => ({ ...f, salvage_value: e.target.value }))} />
+              <Input label="Gross Value (₹) *" type="text" inputMode="decimal" value={form.gross_value} onChange={e => setForm(f => ({ ...f, gross_value: e.target.value }))} />
+              <Input label="Salvage Value (₹) — leave 0 for category default" type="text" inputMode="decimal" value={form.salvage_value} onChange={e => setForm(f => ({ ...f, salvage_value: e.target.value }))} />
               <Input label="Branch / Location" value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} />
               <Input label="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
             </div>
@@ -245,6 +261,31 @@ function AssetDetailPanel({ asset, categories, onClose }) {
       alert(e.response?.data?.detail || "Error");
     }
   };
+
+  // Each dispose/transfer/revalue sub-form is a separate small panel gated by
+  // `action`, but they share one submit() — so each gets its own ref/hook,
+  // enabled only while its own panel is showing, all calling the same submit.
+  const disposeFormRef = useRef(null);
+  useEnterNavigation(disposeFormRef, {
+    enabled: action === "dispose",
+    autoFocus: true,
+    onSave: () => submit(),
+    onCancel: () => setAction(null),
+  });
+  const transferFormRef = useRef(null);
+  useEnterNavigation(transferFormRef, {
+    enabled: action === "transfer",
+    autoFocus: true,
+    onSave: () => submit(),
+    onCancel: () => setAction(null),
+  });
+  const revalueFormRef = useRef(null);
+  useEnterNavigation(revalueFormRef, {
+    enabled: action === "revalue",
+    autoFocus: true,
+    onSave: () => submit(),
+    onCancel: () => setAction(null),
+  });
 
   const currentFY = () => {
     const now = new Date();
@@ -313,51 +354,57 @@ function AssetDetailPanel({ asset, categories, onClose }) {
 
         {/* Action Sub-form */}
         {action === "dispose" && (
-          <Card className="border-red-800/50 bg-red-950/20">
-            <p className="text-red-400 text-sm font-medium mb-3">Disposal — Companies Act gain/loss + IT block reduction</p>
-            <div className="grid grid-cols-2 gap-3">
-              <Input label="Disposal Date" type="date" value={form.disposal_date} onChange={e => setForm(f => ({ ...f, disposal_date: e.target.value }))} />
-              <Input label="Sale Consideration (₹)" type="number" value={form.sale_consideration} onChange={e => setForm(f => ({ ...f, sale_consideration: e.target.value }))} />
-              <Input label="Financial Year" value={form.financial_year} onChange={e => setForm(f => ({ ...f, financial_year: e.target.value }))} placeholder="2024-25" />
-              <Input label="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
-            </div>
-            <div className="flex gap-3 mt-3">
-              <Btn variant="danger" onClick={submit}>Confirm Disposal</Btn>
-              <Btn variant="ghost" onClick={() => setAction(null)}>Cancel</Btn>
-            </div>
-          </Card>
+          <div ref={disposeFormRef}>
+            <Card className="border-red-200 bg-red-50 dark:border-red-800/50 dark:bg-red-950/20">
+              <p className="text-red-700 dark:text-red-400 text-sm font-medium mb-3">Disposal — Companies Act gain/loss + IT block reduction</p>
+              <div className="grid grid-cols-2 gap-3">
+                <Input label="Disposal Date" type="date" value={form.disposal_date} onChange={e => setForm(f => ({ ...f, disposal_date: e.target.value }))} />
+                <Input label="Sale Consideration (₹)" type="text" inputMode="decimal" value={form.sale_consideration} onChange={e => setForm(f => ({ ...f, sale_consideration: e.target.value }))} />
+                <Input label="Financial Year" value={form.financial_year} onChange={e => setForm(f => ({ ...f, financial_year: e.target.value }))} placeholder="2024-25" />
+                <Input label="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+              </div>
+              <div className="flex gap-3 mt-3">
+                <Btn variant="danger" onClick={submit}>Confirm Disposal</Btn>
+                <Btn variant="ghost" onClick={() => setAction(null)}>Cancel</Btn>
+              </div>
+            </Card>
+          </div>
         )}
 
         {action === "transfer" && (
-          <Card>
-            <p className="text-yellow-400 text-sm font-medium mb-3">Transfer to another branch</p>
-            <div className="grid grid-cols-2 gap-3">
-              <Input label="Transfer Date" type="date" value={form.transfer_date} onChange={e => setForm(f => ({ ...f, transfer_date: e.target.value }))} />
-              <Input label="To Branch ID" value={form.to_branch_id} onChange={e => setForm(f => ({ ...f, to_branch_id: e.target.value }))} />
-              <Input label="To Location" value={form.to_location} onChange={e => setForm(f => ({ ...f, to_location: e.target.value }))} />
-              <Input label="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
-            </div>
-            <div className="flex gap-3 mt-3">
-              <Btn onClick={submit}>Confirm Transfer</Btn>
-              <Btn variant="ghost" onClick={() => setAction(null)}>Cancel</Btn>
-            </div>
-          </Card>
+          <div ref={transferFormRef}>
+            <Card>
+              <p className="text-yellow-400 text-sm font-medium mb-3">Transfer to another branch</p>
+              <div className="grid grid-cols-2 gap-3">
+                <Input label="Transfer Date" type="date" value={form.transfer_date} onChange={e => setForm(f => ({ ...f, transfer_date: e.target.value }))} />
+                <Input label="To Branch ID" value={form.to_branch_id} onChange={e => setForm(f => ({ ...f, to_branch_id: e.target.value }))} />
+                <Input label="To Location" value={form.to_location} onChange={e => setForm(f => ({ ...f, to_location: e.target.value }))} />
+                <Input label="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+              </div>
+              <div className="flex gap-3 mt-3">
+                <Btn onClick={submit}>Confirm Transfer</Btn>
+                <Btn variant="ghost" onClick={() => setAction(null)}>Cancel</Btn>
+              </div>
+            </Card>
+          </div>
         )}
 
         {action === "revalue" && (
-          <Card className="border-blue-800/50 bg-blue-950/20">
-            <p className="text-blue-400 text-sm font-medium mb-3">Revaluation — surplus → Revaluation Reserve; adjusted future CA depreciation</p>
-            <div className="grid grid-cols-2 gap-3">
-              <Input label="Revaluation Date" type="date" value={form.revaluation_date} onChange={e => setForm(f => ({ ...f, revaluation_date: e.target.value }))} />
-              <Input label="New Gross Value (₹)" type="number" value={form.new_gross_value} onChange={e => setForm(f => ({ ...f, new_gross_value: e.target.value }))} />
-              <Input label="Financial Year" value={form.financial_year} onChange={e => setForm(f => ({ ...f, financial_year: e.target.value }))} />
-              <Input label="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
-            </div>
-            <div className="flex gap-3 mt-3">
-              <Btn onClick={submit}>Confirm Revaluation</Btn>
-              <Btn variant="ghost" onClick={() => setAction(null)}>Cancel</Btn>
-            </div>
-          </Card>
+          <div ref={revalueFormRef}>
+            <Card className="border-blue-200 bg-blue-50 dark:border-blue-800/50 dark:bg-blue-950/20">
+              <p className="text-blue-700 dark:text-blue-400 text-sm font-medium mb-3">Revaluation — surplus → Revaluation Reserve; adjusted future CA depreciation</p>
+              <div className="grid grid-cols-2 gap-3">
+                <Input label="Revaluation Date" type="date" value={form.revaluation_date} onChange={e => setForm(f => ({ ...f, revaluation_date: e.target.value }))} />
+                <Input label="New Gross Value (₹)" type="text" inputMode="decimal" value={form.new_gross_value} onChange={e => setForm(f => ({ ...f, new_gross_value: e.target.value }))} />
+                <Input label="Financial Year" value={form.financial_year} onChange={e => setForm(f => ({ ...f, financial_year: e.target.value }))} />
+                <Input label="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+              </div>
+              <div className="flex gap-3 mt-3">
+                <Btn onClick={submit}>Confirm Revaluation</Btn>
+                <Btn variant="ghost" onClick={() => setAction(null)}>Cancel</Btn>
+              </div>
+            </Card>
+          </div>
         )}
       </div>
     </div>
@@ -384,6 +431,16 @@ function CategoriesTab({ categories, itBlocks, onRefresh }) {
       alert(e.response?.data?.detail || "Error");
     }
   };
+
+  // Enter-as-Tab across the New Category form; Ctrl+Enter/Ctrl+S saves, Esc
+  // cancels. Secondary panel — no Ctrl+N here (owned by AssetRegisterTab).
+  const categoryFormRef = useRef(null);
+  useEnterNavigation(categoryFormRef, {
+    enabled: showForm,
+    autoFocus: true,
+    onSave: () => save(),
+    onCancel: () => setShowForm(false),
+  });
 
   return (
     <div className="space-y-4">
@@ -420,15 +477,15 @@ function CategoriesTab({ categories, itBlocks, onRefresh }) {
 
       {showForm && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-md space-y-4">
+          <div ref={categoryFormRef} className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-md space-y-4">
             <h3 className="text-white font-semibold">New Asset Category</h3>
             <Input label="Name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
             <Select label="Depreciation Method" value={form.companies_act_method} onChange={e => setForm(f => ({ ...f, companies_act_method: e.target.value }))}>
               <option value="SLM">SLM (Straight Line)</option>
               <option value="WDV">WDV (Written Down Value)</option>
             </Select>
-            <Input label="Useful Life (years)" type="number" value={form.companies_act_useful_life_years} onChange={e => setForm(f => ({ ...f, companies_act_useful_life_years: e.target.value }))} />
-            <Input label="Residual Value %" type="number" value={form.companies_act_residual_pct} onChange={e => setForm(f => ({ ...f, companies_act_residual_pct: e.target.value }))} />
+            <Input label="Useful Life (years)" type="text" inputMode="decimal" value={form.companies_act_useful_life_years} onChange={e => setForm(f => ({ ...f, companies_act_useful_life_years: e.target.value }))} />
+            <Input label="Residual Value %" type="text" inputMode="decimal" value={form.companies_act_residual_pct} onChange={e => setForm(f => ({ ...f, companies_act_residual_pct: e.target.value }))} />
             <Select label="IT Block (Income Tax Act)" value={form.it_block_id} onChange={e => setForm(f => ({ ...f, it_block_id: e.target.value }))}>
               <option value="">None</option>
               {itBlocks.map(b => <option key={b.id} value={b.id}>{b.block_name} ({b.it_depreciation_rate}%)</option>)}
@@ -460,6 +517,16 @@ function ITBlocksTab({ itBlocks, onRefresh }) {
       alert(e.response?.data?.detail || "Error");
     }
   };
+
+  // Enter-as-Tab across the New IT Block form; Ctrl+Enter/Ctrl+S saves, Esc
+  // cancels. Secondary panel — no Ctrl+N here (owned by AssetRegisterTab).
+  const itBlockFormRef = useRef(null);
+  useEnterNavigation(itBlockFormRef, {
+    enabled: showForm,
+    autoFocus: true,
+    onSave: () => save(),
+    onCancel: () => setShowForm(false),
+  });
 
   return (
     <div className="space-y-4">
@@ -494,14 +561,14 @@ function ITBlocksTab({ itBlocks, onRefresh }) {
 
       {showForm && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-md space-y-4">
+          <div ref={itBlockFormRef} className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-md space-y-4">
             <h3 className="text-white font-semibold">New IT Block</h3>
             <Input label="Block Name" value={form.block_name} onChange={e => setForm(f => ({ ...f, block_name: e.target.value }))} placeholder="e.g. Plant & Machinery (15%)" />
             <Select label="Asset Type" value={form.asset_type} onChange={e => setForm(f => ({ ...f, asset_type: e.target.value }))}>
               <option value="tangible">Tangible</option>
               <option value="intangible">Intangible</option>
             </Select>
-            <Input label="IT Depreciation Rate (%)" type="number" value={form.it_depreciation_rate} onChange={e => setForm(f => ({ ...f, it_depreciation_rate: e.target.value }))} />
+            <Input label="IT Depreciation Rate (%)" type="text" inputMode="decimal" value={form.it_depreciation_rate} onChange={e => setForm(f => ({ ...f, it_depreciation_rate: e.target.value }))} />
             <Input label="Financial Year" value={form.financial_year} onChange={e => setForm(f => ({ ...f, financial_year: e.target.value }))} placeholder="2024-25" />
             <Input label="Effective From" type="date" value={form.effective_from} onChange={e => setForm(f => ({ ...f, effective_from: e.target.value }))} />
             <div className="flex justify-end gap-3">
@@ -607,7 +674,7 @@ function DepreciationTab() {
                     <td className="py-2 text-right text-emerald-400">{fmt(row.closing_wdv)}</td>
                   </tr>
                 ) : (
-                  <tr key={i} className={row.block_extinguished ? "bg-red-950/20" : ""}>
+                  <tr key={i} className={row.block_extinguished ? "bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300" : ""}>
                     <td className="py-2 pr-3 text-white font-medium">{row.block_name}</td>
                     <td className="py-2 pr-3 text-right">{fmt(row.opening_wdv)}</td>
                     <td className="py-2 pr-3 text-right text-emerald-400">{fmt(row.additions + (row.half_rate_additions || 0))}</td>

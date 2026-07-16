@@ -1,67 +1,33 @@
 import { useEffect, useState } from "react";
-import { useAuth } from "@/context/AuthContext";
 import api from "@/lib/api";
-import { toast } from "sonner";
-import { Palette, Check, Moon, LayoutDashboard } from "lucide-react";
+import { Palette, Check, LayoutDashboard } from "lucide-react";
 import { PageHeader } from "@/components/ui-kit";
 
-// ── Two fixed themes only. No customization. ──
-// 1. Gravity Brand  — the current high-contrast industrial dark theme.
-// 2. Blue Template  — the corporate blue ERP dashboard template look.
+// ── Single fixed light theme. No customization, no theme picker. ──
+// "Aurora" — a clean, professional light ERP look: soft off-white canvas,
+// white cards, indigo primary, emerald accent and a dark slate sidebar.
 
 export const THEMES = {
-  gravity: {
-    theme_id: "gravity",
-    name: "Gravity Brand",
-    description: "High-contrast industrial dark theme with signal yellow accents and deep midnight background.",
-    icon: "moon",
-    is_dark: true,
-    radius: "0px",
-    custom_colors: {
-      primary: "#FACC15",
-      secondary: "#171717",
-      accent: "#22C55E",
-      background: "#0B0B0B",
-      text: "#FFFFFF",
-      sidebar: "#09090B",
-    },
-  },
-  template: {
-    theme_id: "template",
-    name: "Blue Template",
-    description: "Clean corporate ERP dashboard with a royal blue sidebar, soft light background and white cards.",
+  aurora: {
+    theme_id: "aurora",
+    name: "Aurora Light",
+    description: "Clean, enterprise light theme with a soft off-white canvas, white cards, blue primary and a dark slate sidebar.",
     icon: "dashboard",
     is_dark: false,
-    radius: "12px",
+    radius: "14px",
     custom_colors: {
-      primary: "#1D4ED8",
-      secondary: "#1E3A8A",
-      accent: "#3B82F6",
-      background: "#EFF3FB",
-      text: "#0F172A",
-      sidebar: "#1E3A8A",
-    },
-  },
-  slate: {
-    theme_id: "slate",
-    name: "Slate Template",
-    description: "Clean corporate ERP dashboard with a dark slate sidebar, soft light background and white cards.",
-    icon: "dashboard",
-    is_dark: false,
-    radius: "12px",
-    custom_colors: {
-      primary: "#6366F1",
+      primary: "#2563EB",
       secondary: "#0F172A",
-      accent: "#10B981",
+      accent: "#2563EB",
       background: "#F8FAFC",
-      text: "#0F172A",
+      text: "#111827",
       sidebar: "#0F172A",
     },
   },
 };
 
-// Default theme is the company brand.
-export const DEFAULT_THEME = THEMES.gravity;
+// The one and only theme.
+export const DEFAULT_THEME = THEMES.aurora;
 
 // --- Color calculation helpers ---
 export function isColorDark(hex) {
@@ -143,81 +109,58 @@ export function hexToRgbValues(hex) {
 // Resolve a stored/persisted theme value down to one of the two fixed themes.
 function resolveTheme(theme) {
   if (theme && THEMES[theme.theme_id]) return THEMES[theme.theme_id];
-  // Legacy values (custom/light_premium/etc.) fall back to the default brand.
+  // Any legacy value (gravity/template/slate/custom/etc.) falls back to Aurora.
   return DEFAULT_THEME;
 }
 
-// Apply variables directly to documentElement styling
+// Apply the (single) Aurora theme.
+//
+// Aurora is a fixed LIGHT theme whose colors live entirely in index.css
+// (:root). Previously this function wrote ~25 CSS variables inline on
+// <html> from a per-theme color map — which OVERRODE the index.css tokens
+// at runtime and, with any stale localStorage/DB value, re-introduced the
+// old dark palette ("theme not working"). Since there is now exactly one
+// theme, we let index.css be the single source of truth and only:
+//   - clear any inline color overrides a previous build may have written
+//   - keep the documentElement out of `.dark` mode
+//
+// `theme` is accepted (and resolved) for API compatibility but no longer
+// drives colors.
+const LEGACY_INLINE_VARS = [
+  "--background", "--foreground", "--primary", "--primary-foreground",
+  "--secondary", "--secondary-foreground", "--muted", "--muted-foreground",
+  "--accent", "--accent-foreground", "--card", "--card-foreground",
+  "--popover", "--popover-foreground", "--ring", "--border", "--input",
+  "--zinc-50", "--zinc-800", "--zinc-900", "--zinc-950",
+  "--sidebar-background", "--sidebar-foreground", "--sidebar-border",
+];
+
 export function applyTheme(theme) {
   const root = document.documentElement;
-  const activeTheme = resolveTheme(theme);
+  resolveTheme(theme); // tolerate/normalize any stored value; result unused
 
-  root.style.setProperty("--radius", activeTheme.radius);
+  // Remove any inline overrides written by older builds so the index.css
+  // :root tokens take effect.
+  LEGACY_INLINE_VARS.forEach((v) => root.style.removeProperty(v));
 
-  const colors = activeTheme.custom_colors;
-  const isDark = activeTheme.is_dark !== false;
-
-  // Set HSL base colors
-  root.style.setProperty("--background", hexToHslValues(colors.background));
-  root.style.setProperty("--foreground", hexToHslValues(colors.text));
-  root.style.setProperty("--primary", hexToHslValues(colors.primary));
-  root.style.setProperty("--primary-foreground", isColorDark(colors.primary) ? "0 0% 100%" : "0 0% 0%");
-  root.style.setProperty("--secondary", hexToHslValues(colors.secondary));
-  root.style.setProperty("--secondary-foreground", isColorDark(colors.secondary) ? "0 0% 100%" : "0 0% 0%");
-  root.style.setProperty("--muted", hexToHslValues(isDark ? colors.secondary : adjustColor(colors.background, -0.05)));
-  root.style.setProperty("--muted-foreground", isDark ? "0 0% 64%" : "0 0% 40%");
-  root.style.setProperty("--accent", hexToHslValues(colors.accent));
-  root.style.setProperty("--accent-foreground", isColorDark(colors.accent) ? "0 0% 100%" : "0 0% 0%");
-  root.style.setProperty("--card", hexToHslValues(isDark ? colors.secondary : "#FFFFFF"));
-  root.style.setProperty("--card-foreground", hexToHslValues(colors.text));
-  root.style.setProperty("--popover", hexToHslValues(isDark ? colors.secondary : "#FFFFFF"));
-  root.style.setProperty("--popover-foreground", hexToHslValues(colors.text));
-  root.style.setProperty("--ring", hexToHslValues(colors.primary));
-
-  // Dynamic borders
-  const borderVal = adjustColor(colors.background, isDark ? 0.3 : -0.08);
-  root.style.setProperty("--border", hexToHslValues(borderVal));
-  root.style.setProperty("--input", hexToHslValues(borderVal));
-
-  // Dynamic neutral fallbacks
-  root.style.setProperty("--zinc-50", hexToRgbValues(isDark ? colors.text : colors.background));
-  root.style.setProperty("--zinc-950", hexToRgbValues(isDark ? colors.background : colors.text));
-  root.style.setProperty("--zinc-800", hexToRgbValues(adjustColor(colors.background, isDark ? 0.3 : -0.12)));
-  root.style.setProperty("--zinc-900", hexToRgbValues(adjustColor(colors.background, isDark ? 0.15 : -0.06)));
-
-  // Set sidebar colors
-  const sidebarBg = colors.sidebar || (isDark ? colors.secondary : "#1E293B");
-  root.style.setProperty("--sidebar-background", hexToHslValues(sidebarBg));
-  const sidebarFg = isColorDark(sidebarBg) ? "#FFFFFF" : "#0F172A";
-  root.style.setProperty("--sidebar-foreground", hexToHslValues(sidebarFg));
-  const sidebarBorder = adjustColor(sidebarBg, isColorDark(sidebarBg) ? 0.15 : -0.1);
-  root.style.setProperty("--sidebar-border", hexToHslValues(sidebarBorder));
-
-  // Dark class toggle
-  if (isDark) {
-    root.classList.add("dark");
-  } else {
-    root.classList.remove("dark");
-  }
+  // Aurora is light — never apply the legacy dark class.
+  root.classList.remove("dark");
 }
 
-const ICONS = { moon: Moon, dashboard: LayoutDashboard };
+const ICONS = { dashboard: LayoutDashboard };
 
 export default function ThemeSettings() {
-  const { user } = useAuth();
-  const [themeId, setThemeId] = useState("gravity");
+  const [themeId] = useState("aurora");
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
 
-  // Load the user's saved theme on mount
+  // Single theme: ensure the DB/localStorage converge to "aurora" on mount.
   useEffect(() => {
-    api.get("/theme-settings")
-      .then((res) => {
-        const id = THEMES[res.data?.theme_id] ? res.data.theme_id : "gravity";
-        setThemeId(id);
+    api.post("/theme-settings", { theme_id: "aurora" })
+      .then(({ data }) => {
+        localStorage.setItem("gew_theme_settings", JSON.stringify(data));
       })
       .catch(() => {
-        toast.error("Failed to load theme settings from server.");
+        // Non-fatal: the theme still applies locally even if the save fails.
       })
       .finally(() => setLoading(false));
   }, []);
@@ -227,24 +170,6 @@ export default function ThemeSettings() {
     if (loading) return;
     applyTheme(THEMES[themeId]);
   }, [themeId, loading]);
-
-  const selectTheme = async (id) => {
-    if (saving || id === themeId) {
-      setThemeId(id);
-      return;
-    }
-    setThemeId(id);
-    setSaving(true);
-    try {
-      const { data } = await api.post("/theme-settings", { theme_id: id });
-      localStorage.setItem("gew_theme_settings", JSON.stringify(data));
-      toast.success(`${THEMES[id].name} applied.`);
-    } catch (err) {
-      toast.error("Failed to save theme to database.");
-    } finally {
-      setSaving(false);
-    }
-  };
 
   if (loading) {
     return (
@@ -262,24 +187,17 @@ export default function ThemeSettings() {
       <PageHeader
         eyebrow="System Configuration"
         title="Theme"
-        description="Choose the look of your console. Your selection is saved and applied across the application."
+        description="Your console uses a single, clean light theme applied consistently across the application."
       />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl">
+      <div className="max-w-3xl">
         {Object.entries(THEMES).map(([id, t]) => {
-          const isActive = themeId === id;
           const Icon = ICONS[t.icon] || Palette;
           return (
-            <button
+            <div
               key={id}
-              onClick={() => selectTheme(id)}
               data-testid={`theme-${id}`}
-              disabled={saving}
-              className={`text-left p-5 border transition-all disabled:opacity-60 ${
-                isActive
-                  ? "border-primary ring-1 ring-primary bg-card"
-                  : "border-border bg-card/40 hover:border-primary/60"
-              }`}
+              className="text-left p-5 border border-primary ring-1 ring-primary bg-card"
               style={{ borderRadius: t.radius }}
             >
               <div className="flex items-center justify-between mb-3">
@@ -287,7 +205,7 @@ export default function ThemeSettings() {
                   <Icon className="w-4 h-4 text-primary" />
                   <span className="font-bold text-sm text-foreground">{t.name}</span>
                 </div>
-                {isActive && <Check className="w-4 h-4 text-primary" data-testid={`theme-${id}-active`} />}
+                <Check className="w-4 h-4 text-primary" data-testid={`theme-${id}-active`} />
               </div>
               <p className="text-xs text-muted-foreground leading-normal mb-4">{t.description}</p>
 
@@ -304,7 +222,7 @@ export default function ThemeSettings() {
                   {t.is_dark ? "Dark" : "Light"}
                 </span>
               </div>
-            </button>
+            </div>
           );
         })}
       </div>

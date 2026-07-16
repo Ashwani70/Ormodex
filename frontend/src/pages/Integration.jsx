@@ -48,8 +48,7 @@ function TallyTab() {
     if (!file) return toast.error("Choose a Tally XML file");
     const fd = new FormData(); fd.append("file", file);
     try {
-      const { data } = await api.post("/integration/import/tally-xml?dryRun=true", fd,
-        { headers: { "Content-Type": "multipart/form-data" } });
+      const { data } = await api.post("/integration/import/tally-xml?dryRun=true", fd);
       setPreview(data.preview); setResult(null);
     } catch (e) { toast.error(e?.response?.data?.detail || "Preview failed"); }
   };
@@ -58,8 +57,7 @@ function TallyTab() {
     const fd = new FormData(); fd.append("file", file);
     setCommitting(true);
     try {
-      const { data } = await api.post("/integration/import/tally-xml?dryRun=false", fd,
-        { headers: { "Content-Type": "multipart/form-data" } });
+      const { data } = await api.post("/integration/import/tally-xml?dryRun=false", fd);
       setResult(data); toast.success("Committed");
     } catch (e) { toast.error(e?.response?.data?.detail?.message || e?.response?.data?.detail || "Commit failed"); }
     finally { setCommitting(false); }

@@ -311,7 +311,7 @@ export default function MisReports() {
           <div className="flex gap-2 mb-4">
             <Select value={purchaseGroupBy} onChange={e => setPurchaseGroupBy(e.target.value)} className="w-36">
               <option value="month">By Month</option>
-              <option value="supplier">By Supplier</option>
+              <option value="supplier">By Vendor</option>
               <option value="product">By Product</option>
             </Select>
             <PrimaryButton onClick={loadPurchase}>Apply</PrimaryButton>

@@ -80,7 +80,7 @@ export default function VerificationDashboard() {
             <StatTile
               label="Total Vendors"
               value={data?.total_vendors ?? 0}
-              sub="Registered vendor/supplier records"
+              sub="Registered vendor records"
             />
             <StatTile
               label="Active GST Status"

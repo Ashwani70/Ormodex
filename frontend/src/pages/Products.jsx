@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import useDebounce from "@/hooks/useDebounce";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import QRCode from "react-qr-code";
@@ -16,7 +17,11 @@ import {
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
 import ImageUploader, { useImageBlob } from "@/components/ImageUploader";
-import { Plus, Search, Pencil, Trash2, QrCode, AlertTriangle, RefreshCw, CheckCircle, Calendar } from "lucide-react";
+import SearchableSelect from "@/components/SearchableSelect";
+import BulkDeleteBar, { SelectCheckbox } from "@/components/BulkDeleteBar";
+import useBulkSelect from "@/hooks/useBulkSelect";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
+import { Plus, Search, Pencil, Trash2, QrCode, AlertTriangle, RefreshCw, CheckCircle, Calendar, Eye } from "lucide-react";
 
 const TABS = [
   { id: "catalog", label: "Catalog" },
@@ -30,7 +35,8 @@ const TABS = [
 const blank = {
   name: "",
   sku: "",
-  category: "Cuplock",
+  category: "",
+  category_id: "",
   description: "",
   unit: "pcs",
   cost_price: 0,
@@ -51,7 +57,7 @@ function ProductImageThumb({ product }) {
       <img
         src={src}
         alt=""
-        className="w-10 h-10 object-cover border border-zinc-800"
+        className="w-10 h-10 object-cover border border-border"
       />
     );
   }
@@ -59,15 +65,26 @@ function ProductImageThumb({ product }) {
 }
 
 export default function Products() {
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const [items, setItems] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
-  const [q, setQ] = useState("");
+  // Seed the search box from ?q= so the global search can deep-link here.
+  const [q, setQ] = useState(params.get("q") || "");
   const [lowOnly, setLowOnly] = useState(params.get("low") === "1");
   const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [qrItem, setQrItem] = useState(null);
   const [form, setForm] = useState(blank);
   const [editingId, setEditingId] = useState(null);
+
+  // Category master + quick-add popup (create a category without leaving this page).
+  const [categories, setCategories] = useState([]);
+  const [catModal, setCatModal] = useState(false);
+  const [catForm, setCatForm] = useState({ name: "", description: "" });
+  const [savingCat, setSavingCat] = useState(false);
+  // Product name autocomplete suggestions (existing products).
+  const [nameFocused, setNameFocused] = useState(false);
+  const nameBoxRef = useRef(null);
 
   // New stock analysis tabs state
   const [tab, setTab] = useState("catalog");
@@ -78,6 +95,9 @@ export default function Products() {
   const [reorderData, setReorderData] = useState(null);
   const [verifications, setVerifications] = useState([]);
   const [showPvModal, setShowPvModal] = useState(false);
+  const [editingPvId, setEditingPvId] = useState(null);
+  const [viewPv, setViewPv] = useState(null);
+  const [savingPv, setSavingPv] = useState(false);
   const [pvForm, setPvForm] = useState({
     verification_date: new Date().toISOString().split("T")[0],
     verified_by: "",
@@ -87,6 +107,7 @@ export default function Products() {
   });
   const [batches, setBatches] = useState([]);
   const [showBatchModal, setShowBatchModal] = useState(false);
+  const [savingBatch, setSavingBatch] = useState(false);
   const [batchForm, setBatchForm] = useState({
     product_id: "",
     batch_number: "",
@@ -97,13 +118,32 @@ export default function Products() {
     warehouse_id: "",
   });
 
+  const debouncedQ = useDebounce(q, 300);
   const load = async () => {
-    const r = await api.get("/products", { params: { q, low_stock: lowOnly } });
+    const r = await api.get("/products", { params: { q: debouncedQ, low_stock: lowOnly } });
     setItems(r.data);
   };
+
+  const sel = useBulkSelect(items);
+  const bulkDelete = async () => {
+    const { ok, failed } = await sel.runDelete(
+      (id) => api.delete(`/products/${id}`),
+      { reload: load }
+    );
+    if (failed) toast.error(`Deleted ${ok}, failed ${failed}`);
+    else toast.success(`Deleted ${ok} product${ok === 1 ? "" : "s"}`);
+  };
   const loadWh = async () => {
-    const r = await api.get("/warehouses");
+    const r = await api.get("/inventory/v2/godowns");
     setWarehouses(r.data);
+  };
+  const loadCategories = async () => {
+    try {
+      const r = await api.get("/categories", { params: { status: "Active" } });
+      setCategories(r.data);
+    } catch {
+      setCategories([]);
+    }
   };
 
   const loadAging = async () => {
@@ -158,11 +198,25 @@ export default function Products() {
     else if (tab === "reorder") loadReorder();
     else if (tab === "verification") loadVerifications();
     else if (tab === "batches") loadBatches();
-  }, [tab, agingDays, valuationMethod, q, lowOnly]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tab, agingDays, valuationMethod, debouncedQ, lowOnly]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     loadWh();
+    loadCategories();
   }, []);
+
+  // Auto-open detail modal when navigated here via ?detail=<id> (e.g. from Ctrl+K search).
+  useEffect(() => {
+    const detailId = params.get("detail");
+    if (!detailId || items.length === 0) return;
+    const record = items.find((p) => p.id === detailId);
+    if (record) {
+      startEdit(record);
+      const next = new URLSearchParams(params);
+      next.delete("detail");
+      setParams(next, { replace: true });
+    }
+  }, [params, items]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startNew = () => {
     setForm(blank);
@@ -175,10 +229,100 @@ export default function Products() {
     setOpen(true);
   };
 
+  // Auto-open the create form via ?new=1 — the global Alt+P shortcut
+  // (useKeyboardShortcuts) navigates here with this flag so "Create Product"
+  // is a single keystroke from anywhere in the app.
+  useEffect(() => {
+    if (params.get("new") !== "1") return;
+    startNew();
+    const next = new URLSearchParams(params);
+    next.delete("new");
+    setParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params]);
+
+  // Global module shortcut: Ctrl/Cmd+N → new product. (Ctrl/Cmd+S for this
+  // page's own form is already handled by the effect below, which also
+  // knows about the "add category" sub-modal — left as-is to avoid a
+  // double-submit if both handlers matched the same key.)
+  useModuleShortcuts({
+    onNew: () => { if (!open && tab === "catalog") startNew(); },
+  });
+
+  // Product name autocomplete: distinct existing names matching what's typed.
+  const nameSuggestions = (() => {
+    const term = (form.name || "").trim().toLowerCase();
+    if (!term || editingId) return [];
+    const seen = new Set();
+    const out = [];
+    for (const p of items) {
+      const key = (p.name || "").toLowerCase();
+      if (key && key.includes(term) && key !== term && !seen.has(key)) {
+        seen.add(key);
+        out.push(p);
+        if (out.length >= 8) break;
+      }
+    }
+    return out;
+  })();
+
+  // Pick an existing product → copy its catalog attributes onto the new product.
+  const applyProductTemplate = (p) => {
+    setForm((f) => ({
+      ...f,
+      name: p.name,
+      category: p.category || "",
+      category_id: p.category_id || "",
+      unit: p.unit || f.unit,
+      gst_rate: p.gst_rate ?? f.gst_rate,
+      hsn_code: p.hsn_code || "",
+      cost_price: p.cost_price ?? f.cost_price,
+      image_path: p.image_path || "",
+      image_url: p.image_path ? "" : (p.image_url || ""),
+    }));
+    setNameFocused(false);
+  };
+
+  // Quick-add a category from the product form, then auto-select it.
+  const openCatModal = () => {
+    if (!open) return;            // only meaningful while the product form is open
+    setCatForm({ name: "", description: "" });
+    setCatModal(true);
+  };
+  const saveCategory = async () => {
+    const name = catForm.name.trim();
+    if (!name) return toast.warning("Category name is required.");
+    setSavingCat(true);
+    try {
+      const { data } = await api.post("/categories", {
+        name, description: catForm.description.trim() || null, status: "Active",
+      });
+      await loadCategories();
+      // Auto-select the freshly created category on the product form.
+      setForm((f) => ({ ...f, category_id: data.id, category: data.name }));
+      setCatModal(false);
+      toast.success(`Category "${data.name}" added`);
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    } finally {
+      setSavingCat(false);
+    }
+  };
+
   const submit = async (e) => {
     e.preventDefault();
+    // SKU is no longer entered by hand, but the backend still requires a unique
+    // one. Auto-derive it from the name (+ short timestamp) when not already set
+    // (existing products keep their SKU on edit).
+    const autoSku = () => {
+      const base = (form.name || "ITEM")
+        .toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 12) || "ITEM";
+      return `${base}-${Date.now().toString(36).toUpperCase().slice(-5)}`;
+    };
     const payload = {
       ...form,
+      sku: form.sku || autoSku(),
+      category_id: form.category_id || null,
       cost_price: Number(form.cost_price),
       selling_price: Number(form.selling_price),
       quantity: Number(form.quantity),
@@ -186,6 +330,15 @@ export default function Products() {
       gst_rate: Number(form.gst_rate),
       warehouse_id: form.warehouse_id || null,
     };
+    // Strip UI-only / server-derived fields so they aren't persisted onto the
+    // product record. (For linked products the list re-derives quantity/cost/gst
+    // from the stock ledger on the next load, so the saved values are harmless.)
+    delete payload.stock_linked;
+    delete payload.stock_item_id;
+    delete payload.warehouse_name;
+    delete payload.product_count;
+    if (saving) return;
+    setSaving(true);
     try {
       if (editingId) {
         await api.put(`/products/${editingId}`, payload);
@@ -198,8 +351,27 @@ export default function Products() {
       load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setSaving(false);
     }
   };
+
+  // Keyboard shortcuts (active while the product form is open):
+  //   Alt+C  → add a new category   ·   Ctrl/Cmd+S → save the product
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => {
+      if (e.altKey && (e.key === "c" || e.key === "C")) {
+        e.preventDefault();
+        openCatModal();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        if (!catModal) submit(e);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, catModal, form]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onDelete = async (item) => {
     if (!window.confirm(`Delete ${item.name}?`)) return;
@@ -221,6 +393,7 @@ export default function Products() {
       physical_quantity: p.quantity,
       remarks: "",
     }));
+    setEditingPvId(null);
     setPvForm({
       verification_date: new Date().toISOString().split("T")[0],
       verified_by: "",
@@ -231,15 +404,39 @@ export default function Products() {
     setShowPvModal(true);
   };
 
+  const startEditPv = (v) => {
+    setEditingPvId(v.id);
+    setPvForm({
+      verification_date: v.verification_date,
+      verified_by: v.verified_by,
+      warehouse_id: v.warehouse_id || "",
+      notes: v.notes || "",
+      items: (v.items || []).map(it => ({ ...it })),
+    });
+    setShowPvModal(true);
+  };
+
+  const openViewPv = (v) => setViewPv(v);
+
   const submitPv = async (e) => {
     e.preventDefault();
+    if (savingPv) return;
+    setSavingPv(true);
     try {
-      await api.post("/stock/physical-verifications", pvForm);
-      toast.success("Physical verification recorded as Draft");
+      if (editingPvId) {
+        await api.put(`/stock/physical-verifications/${editingPvId}`, pvForm);
+        toast.success("Physical verification updated");
+      } else {
+        await api.post("/stock/physical-verifications", pvForm);
+        toast.success("Physical verification recorded as Draft");
+      }
       setShowPvModal(false);
+      setEditingPvId(null);
       loadVerifications();
     } catch (err) {
       toast.error(err.response?.data?.detail || "Failed to submit verification");
+    } finally {
+      setSavingPv(false);
     }
   };
 
@@ -250,6 +447,17 @@ export default function Products() {
       loadVerifications();
     } catch (err) {
       toast.error(err.response?.data?.detail || "Approval failed");
+    }
+  };
+
+  const deletePv = async (v) => {
+    if (!window.confirm(`Delete physical verification dated ${v.verification_date}?`)) return;
+    try {
+      await api.delete(`/stock/physical-verifications/${v.id}`);
+      toast.success("Physical verification deleted");
+      loadVerifications();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to delete verification");
     }
   };
 
@@ -268,6 +476,8 @@ export default function Products() {
 
   const submitBatch = async (e) => {
     e.preventDefault();
+    if (savingBatch) return;
+    setSavingBatch(true);
     try {
       const selectedProd = items.find(p => p.id === batchForm.product_id);
       await api.post("/stock/batches", {
@@ -282,6 +492,8 @@ export default function Products() {
       loadBatches();
     } catch (err) {
       toast.error(err.response?.data?.detail || "Failed to create batch");
+    } finally {
+      setSavingBatch(false);
     }
   };
 
@@ -324,11 +536,11 @@ export default function Products() {
       />
 
       {/* Tabs */}
-      <div className="flex gap-px bg-zinc-800 border border-zinc-800 mb-6 overflow-x-auto">
+      <div className="flex gap-px bg-border border border-border mb-6 overflow-x-auto" style={{ borderRadius: "var(--radius)" }}>
         {TABS.map(t => (
           <button key={t.id} data-testid={`tab-${t.id}`} onClick={() => setTab(t.id)}
             className={`flex-shrink-0 px-4 py-3 text-xs font-mono uppercase tracking-wider transition-colors ${
-              tab === t.id ? "bg-yellow-400 text-black font-bold" : "bg-zinc-950 text-zinc-400 hover:text-white hover:bg-zinc-900"
+              tab === t.id ? "bg-primary text-primary-foreground font-bold" : "bg-card text-muted-foreground hover:text-foreground hover:bg-muted"
             }`}>{t.label}</button>
         ))}
       </div>
@@ -337,7 +549,7 @@ export default function Products() {
         <>
           <div className="flex flex-wrap items-center gap-3 mb-4">
             <div className="relative flex-1 min-w-[200px] max-w-md">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
                 data-testid="search-products"
                 placeholder="Search by name, SKU or category"
@@ -351,8 +563,8 @@ export default function Products() {
               onClick={() => setLowOnly((v) => !v)}
               className={`px-3 py-2 border text-xs font-mono uppercase tracking-wider transition-colors ${
                 lowOnly
-                  ? "bg-yellow-400 text-black border-yellow-400"
-                  : "border-zinc-700 text-zinc-300 hover:border-yellow-400"
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "border-border text-muted-foreground hover:border-primary hover:text-primary"
               }`}
             >
               <AlertTriangle className="inline w-3.5 h-3.5 mr-1" /> Low stock only
@@ -369,85 +581,79 @@ export default function Products() {
               }
             />
           ) : (
-            <div className="border border-zinc-800 overflow-x-auto">
+            <div className="border border-border overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-zinc-900">
+                <thead className="bg-muted text-muted-foreground">
                   <tr className="text-left label-overline">
+                    <th className="px-3 py-2.5 w-10">
+                      <SelectCheckbox
+                        label="Select all products"
+                        checked={sel.allSelected}
+                        indeterminate={sel.someSelected}
+                        onChange={sel.toggleAll}
+                      />
+                    </th>
                     <th className="px-3 py-2.5">Product</th>
                     <th className="px-3 py-2.5">SKU</th>
                     <th className="px-3 py-2.5">Category</th>
+                    <th className="px-3 py-2.5">HSN</th>
                     <th className="px-3 py-2.5">Warehouse</th>
-                    <th className="px-3 py-2.5 text-right">Qty</th>
-                    <th className="px-3 py-2.5 text-right">Cost</th>
-                    <th className="px-3 py-2.5 text-right">Sell</th>
-                    <th className="px-3 py-2.5">GST</th>
                     <th className="px-3 py-2.5 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {items.map((p, i) => {
-                    const low =
-                      Number(p.quantity) <= Number(p.low_stock_threshold || 0);
                     return (
                       <tr
                         key={p.id}
                         data-testid={`product-row-${p.sku}`}
-                        className={`border-t border-zinc-900 hover:bg-zinc-900/60 ${
-                          i % 2 === 0 ? "bg-transparent" : "bg-zinc-900/30"
+                        className={`border-t border-border hover:bg-muted/40 ${
+                          sel.isSelected(p.id) ? "bg-primary/5" : i % 2 === 0 ? "bg-transparent" : "bg-muted/30"
                         }`}
                       >
-                        <td className="px-3 py-2.5 text-white">
+                        <td className="px-3 py-2.5">
+                          <SelectCheckbox
+                            label={`Select product ${p.sku}`}
+                            checked={sel.isSelected(p.id)}
+                            onChange={() => sel.toggle(p.id)}
+                          />
+                        </td>
+                        <td className="px-3 py-2.5 text-foreground">
                           <div className="flex items-center gap-3">
                             <ProductImageThumb product={p} />
-                            <div>
-                              <div className="text-white">{p.name}</div>
-                              <div className="text-xs text-zinc-500">{p.unit}</div>
-                            </div>
+                            <div className="text-foreground">{p.name}</div>
                           </div>
                         </td>
-                        <td className="px-3 py-2.5 font-mono text-yellow-400 text-xs">
+                        <td className="px-3 py-2.5 font-mono text-primary text-xs">
                           {p.sku}
                         </td>
-                        <td className="px-3 py-2.5 text-zinc-300">{p.category}</td>
-                        <td className="px-3 py-2.5 text-zinc-400">
+                        <td className="px-3 py-2.5 text-foreground">{p.category}</td>
+                        <td className="px-3 py-2.5 text-muted-foreground font-mono text-xs">
+                          {p.hsn_code || "-"}
+                        </td>
+                        <td className="px-3 py-2.5 text-muted-foreground">
                           {p.warehouse_name || "-"}
-                        </td>
-                        <td
-                          className={`px-3 py-2.5 text-right tabular ${
-                            low ? "text-red-400 font-semibold" : "text-white"
-                          }`}
-                        >
-                          {p.quantity}
-                        </td>
-                        <td className="px-3 py-2.5 text-right tabular text-zinc-300">
-                          ₹{Number(p.cost_price).toLocaleString("en-IN")}
-                        </td>
-                        <td className="px-3 py-2.5 text-right tabular text-yellow-400 font-semibold">
-                          ₹{Number(p.selling_price).toLocaleString("en-IN")}
-                        </td>
-                        <td className="px-3 py-2.5 text-zinc-400 font-mono text-xs">
-                          {p.gst_rate}%
                         </td>
                         <td className="px-3 py-2.5 text-right">
                           <div className="inline-flex gap-1">
                             <button
                               data-testid={`qr-${p.sku}`}
                               onClick={() => setQrItem(p)}
-                              className="w-7 h-7 border border-zinc-800 hover:border-yellow-400 hover:text-yellow-400 text-zinc-400 flex items-center justify-center"
+                              className="w-7 h-7 border border-border hover:border-primary hover:text-primary text-muted-foreground flex items-center justify-center"
                             >
                               <QrCode className="w-3.5 h-3.5" />
                             </button>
                             <button
                               data-testid={`edit-${p.sku}`}
                               onClick={() => startEdit(p)}
-                              className="w-7 h-7 border border-zinc-800 hover:border-yellow-400 hover:text-yellow-400 text-zinc-400 flex items-center justify-center"
+                              className="w-7 h-7 border border-border hover:border-primary hover:text-primary text-muted-foreground flex items-center justify-center"
                             >
                               <Pencil className="w-3.5 h-3.5" />
                             </button>
                             <button
                               data-testid={`delete-${p.sku}`}
                               onClick={() => onDelete(p)}
-                              className="w-7 h-7 border border-zinc-800 hover:border-red-500 hover:text-red-400 text-zinc-400 flex items-center justify-center"
+                              className="w-7 h-7 border border-border hover:border-red-500 hover:text-red-400 text-muted-foreground flex items-center justify-center"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -466,7 +672,7 @@ export default function Products() {
       {/* Stock Aging Analysis */}
       {tab === "aging" && agingData && (
         <div className="space-y-4">
-          <div className="flex items-center gap-3 bg-zinc-950 border border-zinc-850 p-4">
+          <div className="flex items-center gap-3 bg-card border border-border p-4" style={{ borderRadius: "var(--radius)" }}>
             <span className="label-overline">Aging Threshold (Days)</span>
             <Select value={agingDays} onChange={e => setAgingDays(parseInt(e.target.value))} className="w-28">
               <option value={30}>30 Days</option>
@@ -474,7 +680,7 @@ export default function Products() {
               <option value={90}>90 Days</option>
               <option value={180}>180 Days</option>
             </Select>
-            <span className="text-xs text-zinc-500 italic">Identifies stock with no sales/dispatches in this period.</span>
+            <span className="text-xs text-muted-foreground italic">Identifies stock with no sales/dispatches in this period.</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
@@ -484,9 +690,9 @@ export default function Products() {
             <StatTile label="Slow Moving Value" value={`₹${Number(agingData.items?.filter(x => x.is_slow_moving).reduce((s, x) => s + x.stock_value, 0)).toLocaleString("en-IN")}`} />
           </div>
 
-          <div className="border border-zinc-800 overflow-x-auto">
+          <div className="border border-border overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-zinc-900 label-overline">
+              <thead className="bg-muted text-muted-foreground label-overline">
                 <tr>
                   <th className="px-3 py-2 text-left">Product Name</th>
                   <th className="px-3 py-2 text-left">SKU</th>
@@ -500,17 +706,17 @@ export default function Products() {
               </thead>
               <tbody>
                 {agingData.items?.map((item, idx) => (
-                  <tr key={item.product_id} className={`border-t border-zinc-900 hover:bg-zinc-900/60 ${idx % 2 === 0 ? "" : "bg-zinc-900/30"}`}>
-                    <td className="px-3 py-2 text-white font-semibold text-left">{item.name}</td>
-                    <td className="px-3 py-2 font-mono text-xs text-yellow-400 text-left">{item.sku}</td>
-                    <td className="px-3 py-2 text-right tabular text-zinc-300">{item.quantity} {item.unit}</td>
-                    <td className="px-3 py-2 text-right tabular text-zinc-400">₹{Number(item.cost_price).toLocaleString("en-IN")}</td>
-                    <td className="px-3 py-2 text-right tabular text-zinc-200">₹{Number(item.stock_value).toLocaleString("en-IN")}</td>
-                    <td className="px-3 py-2 font-mono text-xs text-zinc-500 text-left">{item.last_movement || "No movement"}</td>
-                    <td className="px-3 py-2 text-right tabular text-zinc-300">{item.days_since_movement} days</td>
+                  <tr key={item.product_id} className={`border-t border-border hover:bg-muted/40 ${idx % 2 === 0 ? "" : "bg-muted/30"}`}>
+                    <td className="px-3 py-2 text-foreground font-semibold text-left">{item.name}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-primary text-left">{item.sku}</td>
+                    <td className="px-3 py-2 text-right tabular text-foreground">{item.quantity} {item.unit}</td>
+                    <td className="px-3 py-2 text-right tabular text-muted-foreground">₹{Number(item.cost_price).toLocaleString("en-IN")}</td>
+                    <td className="px-3 py-2 text-right tabular text-foreground">₹{Number(item.stock_value).toLocaleString("en-IN")}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-muted-foreground text-left">{item.last_movement || "No movement"}</td>
+                    <td className="px-3 py-2 text-right tabular text-foreground">{item.days_since_movement} days</td>
                     <td className="px-3 py-2 text-center">
                       <span className={`text-[10px] font-mono px-1.5 py-0.5 border ${
-                        item.is_slow_moving ? "border-red-800 text-red-400 bg-red-950/20 font-bold" : "border-green-800 text-green-400 bg-green-950/20"
+                        item.is_slow_moving ? "bg-red-50 border-red-200 text-red-700 font-bold" : "bg-emerald-50 border-emerald-200 text-emerald-700"
                       }`}>{item.is_slow_moving ? "SLOW MOVING" : "ACTIVE"}</span>
                     </td>
                   </tr>
@@ -524,13 +730,13 @@ export default function Products() {
       {/* Stock Valuation */}
       {tab === "valuation" && valuationData && (
         <div className="space-y-4">
-          <div className="flex items-center gap-3 bg-zinc-950 border border-zinc-850 p-4">
+          <div className="flex items-center gap-3 bg-card border border-border p-4" style={{ borderRadius: "var(--radius)" }}>
             <span className="label-overline">Valuation Method</span>
             <Select value={valuationMethod} onChange={e => setValuationMethod(e.target.value)} className="w-48">
               <option value="WEIGHTED_AVERAGE">Weighted Average (Avg Cost)</option>
               <option value="FIFO">First In, First Out (FIFO)</option>
             </Select>
-            <span className="text-xs text-zinc-500 italic">Select method to compute total inventory assets valuation.</span>
+            <span className="text-xs text-muted-foreground italic">Select method to compute total inventory assets valuation.</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -539,9 +745,9 @@ export default function Products() {
             <StatTile label="Total Valued Assets" value={`₹${Number(valuationData.total_value).toLocaleString("en-IN")}`} accent />
           </div>
 
-          <div className="border border-zinc-800 overflow-x-auto">
+          <div className="border border-border overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-zinc-900 label-overline">
+              <thead className="bg-muted text-muted-foreground label-overline">
                 <tr>
                   <th className="px-3 py-2 text-left">Product Name</th>
                   <th className="px-3 py-2 text-left">SKU</th>
@@ -554,14 +760,14 @@ export default function Products() {
               </thead>
               <tbody>
                 {valuationData.items?.map((item, idx) => (
-                  <tr key={item.product_id} className={`border-t border-zinc-900 hover:bg-zinc-900/60 ${idx % 2 === 0 ? "" : "bg-zinc-900/30"}`}>
-                    <td className="px-3 py-2 text-white font-semibold text-left">{item.name}</td>
-                    <td className="px-3 py-2 font-mono text-xs text-yellow-400 text-left">{item.sku}</td>
-                    <td className="px-3 py-2 text-zinc-400 text-left">{item.category}</td>
-                    <td className="px-3 py-2 text-right tabular text-zinc-300">{item.quantity} {item.unit}</td>
-                    <td className="px-3 py-2 text-right tabular text-zinc-200">₹{Number(item.unit_cost).toLocaleString("en-IN")}</td>
-                    <td className="px-3 py-2 text-right tabular text-yellow-500 font-semibold">₹{Number(item.selling_price).toLocaleString("en-IN")}</td>
-                    <td className="px-3 py-2 text-right tabular text-green-400 font-bold">₹{Number(item.total_value).toLocaleString("en-IN")}</td>
+                  <tr key={item.product_id} className={`border-t border-border hover:bg-muted/40 ${idx % 2 === 0 ? "" : "bg-muted/30"}`}>
+                    <td className="px-3 py-2 text-foreground font-semibold text-left">{item.name}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-primary text-left">{item.sku}</td>
+                    <td className="px-3 py-2 text-muted-foreground text-left">{item.category}</td>
+                    <td className="px-3 py-2 text-right tabular text-foreground">{item.quantity} {item.unit}</td>
+                    <td className="px-3 py-2 text-right tabular text-foreground">₹{Number(item.unit_cost).toLocaleString("en-IN")}</td>
+                    <td className="px-3 py-2 text-right tabular text-primary font-semibold">₹{Number(item.selling_price).toLocaleString("en-IN")}</td>
+                    <td className="px-3 py-2 text-right tabular text-emerald-600 font-bold">₹{Number(item.total_value).toLocaleString("en-IN")}</td>
                   </tr>
                 ))}
               </tbody>
@@ -578,9 +784,9 @@ export default function Products() {
             <StatTile label="Total Reorder Cost" value={`₹${Number(reorderData.total_estimated_cost).toLocaleString("en-IN")}`} />
           </div>
 
-          <div className="border border-zinc-800 overflow-x-auto">
+          <div className="border border-border overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-zinc-900 label-overline">
+              <thead className="bg-muted text-muted-foreground label-overline">
                 <tr>
                   <th className="px-3 py-2 text-left">Product Name</th>
                   <th className="px-3 py-2 text-left">SKU</th>
@@ -589,25 +795,25 @@ export default function Products() {
                   <th className="px-3 py-2 text-right">Shortage</th>
                   <th className="px-3 py-2 text-right">Suggested Order Qty</th>
                   <th className="px-3 py-2 text-right">Estimated Cost</th>
-                  <th className="px-3 py-2 text-left">Preferred Supplier</th>
+                  <th className="px-3 py-2 text-left">Preferred Vendor</th>
                 </tr>
               </thead>
               <tbody>
                 {reorderData.items?.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-zinc-650 font-mono">All products are above their reorder thresholds.</td>
+                    <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground font-mono">All products are above their reorder thresholds.</td>
                   </tr>
                 )}
                 {reorderData.items?.map((item, idx) => (
-                  <tr key={item.product_id} className={`border-t border-zinc-900 hover:bg-zinc-900/60 ${idx % 2 === 0 ? "" : "bg-zinc-900/30"}`}>
-                    <td className="px-3 py-2 text-white font-semibold text-left">{item.name}</td>
-                    <td className="px-3 py-2 font-mono text-xs text-yellow-400 text-left">{item.sku}</td>
-                    <td className="px-3 py-2 text-right tabular text-red-400 font-bold">{item.current_quantity} {item.unit}</td>
-                    <td className="px-3 py-2 text-right tabular text-zinc-400">{item.reorder_level}</td>
+                  <tr key={item.product_id} className={`border-t border-border hover:bg-muted/40 ${idx % 2 === 0 ? "" : "bg-muted/30"}`}>
+                    <td className="px-3 py-2 text-foreground font-semibold text-left">{item.name}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-primary text-left">{item.sku}</td>
+                    <td className="px-3 py-2 text-right tabular text-red-600 font-bold">{item.current_quantity} {item.unit}</td>
+                    <td className="px-3 py-2 text-right tabular text-muted-foreground">{item.reorder_level}</td>
                     <td className="px-3 py-2 text-right tabular text-red-500 font-extrabold">{item.shortage}</td>
-                    <td className="px-3 py-2 text-right tabular text-green-400 font-bold">{item.suggested_order_qty}</td>
-                    <td className="px-3 py-2 text-right tabular text-zinc-200">₹{Number(item.estimated_cost).toLocaleString("en-IN")}</td>
-                    <td className="px-3 py-2 text-zinc-300 font-semibold text-left">{item.preferred_supplier || "None"}</td>
+                    <td className="px-3 py-2 text-right tabular text-emerald-600 font-bold">{item.suggested_order_qty}</td>
+                    <td className="px-3 py-2 text-right tabular text-foreground">₹{Number(item.estimated_cost).toLocaleString("en-IN")}</td>
+                    <td className="px-3 py-2 text-foreground font-semibold text-left">{item.preferred_supplier || "None"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -619,9 +825,9 @@ export default function Products() {
       {/* Physical Verification Audit */}
       {tab === "verification" && (
         <div className="space-y-4">
-          <div className="bg-zinc-950 border border-zinc-800 overflow-x-auto">
+          <div className="bg-card border border-border overflow-x-auto" style={{ borderRadius: "var(--radius)" }}>
             <table className="w-full text-sm">
-              <thead className="bg-zinc-900 label-overline">
+              <thead className="bg-muted text-muted-foreground label-overline">
                 <tr>
                   <th className="px-3 py-2 text-left">Verification Date</th>
                   <th className="px-3 py-2 text-left">Verified By</th>
@@ -634,28 +840,43 @@ export default function Products() {
               <tbody>
                 {verifications.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-zinc-650 font-mono">No stock verification records.</td>
+                    <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground font-mono">No stock verification records.</td>
                   </tr>
                 )}
                 {verifications.map((v, idx) => (
-                  <tr key={v.id} className={`border-t border-zinc-900 hover:bg-zinc-900/60 ${idx % 2 === 0 ? "" : "bg-zinc-900/30"}`}>
-                    <td className="px-3 py-2 font-mono text-zinc-300 text-left">{v.verification_date}</td>
-                    <td className="px-3 py-2 text-white font-bold text-left">{v.created_by_name || v.verified_by}</td>
-                    <td className="px-3 py-2 text-right tabular text-zinc-400">{v.items_checked}</td>
-                    <td className={`px-3 py-2 text-right tabular ${v.total_discrepancy > 0 ? "text-yellow-400 font-bold" : "text-zinc-500"}`}>
+                  <tr key={v.id} className={`border-t border-border hover:bg-muted/40 ${idx % 2 === 0 ? "" : "bg-muted/30"}`}>
+                    <td className="px-3 py-2 font-mono text-foreground text-left">{v.verification_date}</td>
+                    <td className="px-3 py-2 text-foreground font-bold text-left">{v.created_by_name || v.verified_by}</td>
+                    <td className="px-3 py-2 text-right tabular text-muted-foreground">{v.items_checked}</td>
+                    <td className={`px-3 py-2 text-right tabular ${v.total_discrepancy > 0 ? "text-primary font-bold" : "text-muted-foreground"}`}>
                       {v.total_discrepancy}
                     </td>
                     <td className="px-3 py-2 text-left">
                       <span className={`text-[10px] font-mono px-1.5 py-0.5 border ${
-                        v.status === "APPROVED" ? "border-green-800 text-green-400 bg-green-950/20" : "border-yellow-800 text-yellow-400 bg-yellow-950/20"
+                        v.status === "APPROVED" ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-amber-50 border-amber-200 text-amber-700"
                       }`}>{v.status}</span>
                     </td>
                     <td className="px-3 py-2 text-right">
-                      {v.status === "DRAFT" && (
-                        <button onClick={() => approvePv(v.id)} className="bg-green-600 hover:bg-green-700 text-white text-xs font-mono font-bold px-2.5 py-1 uppercase transition-colors">
-                          Approve & Adjust
+                      <div className="flex items-center justify-end gap-1.5">
+                        {v.status === "DRAFT" && (
+                          <button onClick={() => approvePv(v.id)} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-mono font-bold px-2.5 py-1 uppercase transition-colors" style={{ borderRadius: "var(--radius-sm)" }}>
+                            Approve & Adjust
+                          </button>
+                        )}
+                        <button onClick={() => openViewPv(v)} title="View" className="p-1.5 text-muted-foreground hover:text-primary hover:bg-muted transition-colors" style={{ borderRadius: "var(--radius-sm)" }}>
+                          <Eye className="w-4 h-4" />
                         </button>
-                      )}
+                        {v.status !== "APPROVED" && (
+                          <>
+                            <button onClick={() => startEditPv(v)} title="Edit" className="p-1.5 text-muted-foreground hover:text-primary hover:bg-muted transition-colors" style={{ borderRadius: "var(--radius-sm)" }}>
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => deletePv(v)} title="Delete" className="p-1.5 text-muted-foreground hover:text-red-600 hover:bg-red-50 transition-colors" style={{ borderRadius: "var(--radius-sm)" }}>
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -668,9 +889,9 @@ export default function Products() {
       {/* Batch & Expiry Tracking */}
       {tab === "batches" && (
         <div className="space-y-4">
-          <div className="bg-zinc-950 border border-zinc-800 overflow-x-auto">
+          <div className="bg-card border border-border overflow-x-auto" style={{ borderRadius: "var(--radius)" }}>
             <table className="w-full text-sm">
-              <thead className="bg-zinc-900 label-overline">
+              <thead className="bg-muted text-muted-foreground label-overline">
                 <tr>
                   <th className="px-3 py-2 text-left">Product</th>
                   <th className="px-3 py-2 text-left">SKU</th>
@@ -685,26 +906,26 @@ export default function Products() {
               <tbody>
                 {batches.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-zinc-650 font-mono">No batch tracks loaded.</td>
+                    <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground font-mono">No batch tracks loaded.</td>
                   </tr>
                 )}
                 {batches.map((b, idx) => (
-                  <tr key={b.id} className={`border-t border-zinc-900 hover:bg-zinc-900/60 ${idx % 2 === 0 ? "" : "bg-zinc-900/30"}`}>
-                    <td className="px-3 py-2 text-white font-bold text-left">{b.product_name}</td>
-                    <td className="px-3 py-2 font-mono text-xs text-yellow-400 text-left">{b.sku}</td>
-                    <td className="px-3 py-2 font-mono text-zinc-300 text-left">{b.batch_number}</td>
-                    <td className="px-3 py-2 text-right tabular text-zinc-300">{b.quantity}</td>
-                    <td className="px-3 py-2 font-mono text-zinc-500 text-xs text-left">{b.manufacture_date || "—"}</td>
-                    <td className="px-3 py-2 font-mono text-red-400 text-xs font-semibold text-left">{b.expiry_date || "—"}</td>
+                  <tr key={b.id} className={`border-t border-border hover:bg-muted/40 ${idx % 2 === 0 ? "" : "bg-muted/30"}`}>
+                    <td className="px-3 py-2 text-foreground font-bold text-left">{b.product_name}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-primary text-left">{b.sku}</td>
+                    <td className="px-3 py-2 font-mono text-foreground text-left">{b.batch_number}</td>
+                    <td className="px-3 py-2 text-right tabular text-foreground">{b.quantity}</td>
+                    <td className="px-3 py-2 font-mono text-muted-foreground text-xs text-left">{b.manufacture_date || "—"}</td>
+                    <td className="px-3 py-2 font-mono text-red-600 text-xs font-semibold text-left">{b.expiry_date || "—"}</td>
                     <td className="px-3 py-2 text-center">
                       <span className={`text-[10px] font-mono px-1.5 py-0.5 border ${
-                        b.expiry_status === "GOOD" ? "border-green-800 text-green-400 bg-green-950/20" :
-                        b.expiry_status === "NEAR_EXPIRY" ? "border-yellow-800 text-yellow-400 bg-yellow-950/20 font-bold" :
-                        "border-red-800 text-red-400 bg-red-950/20 font-black"
+                        b.expiry_status === "GOOD" ? "bg-emerald-50 border-emerald-200 text-emerald-700" :
+                        b.expiry_status === "NEAR_EXPIRY" ? "bg-amber-50 border-amber-200 text-amber-700 font-bold" :
+                        "bg-red-50 border-red-200 text-red-700 font-black"
                       }`}>{b.expiry_status || "GOOD"}</span>
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <button onClick={() => onDeleteBatch(b.id)} className="text-red-500 hover:text-red-300 text-xs">
+                      <button onClick={() => onDeleteBatch(b.id)} className="text-red-600 hover:text-red-500 text-xs">
                         Delete
                       </button>
                     </td>
@@ -727,53 +948,74 @@ export default function Products() {
             <SecondaryButton onClick={() => setOpen(false)}>
               Cancel
             </SecondaryButton>
-            <PrimaryButton testid="save-product" onClick={submit}>
-              Save Product
+            <PrimaryButton testid="save-product" onClick={submit} disabled={saving}>
+              {saving ? "Saving…" : "Save Product"}
             </PrimaryButton>
           </>
         }
       >
         <form onSubmit={submit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label="Product Name" required>
-            <Input
-              required
-              data-testid="form-name"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-            />
+          <Field label="Product Name" required hint={editingId ? undefined : "Start typing to reuse an existing product's details"}>
+            <div className="relative" ref={nameBoxRef}>
+              <Input
+                required
+                data-testid="form-name"
+                autoComplete="off"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                onFocus={() => setNameFocused(true)}
+                onBlur={() => setTimeout(() => setNameFocused(false), 150)}
+              />
+              {nameFocused && nameSuggestions.length > 0 && (
+                <ul
+                  data-testid="name-autocomplete"
+                  className="absolute z-50 mt-1 max-h-56 w-full overflow-auto border border-border bg-card shadow-lg"
+                  style={{ borderRadius: "var(--radius-md)" }}
+                >
+                  {nameSuggestions.map((p) => (
+                    <li
+                      key={p.id}
+                      data-testid={`name-suggestion-${p.sku}`}
+                      onMouseDown={(e) => { e.preventDefault(); applyProductTemplate(p); }}
+                      className="px-3 py-2 text-sm cursor-pointer hover:bg-muted flex items-center justify-between gap-2 text-foreground"
+                    >
+                      <span>{p.name}</span>
+                      <span className="text-muted-foreground font-mono text-xs">{p.category || ""}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </Field>
-          <Field label="SKU" required>
-            <Input
-              required
-              data-testid="form-sku"
-              value={form.sku}
-              onChange={(e) => setForm({ ...form, sku: e.target.value })}
-            />
-          </Field>
-          <Field label="Category">
-            <Select
-              data-testid="form-category"
-              value={form.category}
-              onChange={(e) => setForm({ ...form, category: e.target.value })}
-            >
-              {[
-                "Cuplock",
-                "Ringlock",
-                "Frame",
-                "Planks",
-                "Accessories",
-                "Couplers",
-                "Other",
-              ].map((c) => (
-                <option key={c}>{c}</option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Unit">
-            <Input
-              value={form.unit}
-              onChange={(e) => setForm({ ...form, unit: e.target.value })}
-            />
+          <Field label="Category" hint="Alt+C to add a new category">
+            <div className="flex items-center gap-2">
+              <div className="flex-1">
+                <SearchableSelect
+                  testid="form-category"
+                  placeholder="Search category…"
+                  value={form.category_id}
+                  options={categories.map((c) => ({
+                    value: c.id, label: c.name, sublabel: c.code,
+                  }))}
+                  onChange={(id) => {
+                    const c = categories.find((x) => x.id === id);
+                    setForm({ ...form, category_id: id, category: c?.name || "" });
+                  }}
+                  onCreate={openCatModal}
+                  createLabel="Create New Category"
+                />
+              </div>
+              <button
+                type="button"
+                title="Add new category (Alt+C)"
+                data-testid="add-category-btn"
+                onClick={openCatModal}
+                className="w-10 h-10 flex-shrink-0 border border-border hover:border-primary hover:text-primary text-muted-foreground flex items-center justify-center transition-colors"
+                style={{ borderRadius: "var(--radius-md)" }}
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+            </div>
           </Field>
           <Field label="Warehouse">
             <Select
@@ -790,6 +1032,7 @@ export default function Products() {
               ))}
             </Select>
           </Field>
+
           <div className="md:col-span-2">
             <Field label="Product Image">
               <ImageUploader
@@ -798,56 +1041,10 @@ export default function Products() {
               />
             </Field>
           </div>
-          <Field label="Cost Price (₹)">
-            <Input
-              type="number"
-              step="0.01"
-              value={form.cost_price}
-              onChange={(e) =>
-                setForm({ ...form, cost_price: e.target.value })
-              }
-            />
-          </Field>
-          <Field label="Selling Price (₹)">
-            <Input
-              type="number"
-              step="0.01"
-              value={form.selling_price}
-              onChange={(e) =>
-                setForm({ ...form, selling_price: e.target.value })
-              }
-            />
-          </Field>
-          <Field label="Quantity">
-            <Input
-              type="number"
-              step="0.01"
-              value={form.quantity}
-              onChange={(e) => setForm({ ...form, quantity: e.target.value })}
-            />
-          </Field>
-          <Field label="Low Stock Threshold">
-            <Input
-              type="number"
-              step="1"
-              value={form.low_stock_threshold}
-              onChange={(e) =>
-                setForm({ ...form, low_stock_threshold: e.target.value })
-              }
-            />
-          </Field>
           <Field label="HSN Code">
             <Input
               value={form.hsn_code || ""}
               onChange={(e) => setForm({ ...form, hsn_code: e.target.value })}
-            />
-          </Field>
-          <Field label="GST Rate (%)">
-            <Input
-              type="number"
-              step="0.01"
-              value={form.gst_rate}
-              onChange={(e) => setForm({ ...form, gst_rate: e.target.value })}
             />
           </Field>
           <div className="md:col-span-2">
@@ -864,16 +1061,55 @@ export default function Products() {
         </form>
       </Modal>
 
+      {/* Quick-add Category popup — create a category without leaving the product form */}
+      <Modal
+        open={catModal}
+        onClose={() => setCatModal(false)}
+        title="New Category"
+        size="sm"
+        testid="quick-category-modal"
+        footer={
+          <>
+            <SecondaryButton onClick={() => setCatModal(false)}>Cancel</SecondaryButton>
+            <PrimaryButton testid="save-quick-category" onClick={saveCategory} disabled={savingCat}>
+              {savingCat ? "Saving…" : "Add Category"}
+            </PrimaryButton>
+          </>
+        }
+      >
+        <form
+          onSubmit={(e) => { e.preventDefault(); saveCategory(); }}
+          className="space-y-3"
+        >
+          <Field label="Category Name" required>
+            <Input
+              required
+              autoFocus
+              data-testid="quick-category-name"
+              value={catForm.name}
+              onChange={(e) => setCatForm({ ...catForm, name: e.target.value })}
+            />
+          </Field>
+          <Field label="Description">
+            <Textarea
+              rows={2}
+              value={catForm.description}
+              onChange={(e) => setCatForm({ ...catForm, description: e.target.value })}
+            />
+          </Field>
+        </form>
+      </Modal>
+
       {/* Physical Stock Verification Modal */}
       <Modal
         open={showPvModal}
-        onClose={() => setShowPvModal(false)}
-        title="Physical Stock Audit / Verification"
+        onClose={() => { setShowPvModal(false); setEditingPvId(null); }}
+        title={editingPvId ? "Edit Physical Stock Audit / Verification" : "Physical Stock Audit / Verification"}
         size="lg"
         footer={
           <>
-            <SecondaryButton onClick={() => setShowPvModal(false)}>Cancel</SecondaryButton>
-            <PrimaryButton onClick={submitPv}>Record Audit</PrimaryButton>
+            <SecondaryButton onClick={() => { setShowPvModal(false); setEditingPvId(null); }}>Cancel</SecondaryButton>
+            <PrimaryButton onClick={submitPv} disabled={savingPv}>{savingPv ? "Saving…" : (editingPvId ? "Save Changes" : "Record Audit")}</PrimaryButton>
           </>
         }
       >
@@ -897,9 +1133,9 @@ export default function Products() {
             </Field>
           </div>
 
-          <div className="border border-zinc-800 max-h-[300px] overflow-y-auto">
+          <div className="border border-border max-h-[300px] overflow-y-auto">
             <table className="w-full text-xs">
-              <thead className="bg-zinc-900 sticky top-0 label-overline">
+              <thead className="bg-muted text-muted-foreground sticky top-0 label-overline">
                 <tr>
                   <th className="px-3 py-2 text-left">Product Name</th>
                   <th className="px-3 py-2 text-left">SKU</th>
@@ -910,13 +1146,13 @@ export default function Products() {
               </thead>
               <tbody>
                 {pvForm.items?.map((item, idx) => (
-                  <tr key={item.product_id} className="border-t border-zinc-900">
-                    <td className="px-3 py-1.5 text-zinc-300 text-left">{item.product_name}</td>
-                    <td className="px-3 py-1.5 font-mono text-zinc-500 text-left">{item.sku}</td>
-                    <td className="px-3 py-1.5 text-right tabular text-zinc-500">{item.system_quantity}</td>
+                  <tr key={item.product_id} className="border-t border-border">
+                    <td className="px-3 py-1.5 text-foreground text-left">{item.product_name}</td>
+                    <td className="px-3 py-1.5 font-mono text-muted-foreground text-left">{item.sku}</td>
+                    <td className="px-3 py-1.5 text-right tabular text-muted-foreground">{item.system_quantity}</td>
                     <td className="px-3 py-1.5 text-right pr-1">
                       <input
-                        type="number"
+                        type="text" inputMode="decimal"
                         step="0.001"
                         value={item.physical_quantity}
                         onChange={e => {
@@ -927,7 +1163,7 @@ export default function Products() {
                             return { ...f, items: newItems };
                           });
                         }}
-                        className="w-20 bg-zinc-900 border border-zinc-700 text-right text-xs px-2 py-1 text-white focus:outline-none focus:border-yellow-400"
+                        className="w-20 bg-background border border-input text-right text-xs px-2 py-1 text-foreground focus:outline-none focus:border-primary"
                       />
                     </td>
                     <td className="px-3 py-1.5">
@@ -943,7 +1179,7 @@ export default function Products() {
                           });
                         }}
                         placeholder="e.g. Broken packaging"
-                        className="w-full bg-zinc-900 border border-zinc-800 text-xs px-2 py-1 text-zinc-300 focus:outline-none focus:border-yellow-400"
+                        className="w-full bg-background border border-input text-xs px-2 py-1 text-foreground focus:outline-none focus:border-primary"
                       />
                     </td>
                   </tr>
@@ -952,6 +1188,63 @@ export default function Products() {
             </table>
           </div>
         </form>
+      </Modal>
+
+      {/* Physical Stock Verification — View Modal */}
+      <Modal
+        open={!!viewPv}
+        onClose={() => setViewPv(null)}
+        title="Physical Verification Details"
+        size="lg"
+        footer={<SecondaryButton onClick={() => setViewPv(null)}>Close</SecondaryButton>}
+      >
+        {viewPv && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Verification Date"><div className="text-sm font-mono text-foreground">{viewPv.verification_date}</div></Field>
+              <Field label="Verified By / Inspector"><div className="text-sm text-foreground">{viewPv.created_by_name || viewPv.verified_by}</div></Field>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Warehouse">
+                <div className="text-sm text-foreground">{warehouses.find(w => w.id === viewPv.warehouse_id)?.name || "—"}</div>
+              </Field>
+              <Field label="Status">
+                <span className={`text-[10px] font-mono px-1.5 py-0.5 border ${
+                  viewPv.status === "APPROVED" ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-amber-50 border-amber-200 text-amber-700"
+                }`}>{viewPv.status}</span>
+              </Field>
+            </div>
+            {viewPv.notes && (
+              <Field label="Audit Notes / General Remarks"><div className="text-sm text-foreground">{viewPv.notes}</div></Field>
+            )}
+            <div className="border border-border max-h-[300px] overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-muted text-muted-foreground sticky top-0 label-overline">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Product Name</th>
+                    <th className="px-3 py-2 text-left">SKU</th>
+                    <th className="px-3 py-2 text-right">System Qty</th>
+                    <th className="px-3 py-2 text-right">Physical Qty</th>
+                    <th className="px-3 py-2 text-right">Discrepancy</th>
+                    <th className="px-3 py-2 text-left">Remarks</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(viewPv.items || []).map((item, idx) => (
+                    <tr key={item.product_id || idx} className="border-t border-border">
+                      <td className="px-3 py-1.5 text-foreground text-left">{item.product_name}</td>
+                      <td className="px-3 py-1.5 font-mono text-muted-foreground text-left">{item.sku}</td>
+                      <td className="px-3 py-1.5 text-right tabular text-muted-foreground">{item.system_quantity}</td>
+                      <td className="px-3 py-1.5 text-right tabular text-foreground">{item.physical_quantity}</td>
+                      <td className={`px-3 py-1.5 text-right tabular font-semibold ${Number(item.discrepancy) !== 0 ? "text-primary" : "text-muted-foreground"}`}>{item.discrepancy}</td>
+                      <td className="px-3 py-1.5 text-left text-foreground">{item.remarks || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Batch & Expiry Creation Modal */}
@@ -963,7 +1256,7 @@ export default function Products() {
         footer={
           <>
             <SecondaryButton onClick={() => setShowBatchModal(false)}>Cancel</SecondaryButton>
-            <PrimaryButton onClick={submitBatch}>Record Batch</PrimaryButton>
+            <PrimaryButton onClick={submitBatch} disabled={savingBatch}>{savingBatch ? "Saving…" : "Record Batch"}</PrimaryButton>
           </>
         }
       >
@@ -993,10 +1286,10 @@ export default function Products() {
           </div>
           <div className="grid grid-cols-2 gap-4">
             <Field label="Quantity" required>
-              <Input type="number" required step="0.01" value={batchForm.quantity} onChange={e => setBatchForm(f => ({ ...f, quantity: e.target.value }))} />
+              <Input type="text" inputMode="decimal" required step="0.01" value={batchForm.quantity} onChange={e => setBatchForm(f => ({ ...f, quantity: e.target.value }))} />
             </Field>
             <Field label="Unit Cost Price (₹)">
-              <Input type="number" step="0.01" value={batchForm.unit_cost} onChange={e => setBatchForm(f => ({ ...f, unit_cost: e.target.value }))} />
+              <Input type="text" inputMode="decimal" step="0.01" value={batchForm.unit_cost} onChange={e => setBatchForm(f => ({ ...f, unit_cost: e.target.value }))} />
             </Field>
           </div>
         </form>
@@ -1023,15 +1316,25 @@ export default function Products() {
               />
             </div>
             <div className="text-center">
-              <div className="font-mono text-yellow-400 text-lg">
+              <div className="font-mono text-primary text-lg">
                 {qrItem.sku}
               </div>
-              <div className="text-zinc-300 text-sm">{qrItem.name}</div>
+              <div className="text-foreground text-sm">{qrItem.name}</div>
             </div>
             <PrimaryButton onClick={() => window.print()}>Print</PrimaryButton>
           </div>
         )}
       </Modal>
+
+      {tab === "catalog" && (
+        <BulkDeleteBar
+          count={sel.count}
+          deleting={sel.deleting}
+          onClear={sel.clear}
+          onDelete={bulkDelete}
+          noun="product"
+        />
+      )}
     </div>
   );
 }

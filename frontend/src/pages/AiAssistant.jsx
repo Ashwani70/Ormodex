@@ -29,11 +29,11 @@ const TABS = [
 ];
 
 const PROVIDER_LABELS = {
-  auto: "Auto", openai: "GPT-4o", gemini: "Gemini 2.0",
+  auto: "Auto", gemini: "Gemini 3.5",
   fallback: "Built-in",
 };
 const PROVIDER_COLORS = {
-  openai: "text-green-400", gemini: "text-blue-400",
+  gemini: "text-blue-400",
   fallback: "text-zinc-500", auto: "text-yellow-400",
 };
 
@@ -90,9 +90,9 @@ const INSIGHT_ICONS = {
   PENDING_APPROVALS: Clock, LOW_STOCK_ALERT: Package, UNPAID_INVOICES: AlertTriangle,
 };
 const SEVERITY_COLORS = {
-  HIGH: "border-red-700 bg-red-950/30 text-red-400",
-  MEDIUM: "border-yellow-700 bg-yellow-950/30 text-yellow-400",
-  LOW: "border-blue-700 bg-blue-950/30 text-blue-400",
+  HIGH: "border-red-200 bg-red-50 text-red-700 dark:border-red-700 dark:bg-red-950/30 dark:text-red-400",
+  MEDIUM: "border-yellow-200 bg-yellow-50 text-yellow-700 dark:border-yellow-700 dark:bg-yellow-950/30 dark:text-yellow-400",
+  LOW: "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-950/30 dark:text-blue-400",
 };
 
 export default function AiAssistant() {
@@ -225,7 +225,7 @@ export default function AiAssistant() {
     try {
       const fd = new FormData();
       fd.append("file", file); fd.append("doc_type", "INVOICE");
-      const r = await api.post("/ai/parse-document", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      const r = await api.post("/ai/parse-document", fd);
       setOcrResult(r.data); toast.success("Document parsed successfully");
     } catch (e) { toast.error(e.response?.data?.detail || "OCR failed"); }
     finally { setOcrLoading(false); }
@@ -259,14 +259,13 @@ export default function AiAssistant() {
           <div className="font-mono text-[9px] uppercase tracking-widest text-zinc-500 mb-3">AI Providers</div>
           <div className="space-y-1.5">
             {[
-              { key: "openai", label: "OpenAI GPT-4o" },
-              { key: "gemini", label: "Google Gemini" },
+              { key: "gemini", label: "Google Gemini 3.5" },
             ].map(p => (
               <div key={p.key} className="flex items-center justify-between">
                 <span className="text-xs text-zinc-400 font-mono">{p.label}</span>
                 <span className={`text-[9px] font-mono px-1.5 py-0.5 border ${
                   availableProviders.includes(p.key)
-                    ? "border-green-700 text-green-400 bg-green-950/20"
+                    ? "bg-green-950"
                     : "border-zinc-800 text-zinc-600"
                 }`}>
                   {availableProviders.includes(p.key) ? "ACTIVE" : "NOT SET"}
@@ -281,7 +280,7 @@ export default function AiAssistant() {
               onChange={e => setProvider(e.target.value)}
               className="flex-1 bg-black border border-zinc-700 text-xs font-mono text-white px-2 py-1 focus:border-yellow-400 focus:outline-none"
             >
-              {["auto", "openai", "gemini"].map(p => (
+              {["auto", "gemini"].map(p => (
                 <option key={p} value={p}>{PROVIDER_LABELS[p]}</option>
               ))}
             </select>
@@ -570,7 +569,7 @@ export default function AiAssistant() {
                       <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
                       <div className="flex-1">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className="text-[9px] font-mono uppercase font-bold">{alert.severity}</span>
+                          <span className="text-[9px] font-mono uppercase keep-caps font-bold">{alert.severity}</span>
                           <span className="text-[9px] font-mono text-zinc-500">{alert.type}</span>
                         </div>
                         <p className="text-sm">{alert.message}</p>
@@ -581,9 +580,9 @@ export default function AiAssistant() {
                 ))}
               </div>
             ) : (
-              <div className="border border-green-800 bg-green-950/20 p-8 text-center">
-                <div className="text-green-400 text-5xl mb-3">✓</div>
-                <div className="text-green-400 font-display font-bold text-lg">No anomalies detected</div>
+              <div className="border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950/20 p-8 text-center">
+                <div className="text-green-600 dark:text-green-400 text-5xl mb-3">✓</div>
+                <div className="text-green-700 dark:text-green-400 font-display font-bold text-lg">No anomalies detected</div>
                 <div className="text-xs text-zinc-500 mt-2 font-mono">All transactions appear normal</div>
               </div>
             )
@@ -667,9 +666,9 @@ export default function AiAssistant() {
           </div>
 
           {ocrLoading && (
-            <div className="border border-yellow-800 bg-yellow-950/20 p-5 text-center">
-              <div className="w-8 h-8 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-              <div className="text-yellow-400 font-mono text-sm">Parsing document with AI Vision...</div>
+            <div className="border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950/20 p-5 text-center">
+              <div className="w-8 h-8 border-2 border-yellow-500 dark:border-yellow-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+              <div className="text-yellow-700 dark:text-yellow-400 font-mono text-sm">Parsing document with AI Vision...</div>
             </div>
           )}
 
@@ -677,7 +676,11 @@ export default function AiAssistant() {
             <div className="border border-zinc-700 bg-zinc-900 p-4">
               <div className="flex items-center justify-between mb-3">
                 <SectionTitle>Extracted Data</SectionTitle>
-                <span className={`text-[9px] font-mono px-2 py-0.5 border ${ocrResult.status === "PROCESSED" ? "border-green-700 text-green-400" : "border-yellow-700 text-yellow-400"}`}>
+                <span className={`text-[9px] font-mono px-2 py-0.5 border ${
+                  ocrResult.status === "PROCESSED"
+                    ? "border-green-200 text-green-700 bg-green-50 dark:border-green-700 dark:text-green-400"
+                    : "border-yellow-200 text-yellow-700 bg-yellow-50 dark:border-yellow-700 dark:text-yellow-400"
+                }`}>
                   {ocrResult.status}
                 </span>
               </div>
@@ -717,7 +720,7 @@ export default function AiAssistant() {
               <div className="mt-3 text-xs text-zinc-600 font-mono">
                 Confidence: {ocrResult.extracted_data?.confidence > 0
                   ? `${(ocrResult.extracted_data.confidence * 100).toFixed(0)}%`
-                  : "Set OPENAI_API_KEY for AI-powered OCR"}
+                  : "AI OCR is not configured"}
               </div>
             </div>
           )}

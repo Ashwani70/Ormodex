@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useState, useCallback, useMemo } from "react";
 import api from "@/lib/api";
 
 const AuthContext = createContext(null);
@@ -22,28 +22,84 @@ export function AuthProvider({ children }) {
     fetchMe();
   }, [fetchMe]);
 
-  const login = async (email, password) => {
-    const { data } = await api.post("/auth/login", { email, password });
+  // useCallback so the handler identities are stable across renders — otherwise
+  // they'd change every render, defeating the useMemo on the context value below
+  // and re-rendering every useAuth() consumer (Layout, Sidebar, every page).
+  const login = useCallback(async (email, password, opts = {}) => {
+    const { rememberMe = false, companyCode, captchaToken, captchaAnswer } = opts;
+    const { data } = await api.post("/auth/login", {
+      email,
+      password,
+      remember_me: rememberMe,
+      company_code: companyCode || undefined,
+      captcha_token: captchaToken || undefined,
+      captcha_answer: captchaAnswer || undefined,
+    });
+    // MFA-enabled accounts get a challenge token instead of a session; the
+    // caller must follow up with completeMfaLogin(mfa_token, code).
+    if (data.mfa_required) {
+      return { mfaRequired: true, mfaToken: data.mfa_token };
+    }
     if (data.access_token) {
       localStorage.setItem("gew_access_token", data.access_token);
     }
     setUser(data.user);
     return data.user;
-  };
+  }, []);
 
-  const logout = async () => {
+  const completeMfaLogin = useCallback(async (mfaToken, code) => {
+    const { data } = await api.post("/auth/login/mfa", {
+      mfa_token: mfaToken,
+      code,
+    });
+    if (data.access_token) {
+      localStorage.setItem("gew_access_token", data.access_token);
+    }
+    setUser(data.user);
+    return data.user;
+  }, []);
+
+  const changePassword = useCallback(async (currentPassword, newPassword) => {
+    const { data } = await api.post("/auth/change-password", {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+    if (data.access_token) {
+      localStorage.setItem("gew_access_token", data.access_token);
+    }
+    // The fresh user no longer carries the reset flag, so the app un-gates.
+    setUser(data.user);
+    return data.user;
+  }, []);
+
+  const logout = useCallback(async () => {
     try {
       await api.post("/auth/logout");
     } catch {}
     localStorage.removeItem("gew_access_token");
     setUser(false);
-  };
+  }, []);
 
-  return (
-    <AuthContext.Provider value={{ user, loading, login, logout, refresh: fetchMe }}>
-      {children}
-    </AuthContext.Provider>
+  // Revokes every session for this account (all devices), not just this one.
+  const logoutAll = useCallback(async () => {
+    try {
+      await api.post("/auth/logout-all");
+    } catch {}
+    localStorage.removeItem("gew_access_token");
+    setUser(false);
+  }, []);
+
+  // True when the signed-in account must change its password before using the app.
+  const mustChangePassword = !!(user && user.password_change_required);
+
+  // Memoize the context value so consumers only re-render when something they
+  // actually use (user/loading/flags) changes — not on every AuthProvider render.
+  const value = useMemo(
+    () => ({ user, loading, login, completeMfaLogin, changePassword, mustChangePassword, logout, logoutAll, refresh: fetchMe }),
+    [user, loading, login, completeMfaLogin, changePassword, mustChangePassword, logout, logoutAll, fetchMe]
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export const useAuth = () => useContext(AuthContext);

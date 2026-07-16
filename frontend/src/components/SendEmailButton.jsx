@@ -1,4 +1,4 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import Modal from "@/components/Modal";
@@ -36,7 +36,7 @@ export default function SendEmailButton({
   const startSend = () => {
     setTo(defaultRecipient || "");
     setSubject(
-      `${friendlyMap[docType] || "Document"} ${docNumber} — GravityOne ERP`
+      `${friendlyMap[docType] || "Document"} ${docNumber} — Ormodex ERP`
     );
     setMessage("");
     setOpen(true);

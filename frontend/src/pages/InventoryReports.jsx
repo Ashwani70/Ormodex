@@ -1,9 +1,10 @@
 import { useEffect, useState, useCallback } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
-import { PageHeader, Input, Field, Select, EmptyState } from "@/components/ui-kit";
+import { PageHeader, Input, Field, Select, EmptyState, SecondaryButton } from "@/components/ui-kit";
 import OfflineBanner from "@/components/OfflineBanner";
 import useOnline from "@/hooks/useOnline";
+import { Search, X, AlertTriangle, RefreshCw } from "lucide-react";
 
 const TABS = [
   { key: "summary", label: "Stock Summary" },
@@ -53,14 +54,20 @@ export default function InventoryReports() {
   const [selItem, setSelItem] = useState("");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
-    api.get("/inventory/v2/items").then((r) => setItems(r.data)).catch(() => {});
+    api.get("/inventory/v2/items").then((r) => {
+      const data = r.data;
+      setItems(Array.isArray(data) ? data : data?.items || []);
+    }).catch(() => {});
   }, []);
 
   const fetchReport = useCallback(async () => {
     setLoading(true);
     setData(null);
+    setLoadError(null);
     try {
       const params = {};
       if (fromDate) params.from_date = fromDate;
@@ -77,16 +84,42 @@ export default function InventoryReports() {
       const r = await api.get(url, { params });
       setData(r.data);
     } catch (err) {
-      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+      const detail = formatApiErrorDetail(err.response?.data?.detail) || err.message;
+      const status = err.response?.status;
+      console.error(`[InventoryReports] "${tab}" report load failed:`, status, detail, err);
+      setLoadError(status ? `Error ${status}: ${detail}` : detail);
     } finally {
       setLoading(false);
     }
   }, [tab, fromDate, toDate, selItem]);
 
   useEffect(() => { fetchReport(); }, [fetchReport]);
+  useEffect(() => { setSearch(""); }, [tab]);
 
   const showDateRange = tab === "summary" || tab === "movement";
   const showItemPicker = tab === "movement";
+
+  const q = search.trim().toLowerCase();
+  const summaryRows = Array.isArray(data) && tab === "summary"
+    ? (q ? data.filter((r) => r.name?.toLowerCase().includes(q)) : data)
+    : [];
+  const agingRows = data?.items && tab === "aging"
+    ? (q ? data.items.filter((r) => r.name?.toLowerCase().includes(q)) : data.items)
+    : [];
+  const lowStockRows = Array.isArray(data) && tab === "low-stock"
+    ? (q ? data.filter((r) => r.name?.toLowerCase().includes(q)) : data)
+    : [];
+  const movementRows = data?.entries && tab === "movement"
+    ? (q ? data.entries.filter((e) =>
+        e.movement_type?.toLowerCase().includes(q) ||
+        e.source_doc_type?.toLowerCase().includes(q) ||
+        e.entry_date?.includes(q)
+      ) : data.entries)
+    : [];
+
+  const showSearch = !loading && data !== null && tab !== "movement"
+    ? (summaryRows.length > 0 || agingRows.length > 0 || lowStockRows.length > 0)
+    : (!loading && tab === "movement" && !!selItem && movementRows.length >= 0);
 
   return (
     <div data-testid="inventory-reports-page">
@@ -124,10 +157,59 @@ export default function InventoryReports() {
         </div>
       )}
 
-      {loading && <div className="text-muted-foreground font-mono text-sm py-8 text-center">Loading…</div>}
+      {loading && <div className="text-muted-foreground font-mono text-sm py-8 text-center" data-testid="reports-loading">Loading…</div>}
 
-      {!loading && tab === "summary" && (
-        Array.isArray(data) && data.length > 0 ? (
+      {loadError && !loading && (
+        <div
+          data-testid="reports-error"
+          className="border border-red-800/60 bg-red-950/30 rounded-lg p-6 flex flex-col items-center text-center gap-3 my-4"
+        >
+          <AlertTriangle className="w-8 h-8 text-red-400" />
+          <div className="font-semibold text-red-200">Couldn't load report data</div>
+          <div className="text-sm text-red-300/90 font-mono max-w-lg break-words">{loadError}</div>
+          <SecondaryButton onClick={fetchReport} icon={RefreshCw}>Retry</SecondaryButton>
+        </div>
+      )}
+
+      {/* Search bar — shown once data is loaded */}
+      {!loading && !loadError && data !== null && (
+        <div className="relative mb-3">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={
+              tab === "movement"
+                ? "Filter by date, movement type, source…"
+                : "Search item name…"
+            }
+            className="w-full bg-background border border-input text-foreground text-sm pl-9 pr-8 py-2 focus:border-primary focus:outline-none transition-colors"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Result count hint */}
+      {!loading && !loadError && search && (
+        <div className="text-xs text-muted-foreground font-mono mb-2">
+          {tab === "summary" && `${summaryRows.length} item${summaryRows.length !== 1 ? "s" : ""} found`}
+          {tab === "aging"   && `${agingRows.length} item${agingRows.length !== 1 ? "s" : ""} found`}
+          {tab === "low-stock" && `${lowStockRows.length} item${lowStockRows.length !== 1 ? "s" : ""} found`}
+          {tab === "movement" && `${movementRows.length} entr${movementRows.length !== 1 ? "ies" : "y"} found`}
+        </div>
+      )}
+
+      {!loading && !loadError && tab === "summary" && (
+        summaryRows.length > 0 ? (
           <Table head={<>
             <th className="px-3 py-2.5">Item</th>
             <th className="px-3 py-2.5">Method</th>
@@ -137,9 +219,16 @@ export default function InventoryReports() {
             <th className="px-3 py-2.5 text-right">Closing Qty</th>
             <th className="px-3 py-2.5 text-right">Closing Value</th>
           </>}>
-            {data.map((r) => (
+            {summaryRows.map((r) => (
               <tr key={r.stock_item_id} data-testid={`summary-row-${r.stock_item_id}`} className="border-b border-border hover:bg-muted/40 text-foreground">
-                <td className="px-3 py-2.5 font-semibold">{r.name}</td>
+                <td className="px-3 py-2.5 font-semibold">
+                  {q ? (
+                    <span dangerouslySetInnerHTML={{
+                      __html: r.name.replace(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"),
+                        "<mark class=\"bg-primary/20 text-primary rounded-sm\">$1</mark>")
+                    }} />
+                  ) : r.name}
+                </td>
                 <td className="px-3 py-2.5 text-xs text-muted-foreground">{r.valuation_method}</td>
                 <td className="px-3 py-2.5 text-right text-muted-foreground">{inr(r.opening_qty)}</td>
                 <td className="px-3 py-2.5 text-right text-emerald-400">{inr(r.inward_qty)}</td>
@@ -149,12 +238,12 @@ export default function InventoryReports() {
               </tr>
             ))}
           </Table>
-        ) : <EmptyState message="No stock summary data" />
+        ) : <EmptyState message={search ? `No items match "${search}"` : "No stock summary data"} />
       )}
 
-      {!loading && tab === "movement" && (
+      {!loading && !loadError && tab === "movement" && (
         !selItem ? <EmptyState message="Select an item to view its movement ledger" />
-        : data && data.entries?.length > 0 ? (
+        : movementRows.length > 0 ? (
           <Table head={<>
             <th className="px-3 py-2.5">Date</th>
             <th className="px-3 py-2.5">Movement</th>
@@ -163,7 +252,7 @@ export default function InventoryReports() {
             <th className="px-3 py-2.5 text-right">Rate</th>
             <th className="px-3 py-2.5 text-right">Value</th>
           </>}>
-            {data.entries.map((e) => (
+            {movementRows.map((e) => (
               <tr key={e.id} className="border-b border-border hover:bg-muted/40 text-foreground">
                 <td className="px-3 py-2.5 text-muted-foreground">{e.entry_date}</td>
                 <td className="px-3 py-2.5 text-xs">{e.movement_type}</td>
@@ -174,11 +263,11 @@ export default function InventoryReports() {
               </tr>
             ))}
           </Table>
-        ) : <EmptyState message="No movements for this item in range" />
+        ) : <EmptyState message={search ? `No entries match "${search}"` : "No movements for this item in range"} />
       )}
 
-      {!loading && tab === "aging" && (
-        data && data.items?.length > 0 ? (
+      {!loading && !loadError && tab === "aging" && (
+        agingRows.length > 0 ? (
           <Table head={<>
             <th className="px-3 py-2.5">Item</th>
             <th className="px-3 py-2.5 text-right">Closing Qty</th>
@@ -187,9 +276,16 @@ export default function InventoryReports() {
             <th className="px-3 py-2.5 text-right">61–90</th>
             <th className="px-3 py-2.5 text-right">90+</th>
           </>}>
-            {data.items.map((r) => (
+            {agingRows.map((r) => (
               <tr key={r.stock_item_id} data-testid={`aging-row-${r.stock_item_id}`} className="border-b border-border hover:bg-muted/40 text-foreground">
-                <td className="px-3 py-2.5 font-semibold">{r.name}</td>
+                <td className="px-3 py-2.5 font-semibold">
+                  {q ? (
+                    <span dangerouslySetInnerHTML={{
+                      __html: r.name.replace(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"),
+                        "<mark class=\"bg-primary/20 text-primary rounded-sm\">$1</mark>")
+                    }} />
+                  ) : r.name}
+                </td>
                 <td className="px-3 py-2.5 text-right text-muted-foreground">{inr(r.closing_qty)}</td>
                 <td className="px-3 py-2.5 text-right">{inr(r.buckets["0-30"])}</td>
                 <td className="px-3 py-2.5 text-right">{inr(r.buckets["31-60"])}</td>
@@ -198,11 +294,11 @@ export default function InventoryReports() {
               </tr>
             ))}
           </Table>
-        ) : <EmptyState message="No stock on hand to age" />
+        ) : <EmptyState message={search ? `No items match "${search}"` : "No stock on hand to age"} />
       )}
 
-      {!loading && tab === "low-stock" && (
-        Array.isArray(data) && data.length > 0 ? (
+      {!loading && !loadError && tab === "low-stock" && (
+        lowStockRows.length > 0 ? (
           <Table head={<>
             <th className="px-3 py-2.5">Item</th>
             <th className="px-3 py-2.5 text-right">On Hand</th>
@@ -210,9 +306,16 @@ export default function InventoryReports() {
             <th className="px-3 py-2.5 text-right">Shortfall</th>
             <th className="px-3 py-2.5 text-right">Reorder Qty</th>
           </>}>
-            {data.map((r) => (
+            {lowStockRows.map((r) => (
               <tr key={r.stock_item_id} data-testid={`lowstock-row-${r.stock_item_id}`} className="border-b border-border hover:bg-muted/40 text-foreground">
-                <td className="px-3 py-2.5 font-semibold">{r.name}</td>
+                <td className="px-3 py-2.5 font-semibold">
+                  {q ? (
+                    <span dangerouslySetInnerHTML={{
+                      __html: r.name.replace(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"),
+                        "<mark class=\"bg-primary/20 text-primary rounded-sm\">$1</mark>")
+                    }} />
+                  ) : r.name}
+                </td>
                 <td className="px-3 py-2.5 text-right text-amber-400">{inr(r.closing_qty)}</td>
                 <td className="px-3 py-2.5 text-right text-muted-foreground">{inr(r.reorder_level)}</td>
                 <td className="px-3 py-2.5 text-right text-red-400">{inr(r.shortfall)}</td>
@@ -220,7 +323,7 @@ export default function InventoryReports() {
               </tr>
             ))}
           </Table>
-        ) : <EmptyState message="No items at or below reorder level" />
+        ) : <EmptyState message={search ? `No items match "${search}"` : "No items at or below reorder level"} />
       )}
     </div>
   );

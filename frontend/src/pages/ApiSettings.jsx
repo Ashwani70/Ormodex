@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import {
   PageHeader,
@@ -10,6 +10,7 @@ import {
   EmptyState,
 } from "@/components/ui-kit";
 import { toast } from "sonner";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
 import { Settings, Save, ShieldAlert, CheckCircle, AlertTriangle, Eye, EyeOff, Sparkles } from "lucide-react";
 
 export default function ApiSettings() {
@@ -20,12 +21,39 @@ export default function ApiSettings() {
     pan_api_enabled: true,
     aadhaar_api_key: "",
     aadhaar_api_enabled: true,
-    openai_api_key: "",
     gemini_api_key: "",
   });
-  const [showKeys, setShowKeys] = useState({ gst: false, pan: false, aadhaar: false, openai: false, gemini: false });
+  const [showKeys, setShowKeys] = useState({ gst: false, pan: false, aadhaar: false, gemini: false });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  // GST provider connection health (admin "Test Connection")
+  const [gstHealth, setGstHealth] = useState(null);
+  const [testingGst, setTestingGst] = useState(false);
+
+  const testGstConnection = async () => {
+    setTestingGst(true);
+    try {
+      const r = await api.get("/verifications/gst/health");
+      setGstHealth(r.data);
+      if (r.data.authenticated) {
+        if (r.data.warning) {
+          toast.warning(`Key authenticates, but: ${r.data.warning}`);
+        } else {
+          toast.success("Connected to GST provider.");
+        }
+      } else if (!r.data.configured) {
+        toast.warning("GST provider is not configured.");
+      } else {
+        toast.error("GST authentication failed.");
+      }
+    } catch (e) {
+      setGstHealth({ configured: false, authenticated: false, error: "Health check failed." });
+      toast.error("Unable to reach GST health endpoint.");
+    } finally {
+      setTestingGst(false);
+    }
+  };
 
   // Pagination for logs
   const [logs, setLogs] = useState([]);
@@ -76,6 +104,16 @@ export default function ApiSettings() {
     }
   };
 
+  // Enter-as-Tab across the credentials form; Ctrl+Enter/Ctrl+S saves, first
+  // field auto-focuses once settings have loaded. Always-visible settings
+  // page — no modal, so there's no cancel action.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: !loading,
+    autoFocus: true,
+    onSave: () => handleSave(new Event("submit", { cancelable: true })),
+  });
+
   return (
     <div data-testid="api-settings-page" className="space-y-6">
       <PageHeader
@@ -93,7 +131,7 @@ export default function ApiSettings() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Settings form column */}
           <div className="lg:col-span-1 border border-zinc-800 bg-zinc-950 p-6 rounded-md shadow-lg flex flex-col justify-between">
-            <form onSubmit={handleSave} className="space-y-4">
+            <form ref={formRef} onSubmit={handleSave} className="space-y-4">
               <SectionTitle>API Credentials</SectionTitle>
 
               {/* GST API Settings */}
@@ -110,6 +148,18 @@ export default function ApiSettings() {
                     <div className="w-9 h-5 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-zinc-400 after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-yellow-400 peer-checked:after:bg-black peer-checked:after:border-black"></div>
                   </label>
                 </div>
+                <Field label="GST Provider">
+                  <select
+                    value={form.gst_provider || "gstverify"}
+                    onChange={(e) => setForm({ ...form, gst_provider: e.target.value })}
+                    disabled={!form.gst_api_enabled}
+                    className="w-full bg-zinc-950 border border-zinc-800 text-white font-mono text-xs px-3 py-2 rounded disabled:opacity-50"
+                  >
+                    <option value="gstverify">GSTVerify (gstverify.co.in)</option>
+                    <option value="rapidapi">RapidAPI (gst-return-status)</option>
+                    <option value="rapidapi_insights">RapidAPI (gst-insights-api)</option>
+                  </select>
+                </Field>
                 <Field label="GST API Secret Key">
                   <div className="flex gap-2">
                     <Input
@@ -128,6 +178,39 @@ export default function ApiSettings() {
                     </button>
                   </div>
                 </Field>
+
+                {/* Test Connection — live auth round-trip (consumes one credit) */}
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <SecondaryButton
+                    type="button"
+                    onClick={testGstConnection}
+                    disabled={testingGst || !form.gst_api_enabled}
+                    title="Performs a live lookup to verify the key — uses one provider credit"
+                  >
+                    {testingGst ? "Testing..." : "Test Connection"}
+                  </SecondaryButton>
+                  {gstHealth && (
+                    <span className="font-mono text-xs flex items-center gap-1.5">
+                      {gstHealth.authenticated ? (
+                        <span className="text-green-400">🟢 Connected</span>
+                      ) : !gstHealth.configured ? (
+                        <span className="text-yellow-400">🟡 Not configured</span>
+                      ) : (
+                        <span className="text-red-400">🔴 Authentication failed</span>
+                      )}
+                    </span>
+                  )}
+                </div>
+                {gstHealth && (
+                  <p className="font-mono text-[10px] text-zinc-500 leading-relaxed">
+                    {gstHealth.authenticated
+                      ? `Provider: ${gstHealth.provider} · Env: ${gstHealth.environment}`
+                      : gstHealth.error}
+                    {gstHealth.warning ? ` · ⚠ ${gstHealth.warning}` : ""}
+                    {gstHealth.note ? ` · ${gstHealth.note}` : ""}
+                    {gstHealth.last_checked_at ? ` · Checked ${new Date(gstHealth.last_checked_at).toLocaleTimeString("en-IN")}` : ""}
+                  </p>
+                )}
               </div>
 
               {/* PAN API Settings */}
@@ -205,24 +288,7 @@ export default function ApiSettings() {
                     <Sparkles className="w-3.5 h-3.5 text-yellow-400" /> AI Copilot Integrations
                   </span>
                 </div>
-                <Field label="OpenAI API Key (for GPT-4o & OCR)">
-                  <div className="flex gap-2">
-                    <Input
-                      type={showKeys.openai ? "text" : "password"}
-                      value={form.openai_api_key || ""}
-                      onChange={(e) => setForm({ ...form, openai_api_key: e.target.value })}
-                      placeholder="sk-proj-..."
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowKeys({ ...showKeys, openai: !showKeys.openai })}
-                      className="p-2 border border-zinc-800 text-zinc-400 hover:text-white flex items-center justify-center"
-                    >
-                      {showKeys.openai ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </Field>
-                <Field label="Gemini API Key (for Gemini 2.0)">
+                <Field label="Gemini API Key (for Gemini 3.5)">
                   <div className="flex gap-2">
                     <Input
                       type={showKeys.gemini ? "text" : "password"}

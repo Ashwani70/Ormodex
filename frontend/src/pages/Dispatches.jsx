@@ -13,6 +13,8 @@ import {
 import Modal from "@/components/Modal";
 import { downloadPdf } from "@/lib/currency";
 import SendEmailButton from "@/components/SendEmailButton";
+import BulkDeleteBar, { SelectCheckbox } from "@/components/BulkDeleteBar";
+import useBulkSelect from "@/hooks/useBulkSelect";
 import { Plus, Pencil, Trash2, Download, Truck } from "lucide-react";
 
 const blank = {
@@ -34,9 +36,20 @@ export default function Dispatches() {
   const [form, setForm] = useState(blank);
   const [editingId, setEditingId] = useState(null);
 
+  const sel = useBulkSelect(items);
+
   const load = async () => {
     const r = await api.get("/dispatches");
     setItems(r.data);
+  };
+
+  const bulkDelete = async () => {
+    const { ok, failed } = await sel.runDelete(
+      (id) => api.delete(`/dispatches/${id}`),
+      { reload: load }
+    );
+    if (failed) toast.error(`Deleted ${ok}, failed ${failed}`);
+    else toast.success(`Deleted ${ok} dispatch${ok === 1 ? "" : "es"}`);
   };
   useEffect(() => {
     load();
@@ -107,6 +120,14 @@ export default function Dispatches() {
           <table className="w-full text-sm">
             <thead className="bg-zinc-900">
               <tr className="text-left label-overline">
+                <th className="px-3 py-2.5 w-10">
+                  <SelectCheckbox
+                    label="Select all dispatches"
+                    checked={sel.allSelected}
+                    indeterminate={sel.someSelected}
+                    onChange={sel.toggleAll}
+                  />
+                </th>
                 <th className="px-3 py-2.5">Challan#</th>
                 <th className="px-3 py-2.5">Customer</th>
                 <th className="px-3 py-2.5">Vehicle</th>
@@ -120,8 +141,15 @@ export default function Dispatches() {
               {items.map((d) => (
                 <tr
                   key={d.id}
-                  className="border-t border-zinc-900 hover:bg-zinc-900/60"
+                  className={`border-t border-zinc-900 hover:bg-zinc-900/60 ${sel.isSelected(d.id) ? "bg-zinc-900/40" : ""}`}
                 >
+                  <td className="px-3 py-2.5">
+                    <SelectCheckbox
+                      label={`Select dispatch ${d.challan_number}`}
+                      checked={sel.isSelected(d.id)}
+                      onChange={() => sel.toggle(d.id)}
+                    />
+                  </td>
                   <td className="px-3 py-2.5 font-mono text-yellow-400">
                     {d.challan_number}
                   </td>
@@ -290,6 +318,15 @@ export default function Dispatches() {
           </Field>
         </div>
       </Modal>
+
+      <BulkDeleteBar
+        count={sel.count}
+        deleting={sel.deleting}
+        onClear={sel.clear}
+        onDelete={bulkDelete}
+        noun="dispatch"
+        nounPlural="dispatches"
+      />
     </div>
   );
 }

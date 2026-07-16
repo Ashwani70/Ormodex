@@ -88,7 +88,7 @@ export default function SingletonMaster({ config }) {
     } else if (f.type === "date") {
       control = <Input type="date" {...common} data-testid={`singleton-field-${f.key}`} />;
     } else if (f.type === "number") {
-      control = <Input type="number" step="any" {...common} data-testid={`singleton-field-${f.key}`} />;
+      control = <Input type="text" inputMode="decimal" step="any" {...common} data-testid={`singleton-field-${f.key}`} />;
     } else {
       control = <Input type="text" {...common} data-testid={`singleton-field-${f.key}`} />;
     }

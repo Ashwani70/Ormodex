@@ -1,9 +1,23 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import api from "@/lib/api";
+import api, { formatApiErrorDetail } from "@/lib/api";
 import { Building2, Save, Sparkles, Landmark, FileText, CheckCircle2 } from "lucide-react";
 import { PageHeader, PrimaryButton, Field, Input, Textarea } from "@/components/ui-kit";
 import ImageUploader from "@/components/ImageUploader";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+
+// The backend can return `null` for any not-yet-filled text column (e.g. a
+// fresh row where state_code was never set). CompanyProfile requires several
+// of these as non-optional strings, so feeding a raw `null` straight back on
+// save fails with a 422 ("Input should be a valid string") — normalize every
+// null to "" wherever backend data enters this form's state.
+function nullsToEmptyStrings(obj) {
+  const cleaned = { ...obj };
+  for (const key of Object.keys(cleaned)) {
+    if (cleaned[key] === null) cleaned[key] = "";
+  }
+  return cleaned;
+}
 
 export default function CompanyMaster() {
   const [loading, setLoading] = useState(true);
@@ -17,25 +31,33 @@ export default function CompanyMaster() {
     pan: "",
     state: "",
     state_code: "",
+    city: "",
+    pincode: "",
+    country: "India",
     email: "",
     phone: "",
+    website: "",
+    cin: "",
+    iec: "",
     bank_name: "",
     bank_account_no: "",
     bank_ifsc: "",
     bank_branch: "",
+    declaration: "",
     terms_conditions: "",
-    logo_url: ""
+    logo_url: "",
+    seal_url: ""
   });
 
   useEffect(() => {
     api.get("/company/active")
       .then((res) => {
         if (res.data) {
-          setProfile(res.data);
+          setProfile((prev) => ({ ...prev, ...nullsToEmptyStrings(res.data) }));
         }
       })
       .catch((err) => {
-        toast.error("Failed to load company profile.");
+        toast.error(formatApiErrorDetail(err.response?.data?.detail));
       })
       .finally(() => setLoading(false));
   }, []);
@@ -56,17 +78,18 @@ export default function CompanyMaster() {
       if (res.data && res.data.is_valid) {
         setProfile((prev) => ({
           ...prev,
-          name: res.data.trade_name || prev.name,
+          name: res.data.trade_name || res.data.legal_name || prev.name,
           pan: res.data.pan || prev.pan,
-          state: res.data.state_name || prev.state,
-          state_code: res.data.state_code || prev.state_code
+          state: res.data.state_name || res.data.state || prev.state,
+          state_code: res.data.state_code || prev.state_code,
+          address: res.data.address || prev.address,
         }));
         toast.success("Company details auto-fetched successfully!");
       } else {
         toast.error(res.data.error || "Invalid GSTIN or portal error.");
       }
     } catch (err) {
-      toast.error("Failed to validate GSTIN.");
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
     } finally {
       setValidating(false);
     }
@@ -77,14 +100,24 @@ export default function CompanyMaster() {
     setSaving(true);
     try {
       const res = await api.put(`/company/${profile.id}`, profile);
-      setProfile(res.data);
+      setProfile((prev) => ({ ...prev, ...nullsToEmptyStrings(res.data) }));
       toast.success("Company Profile updated successfully!");
     } catch (err) {
-      toast.error("Failed to save company profile.");
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
     } finally {
       setSaving(false);
     }
   };
+
+  // Enter-as-Tab across the whole form; Ctrl+Enter/Ctrl+S saves, first field
+  // auto-focuses on mount. Always-visible settings page — no modal, so
+  // `enabled` is just `true` and there's no cancel action.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: !loading,
+    autoFocus: true,
+    onSave: () => handleSave(new Event("submit", { cancelable: true })),
+  });
 
   if (loading) {
     return (
@@ -102,7 +135,7 @@ export default function CompanyMaster() {
         description="Configure your business master profile, tax parameters, letterhead setup, and bank account credentials."
       />
 
-      <form onSubmit={handleSave} className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <form ref={formRef} onSubmit={handleSave} className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
         {/* Left Side: General Profile & GST details */}
         <div className="lg:col-span-2 space-y-6">
@@ -118,7 +151,7 @@ export default function CompanyMaster() {
                   <div className="flex gap-2">
                     <Input
                       name="gstin"
-                      value={profile.gstin}
+                      value={profile.gstin || ""}
                       onChange={handleChange}
                       placeholder="e.g. 27AABCG1234F1Z5"
                       required
@@ -140,7 +173,7 @@ export default function CompanyMaster() {
                 <Field label="Company Legal / Trade Name" required>
                   <Input
                     name="name"
-                    value={profile.name}
+                    value={profile.name || ""}
                     onChange={handleChange}
                     placeholder="Enter official trade name"
                     required
@@ -152,7 +185,7 @@ export default function CompanyMaster() {
                 <Field label="PAN Number">
                   <Input
                     name="pan"
-                    value={profile.pan}
+                    value={profile.pan || ""}
                     onChange={handleChange}
                     placeholder="Auto-extracted from GSTIN"
                   />
@@ -163,7 +196,7 @@ export default function CompanyMaster() {
                 <Field label="State">
                   <Input
                     name="state"
-                    value={profile.state}
+                    value={profile.state || ""}
                     onChange={handleChange}
                     placeholder="State"
                   />
@@ -171,7 +204,7 @@ export default function CompanyMaster() {
                 <Field label="State Code">
                   <Input
                     name="state_code"
-                    value={profile.state_code}
+                    value={profile.state_code || ""}
                     onChange={handleChange}
                     placeholder="Code (e.g. 27)"
                   />
@@ -183,7 +216,7 @@ export default function CompanyMaster() {
                   <Input
                     type="email"
                     name="email"
-                    value={profile.email}
+                    value={profile.email || ""}
                     onChange={handleChange}
                     placeholder="billing@company.com"
                   />
@@ -194,9 +227,64 @@ export default function CompanyMaster() {
                 <Field label="Contact Phone">
                   <Input
                     name="phone"
-                    value={profile.phone}
+                    value={profile.phone || ""}
                     onChange={handleChange}
                     placeholder="+91 99999 88888"
+                  />
+                </Field>
+              </div>
+
+              <div>
+                <Field label="Website">
+                  <Input
+                    name="website"
+                    value={profile.website || ""}
+                    onChange={handleChange}
+                    placeholder="www.company.com"
+                  />
+                </Field>
+              </div>
+
+              <div>
+                <Field label="CIN (optional)">
+                  <Input
+                    name="cin"
+                    value={profile.cin || ""}
+                    onChange={handleChange}
+                    placeholder="Corporate Identity Number"
+                  />
+                </Field>
+              </div>
+
+              <div>
+                <Field label="IEC (optional)">
+                  <Input
+                    name="iec"
+                    value={profile.iec || ""}
+                    onChange={handleChange}
+                    placeholder="Import Export Code"
+                  />
+                </Field>
+              </div>
+
+              <div>
+                <Field label="City">
+                  <Input
+                    name="city"
+                    value={profile.city || ""}
+                    onChange={handleChange}
+                    placeholder="City"
+                  />
+                </Field>
+              </div>
+
+              <div>
+                <Field label="Pincode">
+                  <Input
+                    name="pincode"
+                    value={profile.pincode || ""}
+                    onChange={handleChange}
+                    placeholder="411001"
                   />
                 </Field>
               </div>
@@ -205,7 +293,7 @@ export default function CompanyMaster() {
                 <Field label="Registered Billing Address" required>
                   <Textarea
                     name="address"
-                    value={profile.address}
+                    value={profile.address || ""}
                     onChange={handleChange}
                     placeholder="Complete corporate address matching GST registration"
                     rows={3}
@@ -227,10 +315,22 @@ export default function CompanyMaster() {
               <Field label="Standard Invoice Terms & Conditions">
                 <Textarea
                   name="terms_conditions"
-                  value={profile.terms_conditions}
+                  value={profile.terms_conditions || ""}
                   onChange={handleChange}
                   placeholder="Enter invoice disclaimer, payment terms, or jurisdiction clauses"
                   rows={4}
+                />
+              </Field>
+            </div>
+
+            <div>
+              <Field label="Declaration (printed on every PDF)">
+                <Textarea
+                  name="declaration"
+                  value={profile.declaration || ""}
+                  onChange={handleChange}
+                  placeholder="We declare that this document shows the actual particulars of the goods/services described and that all particulars are true and correct."
+                  rows={3}
                 />
               </Field>
             </div>
@@ -243,6 +343,18 @@ export default function CompanyMaster() {
                 />
                 <p className="mt-1 text-xs text-zinc-500 font-mono">
                   Attach a logo image (PNG/JPG/WebP, up to 6MB). Shown on PDF invoices.
+                </p>
+              </Field>
+            </div>
+
+            <div>
+              <Field label="Company Seal / Stamp">
+                <ImageUploader
+                  value={profile.seal_url}
+                  onChange={(v) => setProfile((p) => ({ ...p, seal_url: v }))}
+                />
+                <p className="mt-1 text-xs text-zinc-500 font-mono">
+                  Optional round seal/stamp (transparent PNG recommended). Printed near the authorised signatory on every PDF.
                 </p>
               </Field>
             </div>
@@ -261,7 +373,7 @@ export default function CompanyMaster() {
               <Field label="Bank Name">
                 <Input
                   name="bank_name"
-                  value={profile.bank_name}
+                  value={profile.bank_name || ""}
                   onChange={handleChange}
                   placeholder="e.g. HDFC Bank"
                 />
@@ -270,7 +382,7 @@ export default function CompanyMaster() {
               <Field label="Account Number">
                 <Input
                   name="bank_account_no"
-                  value={profile.bank_account_no}
+                  value={profile.bank_account_no || ""}
                   onChange={handleChange}
                   placeholder="Enter account number"
                 />
@@ -279,7 +391,7 @@ export default function CompanyMaster() {
               <Field label="IFSC Code">
                 <Input
                   name="bank_ifsc"
-                  value={profile.bank_ifsc}
+                  value={profile.bank_ifsc || ""}
                   onChange={handleChange}
                   placeholder="e.g. HDFC0000012"
                 />
@@ -288,7 +400,7 @@ export default function CompanyMaster() {
               <Field label="Branch Name">
                 <Input
                   name="bank_branch"
-                  value={profile.bank_branch}
+                  value={profile.bank_branch || ""}
                   onChange={handleChange}
                   placeholder="e.g. Talawade, Pune"
                 />

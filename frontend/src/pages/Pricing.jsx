@@ -97,7 +97,7 @@ function PriceListsTab() {
               onChange={(e) => setForm({ ...form, assigned_id: e.target.value })} placeholder="id" />
             <Input label="Valid From" type="date" value={form.valid_from} onChange={(e) => setForm({ ...form, valid_from: e.target.value })} />
             <Input label="Valid To" type="date" value={form.valid_to} onChange={(e) => setForm({ ...form, valid_to: e.target.value })} />
-            <Input label="Priority" type="number" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })} />
+            <Input label="Priority" type="text" inputMode="decimal" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })} />
           </div>
 
           <div className="mt-5">
@@ -109,9 +109,9 @@ function PriceListsTab() {
                     value={r.item_id} onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, item_id: e.target.value } : x))} />
                   <input className="col-span-2 bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="uom"
                     value={r.uom} onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, uom: e.target.value } : x))} />
-                  <input className="col-span-2 bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="rate" type="number"
+                  <input className="col-span-2 bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="rate" type="text" inputMode="decimal"
                     value={r.rate} onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, rate: e.target.value } : x))} />
-                  <input className="col-span-2 bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="min qty" type="number"
+                  <input className="col-span-2 bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="min qty" type="text" inputMode="decimal"
                     value={r.min_qty} onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, min_qty: e.target.value } : x))} />
                   <button onClick={() => setRows(rows.filter((_, j) => j !== i))} className="col-span-1 text-red-400 hover:text-red-300">✕</button>
                 </div>
@@ -301,13 +301,13 @@ function ResolverTab() {
 
   return (
     <div>
-      <SectionHeader title="Price Resolver" subtitle="Explain the effective price for any item / customer / godown" />
+      <SectionHeader title="Price Resolver" subtitle="Explain the effective price for any item / customer / warehouse" />
       <Card className="p-5 mb-5">
         <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
           <Input label="Item ID" value={q.itemId} onChange={(e) => setQ({ ...q, itemId: e.target.value })} />
-          <Input label="Qty" type="number" value={q.qty} onChange={(e) => setQ({ ...q, qty: e.target.value })} />
+          <Input label="Qty" type="text" inputMode="decimal" value={q.qty} onChange={(e) => setQ({ ...q, qty: e.target.value })} />
           <Input label="Customer ID" value={q.customerId} onChange={(e) => setQ({ ...q, customerId: e.target.value })} />
-          <Input label="Godown ID" value={q.godownId} onChange={(e) => setQ({ ...q, godownId: e.target.value })} />
+          <Input label="Warehouse ID" value={q.godownId} onChange={(e) => setQ({ ...q, godownId: e.target.value })} />
           <Btn onClick={resolve}>Resolve</Btn>
         </div>
         <label className="flex items-center gap-2 text-sm text-zinc-300 mt-3">

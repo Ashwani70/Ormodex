@@ -72,7 +72,7 @@ function SessionGate({ session, setSession }) {
           </label>
           <label className="block mb-5">
             <span className="block text-xs font-mono uppercase text-zinc-500 mb-1">Opening Cash</span>
-            <input type="number" value={openingCash} onChange={(e) => setOpeningCash(e.target.value)}
+            <input type="text" inputMode="decimal" value={openingCash} onChange={(e) => setOpeningCash(e.target.value)}
               className="w-full bg-zinc-950 border border-zinc-800 px-3 py-2 text-zinc-100" />
           </label>
           <Btn onClick={open} className="w-full">Open Session</Btn>
@@ -89,7 +89,7 @@ function SessionGate({ session, setSession }) {
           expected ₹{fmt(summary.expected_cash)} · {summary.sales_count} sales
         </span>
       )}
-      <input type="number" placeholder="counted cash" value={countedCash} onChange={(e) => setCountedCash(e.target.value)}
+      <input type="text" inputMode="decimal" placeholder="counted cash" value={countedCash} onChange={(e) => setCountedCash(e.target.value)}
         className="w-32 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-sm text-zinc-100" />
       <Btn variant="danger" onClick={close}>Close Session</Btn>
     </div>
@@ -207,7 +207,7 @@ function Counter({ session, online, queue, setQueue }) {
                   <td className="py-2 px-3 text-zinc-200">{l.name || l.item_id}</td>
                   <td className="text-right font-mono text-zinc-300">₹{fmt(l.unit_price)}</td>
                   <td className="text-center">
-                    <input type="number" value={l.qty} onChange={(e) => setQty(i, Number(e.target.value))}
+                    <input type="text" inputMode="decimal" value={l.qty} onChange={(e) => setQty(i, Number(e.target.value))}
                       className="w-16 bg-zinc-950 border border-zinc-800 px-2 py-1 text-center text-zinc-100" />
                   </td>
                   <td className="text-right font-mono text-zinc-500">{l.gst_rate}%</td>
@@ -236,7 +236,7 @@ function Counter({ session, online, queue, setQueue }) {
           {["cash", "card", "upi"].map((m) => (
             <label key={m} className="flex items-center gap-2">
               <span className="w-12 text-xs font-mono uppercase text-zinc-500">{m}</span>
-              <input type="number" value={tender[m]} onChange={(e) => setTender({ ...tender, [m]: e.target.value })}
+              <input type="text" inputMode="decimal" value={tender[m]} onChange={(e) => setTender({ ...tender, [m]: e.target.value })}
                 className="flex-1 bg-zinc-950 border border-zinc-800 px-3 py-2 text-zinc-100" />
             </label>
           ))}

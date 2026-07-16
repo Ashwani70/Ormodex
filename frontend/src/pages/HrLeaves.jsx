@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import {
@@ -11,6 +11,10 @@ import {
   StatusBadge,
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
+import BulkDeleteBar, { SelectCheckbox } from "@/components/BulkDeleteBar";
+import useBulkSelect from "@/hooks/useBulkSelect";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import { Plus, CheckCircle2, XCircle, Trash2 } from "lucide-react";
 
 export default function Leaves() {
@@ -33,6 +37,16 @@ export default function Leaves() {
     const r = await api.get("/hr/leaves", { params: filter ? { status: filter } : {} });
     setItems(r.data);
   };
+
+  const sel = useBulkSelect(items);
+  const bulkDelete = async () => {
+    const { ok, failed } = await sel.runDelete(
+      (id) => api.delete(`/hr/leaves/${id}`),
+      { reload: load }
+    );
+    if (failed) toast.error(`Deleted ${ok}, failed ${failed}`);
+    else toast.success(`Deleted ${ok} leave record${ok === 1 ? "" : "s"}`);
+  };
   useEffect(() => {
     load();
   }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -51,6 +65,19 @@ export default function Leaves() {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
   };
+
+  // Enter-as-Tab across the Record Leave form; Ctrl+Enter/Ctrl+S saves, Esc
+  // cancels. Primary create action on this page → owns Ctrl+N.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: open,
+    autoFocus: true,
+    onSave: apply,
+    onCancel: () => setOpen(false),
+  });
+  useModuleShortcuts({
+    onNew: () => { if (!open) setOpen(true); },
+  });
 
   const approve = async (it) => {
     if (!window.confirm("Approve this leave?")) return;
@@ -126,6 +153,14 @@ export default function Leaves() {
           <table className="w-full text-sm">
             <thead className="bg-zinc-900">
               <tr className="text-left label-overline">
+                <th className="px-3 py-2.5 w-10">
+                  <SelectCheckbox
+                    label="Select all leave records"
+                    checked={sel.allSelected}
+                    indeterminate={sel.someSelected}
+                    onChange={sel.toggleAll}
+                  />
+                </th>
                 <th className="px-3 py-2.5">Employee</th>
                 <th className="px-3 py-2.5">Type</th>
                 <th className="px-3 py-2.5">From</th>
@@ -138,7 +173,14 @@ export default function Leaves() {
             </thead>
             <tbody>
               {items.map((l) => (
-                <tr key={l.id} data-testid={`leave-row-${l.id}`} className="border-t border-zinc-900 hover:bg-zinc-900/60">
+                <tr key={l.id} data-testid={`leave-row-${l.id}`} className={`border-t border-zinc-900 hover:bg-zinc-900/60 ${sel.isSelected(l.id) ? "bg-zinc-900/40" : ""}`}>
+                  <td className="px-3 py-2">
+                    <SelectCheckbox
+                      label={`Select leave ${l.id}`}
+                      checked={sel.isSelected(l.id)}
+                      onChange={() => sel.toggle(l.id)}
+                    />
+                  </td>
                   <td className="px-3 py-2 text-white">{l.employee_name}</td>
                   <td className="px-3 py-2 text-zinc-300">{l.leave_type_name}</td>
                   <td className="px-3 py-2 font-mono text-xs text-zinc-400">{l.start_date}</td>
@@ -181,7 +223,7 @@ export default function Leaves() {
           </>
         }
       >
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div ref={formRef} className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label="Employee" required>
             <select value={form.employee_id} onChange={(e) => setForm({ ...form, employee_id: e.target.value })} className="w-full bg-black border border-zinc-700 text-white text-sm px-3 py-2 focus:border-yellow-400">
               <option value="">— select —</option>
@@ -222,6 +264,14 @@ export default function Leaves() {
             className="w-full bg-black border border-zinc-700 text-white text-sm px-3 py-2 focus:border-yellow-400" />
         </Field>
       </Modal>
+
+      <BulkDeleteBar
+        count={sel.count}
+        deleting={sel.deleting}
+        onClear={sel.clear}
+        onDelete={bulkDelete}
+        noun="leave record"
+      />
     </div>
   );
 }

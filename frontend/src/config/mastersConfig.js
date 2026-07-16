@@ -32,12 +32,13 @@ export const MASTERS = {
     title: "Ledgers", singular: "Ledger", eyebrow: "Accounting Masters",
     description: "Ledger accounts under a group, with GST / PAN / TDS attributes.",
     endpoint: "/masters/ledgers",
-    refSources: { groups: "/masters/groups" },
+    refSources: { groups: "/masters/groups", products: "/products" },
     columns: [
       { key: "name", label: "Name" },
       { key: "group_id", label: "Group", render: (r, h) => h.refLabel("groups", r.group_id) },
       { key: "opening_balance", label: "Opening", render: (r) => `${r.opening_balance ?? 0} ${r.dr_cr || ""}` },
       { key: "gstin", label: "GSTIN" },
+      { key: "product_id", label: "Linked Item", render: (r, h) => r.product_id ? h.refLabel("products", r.product_id) : (r.product_name_manual || "—") },
     ],
     fields: [
       { key: "name", label: "Name", type: "text", required: true },
@@ -49,6 +50,7 @@ export const MASTERS = {
       { key: "state", label: "State", type: "text" },
       { key: "gst_registration_type", label: "GST Reg. Type", type: "select", options: ["Regular", "Composition", "Unregistered", "Consumer", "SEZ", "Overseas"] },
       { key: "tds_applicable", label: "TDS Applicable", type: "checkbox" },
+      { key: "product_id", label: "Link to Item / Product (optional)", type: "ref", ref: "products", renderOption: (p) => p.sku ? `${p.name} (${p.sku})` : p.name, manualToggle: true, manualKey: "product_name_manual", manualPlaceholder: "Type item name manually…", hint: "Pick from inventory or type manually" },
     ],
   },
 
@@ -64,10 +66,12 @@ export const MASTERS = {
       yesNo("is_base_currency", "Base"),
     ],
     fields: [
-      { key: "iso_code", label: "ISO Code", type: "text", required: true, placeholder: "INR" },
-      { key: "symbol", label: "Symbol", type: "text", required: true, placeholder: "₹" },
-      { key: "formal_name", label: "Formal Name", type: "text", required: true },
-      { key: "decimal_places", label: "Decimal Places", type: "number", default: 2, step: "1" },
+      // Searchable currency picker: selecting a currency auto-fills the fields
+      // below. ISO Code is required and must be unique (backend enforces too).
+      { key: "iso_code", label: "ISO Code", type: "currency-picker", required: true, unique: true },
+      { key: "symbol", label: "Symbol", type: "text", required: true, placeholder: "₹", readOnly: true },
+      { key: "formal_name", label: "Formal Name", type: "text", required: true, readOnly: true },
+      { key: "decimal_places", label: "Decimal Places", type: "number", default: 2, step: "1", readOnly: true, nonNegativeInt: true },
       { key: "is_base_currency", label: "Is Base Currency", type: "checkbox" },
     ],
   },
@@ -207,8 +211,8 @@ export const MASTERS = {
   },
 
   locations: {
-    title: "Locations / Godowns", singular: "Location", eyebrow: "Inventory Masters",
-    description: "Tree of storage locations. Flags for negative stock and third-party godowns.",
+    title: "Locations / Warehouses", singular: "Location", eyebrow: "Inventory Masters",
+    description: "Tree of storage locations. Flags for negative stock and third-party warehouses.",
     endpoint: "/masters/locations",
     refSources: { locations: "/masters/locations" },
     columns: [

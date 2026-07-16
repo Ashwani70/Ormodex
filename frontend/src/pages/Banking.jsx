@@ -1,5 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import api from "@/lib/api";
+import usePdfAction from "@/hooks/usePdfAction";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 
 const TABS = ["PDC Register", "Maturity Alerts", "Cheque Print", "Bank Reconciliation", "Overdue Interest"];
 
@@ -75,6 +78,27 @@ function PDCRegisterTab() {
     } catch (e) { alert(e.response?.data?.detail || "Error"); }
   };
 
+  // Add-PDC modal: this is the tab's primary create action, so it owns Ctrl+N.
+  const pdcFormRef = useRef(null);
+  useEnterNavigation(pdcFormRef, {
+    enabled: showForm,
+    autoFocus: true,
+    onSave: save,
+    onCancel: () => setShowForm(false),
+  });
+  useModuleShortcuts({
+    onNew: () => { if (!showForm) setShowForm(true); },
+  });
+
+  // Clear/Bounce modal: secondary action, no Ctrl+N.
+  const actionFormRef = useRef(null);
+  useEnterNavigation(actionFormRef, {
+    enabled: !!actionModal,
+    autoFocus: true,
+    onSave: doAction,
+    onCancel: () => setActionModal(null),
+  });
+
   const today = new Date().toISOString().slice(0, 10);
 
   return (
@@ -131,18 +155,18 @@ function PDCRegisterTab() {
       {/* Add PDC Modal */}
       {showForm && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-md space-y-4">
+          <div ref={pdcFormRef} className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-md space-y-4">
             <h3 className="text-white font-semibold">Add PDC</h3>
             <Select label="Type" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
               <option value="received">Received (from customer)</option>
-              <option value="issued">Issued (to supplier)</option>
+              <option value="issued">Issued (to vendor)</option>
             </Select>
             <div className="grid grid-cols-2 gap-3">
               <Input label="Party ID" value={form.party_id} onChange={e => setForm(f => ({ ...f, party_id: e.target.value }))} />
               <Input label="Party Name" value={form.party_name} onChange={e => setForm(f => ({ ...f, party_name: e.target.value }))} />
               <Input label="Cheque No" value={form.cheque_no} onChange={e => setForm(f => ({ ...f, cheque_no: e.target.value }))} />
               <Input label="Bank Name" value={form.bank_name} onChange={e => setForm(f => ({ ...f, bank_name: e.target.value }))} />
-              <Input label="Amount (₹)" type="number" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
+              <Input label="Amount (₹)" inputMode="decimal" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
               <Input label="Instrument Date" type="date" value={form.instrument_date} onChange={e => setForm(f => ({ ...f, instrument_date: e.target.value }))} />
               <div className="col-span-2"><Input label="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} /></div>
             </div>
@@ -157,13 +181,13 @@ function PDCRegisterTab() {
       {/* Clear/Bounce Modal */}
       {actionModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-sm space-y-4">
+          <div ref={actionFormRef} className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-sm space-y-4">
             <h3 className={`font-semibold ${actionModal.action === "bounce" ? "text-red-400" : "text-emerald-400"}`}>
               {actionModal.action === "bounce" ? "Bounce" : "Clear"} PDC — {actionModal.pdc.pdc_no}
             </h3>
             <p className="text-zinc-400 text-sm">Cheque #{actionModal.pdc.cheque_no} · {fmt(actionModal.pdc.amount)}</p>
             <Input label="Action Date" type="date" value={actionForm.action_date} onChange={e => setActionForm(f => ({ ...f, action_date: e.target.value }))} />
-            {actionModal.action === "bounce" && <Input label="Bounce Charges (₹)" type="number" value={actionForm.bounce_charges} onChange={e => setActionForm(f => ({ ...f, bounce_charges: e.target.value }))} />}
+            {actionModal.action === "bounce" && <Input label="Bounce Charges (₹)" inputMode="decimal" value={actionForm.bounce_charges} onChange={e => setActionForm(f => ({ ...f, bounce_charges: e.target.value }))} />}
             <Input label="Notes" value={actionForm.notes} onChange={e => setActionForm(f => ({ ...f, notes: e.target.value }))} />
             <div className="flex justify-end gap-3">
               <Btn variant="secondary" onClick={() => setActionModal(null)}>Cancel</Btn>
@@ -183,14 +207,16 @@ function MaturityTab() {
   const [maturing, setMaturing] = useState([]);
   const [range, setRange] = useState({ from: new Date().toISOString().slice(0, 10), to: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) });
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const { data } = await api.get("/banking-pdc/pdc/maturing", { params: { from: range.from, to: range.to } });
       setMaturing(data);
     } catch { setMaturing([]); }
-  };
+  }, [range.from, range.to]);
 
-  useEffect(() => { load(); }, []);
+  // Load once on mount; subsequent loads are explicit via the "Load" button
+  // so editing the date fields doesn't fire a request per keystroke.
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const overdue = maturing.filter(p => p.is_overdue);
   const upcoming = maturing.filter(p => !p.is_overdue);
@@ -249,6 +275,13 @@ function MaturityTab() {
 // ════════════════════════════════════════════
 // Cheque Print
 // ════════════════════════════════════════════
+// The preview/print canvas uses the same coordinate space the cheque formats are
+// authored in (x/y in px against this box), so what you preview is what prints.
+const CHEQUE_CANVAS = { width: 500, height: 200 };
+// Standard Indian CTS-2010 cheque leaf ≈ 8" × 3.66". The print canvas is scaled
+// from the authoring coordinate space to these physical dimensions.
+const CHEQUE_PRINT = { width: "8in", height: "3.66in" };
+
 function ChequePrintTab() {
   const [formats, setFormats] = useState([]);
   const [form, setForm] = useState({ payee_name: "", amount: "", amount_date: new Date().toISOString().slice(0, 10), format_id: "" });
@@ -267,13 +300,83 @@ function ChequePrintTab() {
     finally { setLoading(false); }
   };
 
+  // Open a clean print window containing ONLY the cheque, sized to a real cheque
+  // leaf with the fields absolutely positioned from the format coordinates. This
+  // sends actual ink to the physical cheque (no app chrome, no background).
+  const printCheque = () => {
+    if (!preview) return;
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]
+    ));
+    // Scale each field's authoring coordinate to the physical canvas in %.
+    const fieldsHtml = (preview.fields || []).map((fld) => {
+      const leftPct = (Number(fld.x) || 0) / CHEQUE_CANVAS.width * 100;
+      const topPct = (Number(fld.y) || 0) / CHEQUE_CANVAS.height * 100;
+      return `<div style="position:absolute;left:${leftPct}%;top:${topPct}%;`
+        + `font-size:${Number(fld.font_size) || 12}pt;`
+        + `font-family:${esc(fld.font || "Arial")};white-space:nowrap;color:#000;">`
+        + `${esc(fld.value)}</div>`;
+    }).join("");
+
+    const win = window.open("", "_blank", "width=900,height=500");
+    if (!win) { alert("Please allow pop-ups to print cheques."); return; }
+    win.document.write(`<!DOCTYPE html><html><head><title>Cheque — ${esc(preview.payee_name || form.payee_name)}</title>
+      <style>
+        @page { size: ${CHEQUE_PRINT.width} ${CHEQUE_PRINT.height}; margin: 0; }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+        .cheque { position: relative; width: ${CHEQUE_PRINT.width}; height: ${CHEQUE_PRINT.height};
+                  background: #fff; color: #000; overflow: hidden; }
+        .micr { position: absolute; left: 8%; bottom: 4%; font-family: 'Courier New', monospace; font-size: 11pt; color: #000; }
+        @media screen { body { background: #555; padding: 24px; }
+                        .cheque { box-shadow: 0 2px 12px rgba(0,0,0,.4); } }
+      </style></head>
+      <body>
+        <div class="cheque">
+          ${fieldsHtml}
+          ${preview.micr_line ? `<div class="micr">${esc(preview.micr_line)}</div>` : ""}
+        </div>
+        <script>window.onload = function(){ window.focus(); window.print(); };${"<"}/script>
+      </body></html>`);
+    win.document.close();
+  };
+
+  // Server-rendered, archivable cheque PDF (sized to a real leaf). The endpoint
+  // is a POST with a body, so we fetch the blob directly rather than via the
+  // GET-only usePdfAction helper.
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const savePdf = async () => {
+    if (!form.payee_name || !form.amount || !form.format_id) return;
+    setPdfBusy(true);
+    try {
+      const resp = await api.post(
+        "/banking-pdc/cheques/pdf",
+        { ...form, amount: parseFloat(form.amount) || 0 },
+        { responseType: "blob" }
+      );
+      const url = URL.createObjectURL(new Blob([resp.data], { type: "application/pdf" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `cheque-${(form.payee_name || "cheque").replace(/[^a-z0-9 _-]/gi, "").trim() || "cheque"}.pdf`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (e) {
+      let detail = e.response?.data;
+      if (detail instanceof Blob) { try { detail = JSON.parse(await detail.text())?.detail; } catch { detail = null; } }
+      else { detail = detail?.detail; }
+      alert(detail || "Could not generate PDF.");
+    } finally {
+      setPdfBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <SectionHeader title="Cheque Print" />
       <Card>
         <div className="grid grid-cols-2 gap-4">
           <Input label="Payee Name" value={form.payee_name} onChange={e => setForm(f => ({ ...f, payee_name: e.target.value }))} placeholder="Pay To..." />
-          <Input label="Amount (₹)" type="number" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
+          <Input label="Amount (₹)" inputMode="decimal" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
           <Input label="Date" type="date" value={form.amount_date} onChange={e => setForm(f => ({ ...f, amount_date: e.target.value }))} />
           <Select label="Cheque Format" value={form.format_id} onChange={e => setForm(f => ({ ...f, format_id: e.target.value }))}>
             <option value="">Select format...</option>
@@ -285,16 +388,35 @@ function ChequePrintTab() {
 
       {preview && (
         <Card className="border-yellow-800/40">
-          <p className="text-yellow-400 font-semibold mb-3">{preview.format} — {preview.bank_name}</p>
+          <SectionHeader
+            title={`${preview.format} — ${preview.bank_name}`}
+            action={
+              <div className="flex gap-2">
+                <Btn variant="secondary" onClick={savePdf} disabled={pdfBusy}>{pdfBusy ? "Saving..." : "Save as PDF"}</Btn>
+                <Btn onClick={printCheque}>Print Cheque</Btn>
+              </div>
+            }
+          />
           {/* Amount-in-words display */}
           <div className="bg-zinc-800 rounded-lg p-4 mb-4">
             <p className="text-xs text-zinc-400 mb-1">Amount in Words</p>
             <p className="text-white font-semibold text-lg">{preview.amount_words}</p>
           </div>
-          {/* Field layout preview */}
-          <div className="bg-white rounded-lg relative" style={{ height: "200px", minWidth: "500px", overflow: "hidden" }}>
+          {/* Field layout preview — positioned as a % of the canvas so it matches
+              the printed cheque exactly. */}
+          <div
+            className="bg-white rounded-lg relative mx-auto"
+            style={{ width: "100%", maxWidth: `${CHEQUE_CANVAS.width}px`, aspectRatio: `${CHEQUE_CANVAS.width} / ${CHEQUE_CANVAS.height}`, overflow: "hidden" }}
+          >
             {preview.fields.map((field, i) => (
-              <div key={i} style={{ position: "absolute", left: field.x, top: field.y, fontSize: field.font_size, fontFamily: field.font || "Arial", color: "#000" }}>
+              <div key={i} style={{
+                position: "absolute",
+                left: `${(Number(field.x) || 0) / CHEQUE_CANVAS.width * 100}%`,
+                top: `${(Number(field.y) || 0) / CHEQUE_CANVAS.height * 100}%`,
+                // physical cheque-print preview: black ink on white paper is intentional, not app chrome
+                // eslint-disable-next-line no-restricted-syntax
+                fontSize: field.font_size, fontFamily: field.font || "Arial", color: "#000", whiteSpace: "nowrap",
+              }}>
                 {field.value}
               </div>
             ))}
@@ -302,6 +424,9 @@ function ChequePrintTab() {
           {preview.micr_line && (
             <div className="mt-3 font-mono text-xs text-zinc-500">{preview.micr_line}</div>
           )}
+          <p className="mt-3 text-xs text-zinc-500">
+            Tip: in the print dialog set margins to <span className="text-zinc-300">None</span> and scale to <span className="text-zinc-300">100%</span>, then load the cheque leaf in your printer.
+          </p>
         </Card>
       )}
     </div>
@@ -319,17 +444,34 @@ function BankReconTab() {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(false);
 
+  // Statement PDF reads the bank_statements store keyed by the CoA account code,
+  // which is a different identifier from the recon bank_account_id above — so it
+  // gets its own account picker sourced from the chart of accounts.
+  const { run: downloadStatementPdf, busy: pdfBusy } = usePdfAction();
+  const [coaAccounts, setCoaAccounts] = useState([]);
+  const [stmtCode, setStmtCode] = useState("");
+  const [stmtFrom, setStmtFrom] = useState("");
+  const [stmtTo, setStmtTo] = useState("");
+
   useEffect(() => {
     api.get("/banking-pdc/bank-accounts").then(r => setAccounts(r.data)).catch(() => {});
+    api.get("/accounting/chart-of-accounts").then(r => setCoaAccounts(r.data)).catch(() => {});
   }, []);
 
-  const loadSummary = async () => {
+  const downloadStatement = () => {
+    const params = new URLSearchParams({ bank_account_code: stmtCode });
+    if (stmtFrom) params.append("from_date", stmtFrom);
+    if (stmtTo) params.append("to_date", stmtTo);
+    downloadStatementPdf(`/banking/statements/pdf?${params.toString()}`, `statement-${stmtCode}.pdf`);
+  };
+
+  const loadSummary = useCallback(async () => {
     if (!selectedAccount) return;
     try { const { data } = await api.get("/banking-pdc/bank-recon/summary", { params: { bank_account_id: selectedAccount } }); setSummary(data); }
     catch { setSummary(null); }
-  };
+  }, [selectedAccount]);
 
-  useEffect(() => { if (selectedAccount) loadSummary(); }, [selectedAccount]);
+  useEffect(() => { if (selectedAccount) loadSummary(); }, [selectedAccount, loadSummary]);
 
   const importFeed = async () => {
     if (!selectedAccount || !importLines.trim()) return;
@@ -355,6 +497,23 @@ function BankReconTab() {
   return (
     <div className="space-y-4">
       <SectionHeader title="Bank Reconciliation" />
+
+      {/* Statement PDF export toolbar */}
+      <Card>
+        <p className="text-zinc-400 text-sm font-medium mb-2">Bank Statement (PDF)</p>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+          <Select label="Account" value={stmtCode} onChange={e => setStmtCode(e.target.value)}>
+            <option value="">Select account...</option>
+            {coaAccounts.map(a => <option key={a.code} value={a.code}>{a.code} — {a.name}</option>)}
+          </Select>
+          <Input label="From" type="date" value={stmtFrom} onChange={e => setStmtFrom(e.target.value)} />
+          <Input label="To" type="date" value={stmtTo} onChange={e => setStmtTo(e.target.value)} />
+          <Btn onClick={downloadStatement} disabled={!stmtCode || pdfBusy}>
+            {pdfBusy ? "Generating..." : "Download PDF"}
+          </Btn>
+        </div>
+      </Card>
+
       <Card>
         <div className="grid grid-cols-2 gap-3 items-end">
           <Select label="Bank Account" value={selectedAccount} onChange={e => setSelectedAccount(e.target.value)}>
@@ -523,13 +682,13 @@ function OverdueInterestTab() {
             <h3 className="text-white font-semibold">New Interest Rule</h3>
             <Input label="Rule Name" value={ruleForm.name} onChange={e => setRuleForm(f => ({ ...f, name: e.target.value }))} />
             <div className="grid grid-cols-2 gap-3">
-              <Input label="Rate % per annum" type="number" value={ruleForm.rate_pct_pa} onChange={e => setRuleForm(f => ({ ...f, rate_pct_pa: e.target.value }))} />
-              <Input label="Grace Days" type="number" value={ruleForm.grace_days} onChange={e => setRuleForm(f => ({ ...f, grace_days: e.target.value }))} />
+              <Input label="Rate % per annum" inputMode="decimal" value={ruleForm.rate_pct_pa} onChange={e => setRuleForm(f => ({ ...f, rate_pct_pa: e.target.value }))} />
+              <Input label="Grace Days" inputMode="numeric" value={ruleForm.grace_days} onChange={e => setRuleForm(f => ({ ...f, grace_days: e.target.value }))} />
               <Select label="Basis" value={ruleForm.basis} onChange={e => setRuleForm(f => ({ ...f, basis: e.target.value }))}>
                 <option value="simple">Simple Interest</option>
                 <option value="compound">Compound (Daily)</option>
               </Select>
-              <Input label="Min Invoice Amount" type="number" value={ruleForm.min_amount} onChange={e => setRuleForm(f => ({ ...f, min_amount: e.target.value }))} />
+              <Input label="Min Invoice Amount" inputMode="decimal" value={ruleForm.min_amount} onChange={e => setRuleForm(f => ({ ...f, min_amount: e.target.value }))} />
             </div>
             <div className="flex justify-end gap-3">
               <Btn variant="secondary" onClick={() => setShowRuleForm(false)}>Cancel</Btn>

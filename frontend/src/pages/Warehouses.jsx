@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import {
@@ -10,7 +10,9 @@ import {
   EmptyState,
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
-import { Plus, Pencil, Trash2, MapPin } from "lucide-react";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
+import { Plus, Pencil, Trash2, MapPin, Search, RefreshCw, AlertTriangle } from "lucide-react";
 
 const blank = { name: "", location: "", manager: "" };
 
@@ -19,14 +21,42 @@ export default function Warehouses() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(blank);
   const [editingId, setEditingId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  // Explicit request lifecycle so we never show the empty state on failure and
+  // always surface the real backend error (no generic "Something went wrong").
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  const [search, setSearch] = useState("");
 
-  const load = async () => {
-    const r = await api.get("/warehouses");
-    setItems(r.data);
-  };
+  const load = useCallback(async (q = "") => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const r = await api.get("/warehouses", { params: q ? { q } : undefined });
+      setItems(Array.isArray(r.data) ? r.data : (r.data?.items ?? []));
+    } catch (e) {
+      // Surface the actual backend detail (status + message) and log the full
+      // error to the console for debugging — do not hide it.
+      const detail = formatApiErrorDetail(e.response?.data?.detail) || e.message;
+      const status = e.response?.status;
+       
+      console.error("[Warehouses] GET /warehouses failed:", status, detail, e);
+      setLoadError(status ? `Error ${status}: ${detail}` : detail);
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
+
+  // Debounced server-side search.
+  useEffect(() => {
+    const t = setTimeout(() => load(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search, load]);
 
   const startNew = () => {
     setForm(blank);
@@ -40,26 +70,50 @@ export default function Warehouses() {
   };
   const submit = async (e) => {
     e.preventDefault();
+    if (saving) return;               // guard against double-submit
+    setSaving(true);
     try {
       if (editingId) await api.put(`/warehouses/${editingId}`, form);
       else await api.post("/warehouses", form);
-      toast.success("Saved");
+      toast.success(editingId ? "Warehouse updated" : "Warehouse created");
       setOpen(false);
-      load();
-    } catch (e) {
-      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+      load(search.trim());
+    } catch (err) {
+      const detail = formatApiErrorDetail(err.response?.data?.detail) || err.message;
+       
+      console.error("[Warehouses] save failed:", err.response?.status, detail, err);
+      toast.error(detail);
+    } finally {
+      setSaving(false);
     }
   };
   const onDelete = async (item) => {
     if (!window.confirm(`Delete ${item.name}?`)) return;
     try {
       await api.delete(`/warehouses/${item.id}`);
-      toast.success("Deleted");
-      load();
-    } catch (e) {
-      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+      toast.success("Warehouse deleted");
+      load(search.trim());
+    } catch (err) {
+      const detail = formatApiErrorDetail(err.response?.data?.detail) || err.message;
+       
+      console.error("[Warehouses] delete failed:", err.response?.status, detail, err);
+      toast.error(detail);
     }
   };
+
+  // Enter-as-Tab across the modal form; Ctrl+Enter/Ctrl+S saves, Esc cancels,
+  // first field auto-focuses when the modal opens.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: open,
+    autoFocus: true,
+    onSave: () => submit(new Event("submit", { cancelable: true })),
+    onCancel: () => setOpen(false),
+  });
+
+  useModuleShortcuts({
+    onNew: () => { if (!open) startNew(); },
+  });
 
   return (
     <div data-testid="warehouses-page">
@@ -68,19 +122,62 @@ export default function Warehouses() {
         title="Warehouses"
         description="Storage locations and yard managers"
         actions={
-          <PrimaryButton testid="new-warehouse" onClick={startNew} icon={Plus}>
-            New warehouse
-          </PrimaryButton>
+          <div className="flex items-center gap-2">
+            <SecondaryButton
+              onClick={() => load(search.trim())}
+              icon={RefreshCw}
+              disabled={loading}
+              title="Refresh"
+            >
+              Refresh
+            </SecondaryButton>
+            <PrimaryButton testid="new-warehouse" onClick={startNew} icon={Plus}>
+              New warehouse
+            </PrimaryButton>
+          </div>
         }
       />
 
-      {items.length === 0 ? (
+      {/* Search */}
+      <div className="relative max-w-sm mb-4">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+        <Input
+          data-testid="warehouse-search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search name, location, or manager…"
+          className="pl-9"
+        />
+      </div>
+
+      {loading ? (
+        // Loading state — never show the empty state while a request is in flight.
+        <div className="flex items-center justify-center py-16" data-testid="warehouses-loading">
+          <div className="w-7 h-7 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : loadError ? (
+        // Real backend error — shown instead of a generic message; retry re-fetches.
+        <div
+          data-testid="warehouses-error"
+          className="border border-red-800/60 bg-red-950/30 rounded-lg p-6 flex flex-col items-center text-center gap-3"
+        >
+          <AlertTriangle className="w-8 h-8 text-red-400" />
+          <div className="font-semibold text-red-200">Couldn’t load warehouses</div>
+          <div className="text-sm text-red-300/90 font-mono max-w-lg break-words">{loadError}</div>
+          <SecondaryButton onClick={() => load(search.trim())} icon={RefreshCw}>
+            Retry
+          </SecondaryButton>
+        </div>
+      ) : items.length === 0 ? (
+        // Empty state — ONLY reached when the API succeeded and returned no rows.
         <EmptyState
-          message="No warehouses yet"
+          message={search ? `No warehouses match “${search}”` : "No warehouses yet"}
           action={
-            <PrimaryButton onClick={startNew} icon={Plus}>
-              Add warehouse
-            </PrimaryButton>
+            !search && (
+              <PrimaryButton onClick={startNew} icon={Plus}>
+                Add warehouse
+              </PrimaryButton>
+            )
           }
         />
       ) : (
@@ -139,13 +236,13 @@ export default function Warehouses() {
             <SecondaryButton onClick={() => setOpen(false)}>
               Cancel
             </SecondaryButton>
-            <PrimaryButton onClick={submit} testid="save-warehouse">
-              Save
+            <PrimaryButton onClick={submit} testid="save-warehouse" disabled={saving}>
+              {saving ? "Saving…" : "Save"}
             </PrimaryButton>
           </>
         }
       >
-        <form onSubmit={submit} className="space-y-3">
+        <form ref={formRef} onSubmit={submit} className="space-y-3">
           <Field label="Name" required>
             <Input
               required

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import {
@@ -7,13 +7,15 @@ import {
 import Modal from "@/components/Modal";
 import OfflineBanner from "@/components/OfflineBanner";
 import useOnline from "@/hooks/useOnline";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 
 const blank = {
   name: "", sku: "", item_type: "GOODS", hsn_sac_code: "", gst_rate: 18,
   default_unit_id: "", valuation_method: "WEIGHTED_AVG",
-  opening_stock_qty: 0, opening_stock_value: 0,
-  reorder_level: 0, reorder_qty: 0, min_level: 0, max_level: 0,
+  opening_stock_qty: "", opening_stock_value: "",
+  reorder_level: "", reorder_qty: "", min_level: "", max_level: "",
   track_batch: false, track_serial: false, track_expiry: false,
 };
 
@@ -88,6 +90,20 @@ export default function StockItems() {
   const startEdit = (it) => { setForm({ ...blank, ...it }); setEditingId(it.id); setOpen(true); };
   const startNew = () => { setForm(blank); setEditingId(null); setOpen(true); };
 
+  // Enter-as-Tab across the modal form; Ctrl+Enter/Ctrl+S saves, Esc cancels,
+  // first field auto-focuses when the modal opens.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: open,
+    autoFocus: true,
+    onSave: () => submit(new Event("submit", { cancelable: true })),
+    onCancel: () => setOpen(false),
+  });
+
+  useModuleShortcuts({
+    onNew: () => { if (!open && online) startNew(); },
+  });
+
   return (
     <div data-testid="stock-items-page">
       <PageHeader
@@ -158,7 +174,7 @@ export default function StockItems() {
             <PrimaryButton onClick={submit} testid="save-stock-item" disabled={!online}>Save</PrimaryButton>
           </>
         }>
-        <form onSubmit={submit} className="space-y-6">
+        <form ref={formRef} onSubmit={submit} className="space-y-6">
           <div>
             <div className="label-overline mb-2 text-primary">Item details</div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-muted/20 p-4 border border-border">
@@ -185,7 +201,7 @@ export default function StockItems() {
                 <Input value={form.hsn_sac_code || ""} onChange={(e) => setForm({ ...form, hsn_sac_code: e.target.value })} />
               </Field>
               <Field label="GST Rate %">
-                <Input type="number" step="0.01" value={form.gst_rate}
+                <Input type="text" inputMode="decimal" step="0.01" value={form.gst_rate}
                   onChange={(e) => setForm({ ...form, gst_rate: e.target.value })} />
               </Field>
             </div>
@@ -203,11 +219,11 @@ export default function StockItems() {
               </Field>
               <div />
               <Field label="Opening Stock Qty">
-                <Input type="number" step="0.0001" value={form.opening_stock_qty}
+                <Input type="text" inputMode="decimal" step="0.0001" value={form.opening_stock_qty}
                   onChange={(e) => setForm({ ...form, opening_stock_qty: e.target.value })} />
               </Field>
               <Field label="Opening Stock Value">
-                <Input type="number" step="0.01" value={form.opening_stock_value}
+                <Input type="text" inputMode="decimal" step="0.01" value={form.opening_stock_value}
                   onChange={(e) => setForm({ ...form, opening_stock_value: e.target.value })} />
               </Field>
             </div>
@@ -217,19 +233,19 @@ export default function StockItems() {
             <div className="label-overline mb-2 text-primary">Stock levels</div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-muted/20 p-4 border border-border">
               <Field label="Reorder Level">
-                <Input type="number" step="0.01" value={form.reorder_level}
+                <Input type="text" inputMode="decimal" step="0.01" value={form.reorder_level}
                   onChange={(e) => setForm({ ...form, reorder_level: e.target.value })} />
               </Field>
               <Field label="Reorder Qty">
-                <Input type="number" step="0.01" value={form.reorder_qty}
+                <Input type="text" inputMode="decimal" step="0.01" value={form.reorder_qty}
                   onChange={(e) => setForm({ ...form, reorder_qty: e.target.value })} />
               </Field>
               <Field label="Min Level">
-                <Input type="number" step="0.01" value={form.min_level}
+                <Input type="text" inputMode="decimal" step="0.01" value={form.min_level}
                   onChange={(e) => setForm({ ...form, min_level: e.target.value })} />
               </Field>
               <Field label="Max Level">
-                <Input type="number" step="0.01" value={form.max_level}
+                <Input type="text" inputMode="decimal" step="0.01" value={form.max_level}
                   onChange={(e) => setForm({ ...form, max_level: e.target.value })} />
               </Field>
             </div>

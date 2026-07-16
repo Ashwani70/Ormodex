@@ -1,4 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import useDebounce from "@/hooks/useDebounce";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
+import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import QRCode from "react-qr-code";
 import api, { formatApiErrorDetail } from "@/lib/api";
@@ -9,6 +13,7 @@ import {
   Input,
   Field,
   EmptyState,
+  NumericInput,
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
 import {
@@ -34,12 +39,11 @@ const blank = {
   designation: "",
   shift_id: "",
   salary_type: "MONTHLY",
-  basic_salary: 0,
+  basic_salary: "",
   bank_name: "",
   account_number: "",
   ifsc_code: "",
   pan_number: "",
-  aadhaar_number: "",
   address: "",
   status: "active",
   create_login: false,
@@ -47,20 +51,20 @@ const blank = {
 };
 
 const blankSS = {
-  basic: 0,
-  hra: 0,
-  da: 0,
-  conveyance: 0,
-  medical: 0,
-  special_allowance: 0,
-  other_allowance: 0,
+  basic: "",
+  hra: "",
+  da: "",
+  conveyance: "",
+  medical: "",
+  special_allowance: "",
+  other_allowance: "",
   pf_percent: 12,
   enable_pf: true,
   esi_employee_percent: 0.75,
   esi_employer_percent: 3.25,
   enable_esi: true,
   professional_tax: 200,
-  tds_percent: 0,
+  tds_percent: "",
   overtime_rate_multiplier: 2,
 };
 
@@ -69,7 +73,9 @@ export default function Employees() {
   const [branches, setBranches] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [shifts, setShifts] = useState([]);
-  const [q, setQ] = useState("");
+  const [searchParams] = useSearchParams();
+  // Seed from ?q= so the global search can deep-link to a specific employee.
+  const [q, setQ] = useState(searchParams.get("q") || "");
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(blank);
@@ -77,13 +83,14 @@ export default function Employees() {
   const [ssEmp, setSsEmp] = useState(null);
   const [ss, setSs] = useState(blankSS);
 
+  const debouncedQ = useDebounce(q, 300);
   const load = async () => {
-    const r = await api.get("/hr/employees", { params: { q } });
+    const r = await api.get("/hr/employees", { params: { q: debouncedQ } });
     setItems(r.data);
   };
   useEffect(() => {
     load();
-  }, [q]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [debouncedQ]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     api.get("/hr/branches").then((r) => setBranches(r.data));
     api.get("/hr/departments").then((r) => setDepartments(r.data));
@@ -121,6 +128,19 @@ export default function Employees() {
     }
   };
 
+  // Enter-as-Tab across the New/Edit Employee form; Ctrl+Enter/Ctrl+S saves,
+  // Esc cancels. Primary create action on this page → owns Ctrl+N.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: open,
+    autoFocus: true,
+    onSave: () => submit(new Event("submit", { cancelable: true })),
+    onCancel: () => setOpen(false),
+  });
+  useModuleShortcuts({
+    onNew: () => { if (!open) startNew(); },
+  });
+
   const onDelete = async (it) => {
     if (!window.confirm(`Delete ${it.first_name} ${it.last_name}?`)) return;
     try {
@@ -151,8 +171,8 @@ export default function Employees() {
     }
   };
 
-  const backend = process.env.REACT_APP_BACKEND_URL;
-  const qrUrl = qrEmp ? `${backend?.replace(/\/$/, "")}/qr/${qrEmp.qr_token}` : "";
+  const backend = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
+  const qrUrl = qrEmp ? `${backend.replace(/\/$/, "")}/qr/${qrEmp.qr_token}` : "";
 
   return (
     <div data-testid="employees-page">
@@ -258,7 +278,7 @@ export default function Employees() {
           </>
         }
       >
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div ref={formRef} className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <Field label="Employee Code" required>
             <Input required data-testid="emp-code" value={form.employee_code} onChange={(e) => setForm({ ...form, employee_code: e.target.value })} />
           </Field>
@@ -316,13 +336,12 @@ export default function Employees() {
             </select>
           </Field>
           <Field label="Basic Salary (₹)">
-            <Input type="number" step="0.01" value={form.basic_salary} onChange={(e) => setForm({ ...form, basic_salary: e.target.value })} />
+            <NumericInput value={form.basic_salary} onChange={(v) => setForm({ ...form, basic_salary: v })} placeholder="0.00" align="left" />
           </Field>
           <Field label="Bank Name"><Input value={form.bank_name} onChange={(e) => setForm({ ...form, bank_name: e.target.value })} /></Field>
           <Field label="Account Number"><Input value={form.account_number} onChange={(e) => setForm({ ...form, account_number: e.target.value })} /></Field>
           <Field label="IFSC Code"><Input value={form.ifsc_code} onChange={(e) => setForm({ ...form, ifsc_code: e.target.value })} /></Field>
           <Field label="PAN Number"><Input value={form.pan_number} onChange={(e) => setForm({ ...form, pan_number: e.target.value })} /></Field>
-          <Field label="Aadhaar Number"><Input value={form.aadhaar_number} onChange={(e) => setForm({ ...form, aadhaar_number: e.target.value })} /></Field>
           <div className="md:col-span-3">
             <Field label="Address">
               <Input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
@@ -398,19 +417,19 @@ export default function Employees() {
         }
       >
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <Field label="Basic (₹)"><Input type="number" value={ss.basic} onChange={(e) => setSs({ ...ss, basic: e.target.value })} /></Field>
-          <Field label="HRA"><Input type="number" value={ss.hra} onChange={(e) => setSs({ ...ss, hra: e.target.value })} /></Field>
-          <Field label="DA"><Input type="number" value={ss.da} onChange={(e) => setSs({ ...ss, da: e.target.value })} /></Field>
-          <Field label="Conveyance"><Input type="number" value={ss.conveyance} onChange={(e) => setSs({ ...ss, conveyance: e.target.value })} /></Field>
-          <Field label="Medical"><Input type="number" value={ss.medical} onChange={(e) => setSs({ ...ss, medical: e.target.value })} /></Field>
-          <Field label="Special Allowance"><Input type="number" value={ss.special_allowance} onChange={(e) => setSs({ ...ss, special_allowance: e.target.value })} /></Field>
-          <Field label="Other Allowance"><Input type="number" value={ss.other_allowance} onChange={(e) => setSs({ ...ss, other_allowance: e.target.value })} /></Field>
-          <Field label="PF % of basic"><Input type="number" step="0.01" value={ss.pf_percent} onChange={(e) => setSs({ ...ss, pf_percent: e.target.value })} /></Field>
-          <Field label="ESI Employee %"><Input type="number" step="0.01" value={ss.esi_employee_percent} onChange={(e) => setSs({ ...ss, esi_employee_percent: e.target.value })} /></Field>
-          <Field label="ESI Employer %"><Input type="number" step="0.01" value={ss.esi_employer_percent} onChange={(e) => setSs({ ...ss, esi_employer_percent: e.target.value })} /></Field>
-          <Field label="Professional Tax (flat ₹)"><Input type="number" value={ss.professional_tax} onChange={(e) => setSs({ ...ss, professional_tax: e.target.value })} /></Field>
-          <Field label="TDS %"><Input type="number" step="0.01" value={ss.tds_percent} onChange={(e) => setSs({ ...ss, tds_percent: e.target.value })} /></Field>
-          <Field label="Overtime Multiplier (×)"><Input type="number" step="0.1" value={ss.overtime_rate_multiplier} onChange={(e) => setSs({ ...ss, overtime_rate_multiplier: e.target.value })} /></Field>
+          <Field label="Basic (₹)"><NumericInput value={ss.basic} onChange={(v) => setSs({ ...ss, basic: v })} placeholder="0.00" align="left" /></Field>
+          <Field label="HRA"><NumericInput value={ss.hra} onChange={(v) => setSs({ ...ss, hra: v })} placeholder="0.00" align="left" /></Field>
+          <Field label="DA"><NumericInput value={ss.da} onChange={(v) => setSs({ ...ss, da: v })} placeholder="0.00" align="left" /></Field>
+          <Field label="Conveyance"><NumericInput value={ss.conveyance} onChange={(v) => setSs({ ...ss, conveyance: v })} placeholder="0.00" align="left" /></Field>
+          <Field label="Medical"><NumericInput value={ss.medical} onChange={(v) => setSs({ ...ss, medical: v })} placeholder="0.00" align="left" /></Field>
+          <Field label="Special Allowance"><NumericInput value={ss.special_allowance} onChange={(v) => setSs({ ...ss, special_allowance: v })} placeholder="0.00" align="left" /></Field>
+          <Field label="Other Allowance"><NumericInput value={ss.other_allowance} onChange={(v) => setSs({ ...ss, other_allowance: v })} placeholder="0.00" align="left" /></Field>
+          <Field label="PF % of basic"><NumericInput value={ss.pf_percent} onChange={(v) => setSs({ ...ss, pf_percent: v })} placeholder="12" align="left" /></Field>
+          <Field label="ESI Employee %"><NumericInput value={ss.esi_employee_percent} onChange={(v) => setSs({ ...ss, esi_employee_percent: v })} placeholder="0.75" align="left" /></Field>
+          <Field label="ESI Employer %"><NumericInput value={ss.esi_employer_percent} onChange={(v) => setSs({ ...ss, esi_employer_percent: v })} placeholder="3.25" align="left" /></Field>
+          <Field label="Professional Tax (flat ₹)"><NumericInput value={ss.professional_tax} onChange={(v) => setSs({ ...ss, professional_tax: v })} placeholder="200" align="left" /></Field>
+          <Field label="TDS %"><NumericInput value={ss.tds_percent} onChange={(v) => setSs({ ...ss, tds_percent: v })} placeholder="0" align="left" /></Field>
+          <Field label="Overtime Multiplier (×)"><NumericInput value={ss.overtime_rate_multiplier} onChange={(v) => setSs({ ...ss, overtime_rate_multiplier: v })} placeholder="2" align="left" /></Field>
           <div className="md:col-span-2 grid grid-cols-2 gap-3">
             <label className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer border border-zinc-800 px-3 py-2">
               <input type="checkbox" className="accent-yellow-400" checked={ss.enable_pf} onChange={(e) => setSs({ ...ss, enable_pf: e.target.checked })} />

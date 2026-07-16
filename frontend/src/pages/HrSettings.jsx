@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import {
@@ -9,6 +9,8 @@ import {
   Field,
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
+import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 
 const TABS = [
@@ -95,6 +97,20 @@ export default function HrSettings() {
     }
   };
 
+  // Enter-as-Tab across the modal form; Ctrl+Enter/Ctrl+S saves, Esc cancels,
+  // first field auto-focuses when the modal opens.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: open,
+    autoFocus: true,
+    onSave: () => submit(new Event("submit", { cancelable: true })),
+    onCancel: () => setOpen(false),
+  });
+
+  useModuleShortcuts({
+    onNew: () => { if (!open) startNew(); },
+  });
+
   return (
     <div data-testid="hr-settings-page">
       <PageHeader
@@ -172,7 +188,7 @@ export default function HrSettings() {
           </>
         }
       >
-        <form onSubmit={submit} className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <form ref={formRef} onSubmit={submit} className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {tabDef.fields.map((f) => {
             const def = FIELD_DEFS[f] || {};
             if (def.type === "checkbox") {
