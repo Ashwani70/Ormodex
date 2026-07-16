@@ -65,7 +65,7 @@ class _DB:
 
 def _setup():
     db = _DB()
-    core.db.db = db; utils.db = db; ve.db = db
+    core.db.db = db; utils.db = db; ve.db = db  # type: ignore[assignment]  # in-memory fake stands in for the Mongo-compat shim
     asyncio.run(db.fiscal_years.insert_one({"id": "fy", "name": "2026-27", "is_active": True}))
     for code, name in [("5003", "Salaries & Wages"), ("2300", "Salary Payable"),
                        ("2006", "TDS Payable"), ("2002", "PF Payable"), ("2003", "ESI Payable")]:

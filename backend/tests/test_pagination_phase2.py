@@ -101,12 +101,19 @@ class _DB:
             self._collections[key] = c
             setattr(self, key, c)
         return self._collections[key]
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self[name]
 
 
 def _setup():
+    import core
+    import core._mongo_compat
     db = _DB()
-    core.db.db = db
-    utils.db = db
+    core.db.db = db  # type: ignore
+    utils.db = db    # type: ignore
+    core._mongo_compat.db = db  # type: ignore
     asyncio.run(db.companies.insert_one({"id": "c1", "state_code": "27"}))
     return db
 

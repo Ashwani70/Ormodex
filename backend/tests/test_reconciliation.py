@@ -77,7 +77,7 @@ class _DB:
 
 def _setup():
     db = _DB()
-    core.db.db = db; utils.db = db; ve.db = db
+    core.db.db = db; utils.db = db; ve.db = db  # type: ignore[assignment]
     return db
 
 

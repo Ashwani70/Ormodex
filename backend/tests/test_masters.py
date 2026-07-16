@@ -82,10 +82,13 @@ class _DB:
 
 
 def _setup():
+    import core
+    import core._mongo_compat
     db = _DB()
-    core.db.db = db
-    utils.db = db
-    mc.db = db
+    core.db.db = db  # type: ignore
+    utils.db = db    # type: ignore
+    mc.db = db       # type: ignore
+    core._mongo_compat.db = db  # type: ignore
     return db
 
 

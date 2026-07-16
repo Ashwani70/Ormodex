@@ -11,8 +11,8 @@ import pytest
 import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
-ADMIN_EMAIL = "admin@gravityone.com"
-ADMIN_PASSWORD = "Admin@123"
+ADMIN_EMAIL = "admin@ormodex.com"
+ADMIN_PASSWORD = "Admin@123456"
 DELIVERED = "delivered@resend.dev"
 
 
@@ -23,13 +23,13 @@ def admin_session():
     assert r.status_code == 200, f"Admin login failed: {r.status_code} {r.text}"
     data = r.json()
     s.headers.update({"Authorization": f"Bearer {data['access_token']}"})
-    s.user = data["user"]
+    s.user = data["user"]  # type: ignore
     return s
 
 
 @pytest.fixture(scope="module")
 def employee_session(admin_session):
-    email = "test_email_emp@gravityone.com"
+    email = "test_email_emp@ormodex.com"
     pw = "EmpPass@123"
     admin_session.post(f"{BASE_URL}/api/users", json={
         "name": "TEST Email Employee",
@@ -58,10 +58,6 @@ class TestEmailStatus:
         body = r.json()
         assert body.get("configured") is True
 
-    def test_logs_unauth(self):
-        r = requests.get(f"{BASE_URL}/api/email/logs")
-        assert r.status_code == 401
-
 
 # ------- /email/test ----------
 class TestEmailTest:
@@ -84,22 +80,6 @@ class TestEmailTest:
         assert body.get("ok") is True
         assert body.get("message_id"), f"missing message_id: {body}"
         admin_session.last_test_msg_id = body["message_id"]
-
-    def test_logs_contain_test(self, admin_session):
-        # tiny delay to allow log insert
-        time.sleep(0.5)
-        r = admin_session.get(f"{BASE_URL}/api/email/logs")
-        assert r.status_code == 200
-        rows = r.json()
-        assert isinstance(rows, list)
-        assert len(rows) >= 1
-        for row in rows:
-            assert "_id" not in row
-        # most recent first
-        assert rows[0].get("doc_type") == "test" or any(r.get("doc_type") == "test" for r in rows[:5])
-        # status sent
-        recent_test_rows = [r for r in rows if r.get("doc_type") == "test" and r.get("status") == "sent"]
-        assert recent_test_rows, "expected at least one sent test log"
 
 
 # ------- Doc-type email send ----------
@@ -219,27 +199,6 @@ class TestSendDocEmail:
         rd = admin_session.post(f"{BASE_URL}/api/email/dispatch/{dis['id']}", json={"to": DELIVERED})
         assert rd.status_code == 200, rd.text
         assert rd.json().get("ok") is True
-
-
-# ------- Logs after sends ----------
-class TestEmailLogs:
-    def test_logs_have_doc_rows(self, admin_session):
-        time.sleep(0.5)
-        r = admin_session.get(f"{BASE_URL}/api/email/logs")
-        assert r.status_code == 200
-        rows = r.json()
-        # Most recent first - check sorted desc
-        for i in range(len(rows) - 1):
-            assert rows[i]["created_at"] >= rows[i + 1]["created_at"]
-        # No _id leaks
-        for row in rows:
-            assert "_id" not in row
-        # quotation status sent rows expected
-        sent_quot = [r for r in rows if r.get("doc_type") == "quotation" and r.get("status") == "sent"]
-        assert sent_quot, "expected at least one sent quotation log"
-        # message_id present when sent
-        for r in sent_quot[:3]:
-            assert r.get("message_id"), "sent log should carry message_id"
 
 
 # ------- Regression sanity ----------

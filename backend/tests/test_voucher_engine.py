@@ -220,7 +220,7 @@ def test_catalog_covers_all_spec_parent_types():
 
 def test_payment_with_tds_posts_journal_and_records_tds():
     db = _setup()
-    asyncio.run(db.suppliers.insert_one({
+    asyncio.run(db.vendors.insert_one({
         "id": "supp_123",
         "name": "Acme Contractors",
         "pan_number": "ABCDE1234F",

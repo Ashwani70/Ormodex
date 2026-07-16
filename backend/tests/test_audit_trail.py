@@ -8,96 +8,37 @@ Proves the two properties the mandate hinges on, at the data layer:
      core.utils exposes no update/delete path for audit_logs, and the read
      endpoint is read-only + RBAC-guarded.
 
-These run without a live server or a real MongoDB: core.db.db is monkeypatched
-with a minimal in-memory async fake, and coroutines are driven with asyncio.run
-(no pytest-asyncio plugin required, matching what's installed here).
+Post-migration these run against the real PostgreSQL/Supabase data layer:
+`crud_create`/`crud_update`/`crud_delete` write the business row and its audit
+row in one `get_session()` transaction, so atomicity is a real DB property here
+(not a fake's simulation). Each test reads the audit row back from the
+`audit_logs` table and cleans up everything it created.
+
+Audit row schema (current, post-migration): action ('create'/'update'/'delete'),
+collection, doc_id, before (JSONB), after (JSONB), user_id, created_at.
 """
 import asyncio
 
-import core.db
+import pytest
+
 import core.utils as utils
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Minimal in-memory async Mongo substitute (only what crud_*/log_audit touch)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class _FakeCollection:
-    def __init__(self, fail_on_insert=False):
-        self.docs: list[dict] = []
-        self.fail_on_insert = fail_on_insert
-
-    async def insert_one(self, doc, session=None):
-        if self.fail_on_insert:
-            raise RuntimeError("simulated audit-store failure")
-        # Mongo would stamp _id; mimic it so callers that pop("_id") still work.
-        stored = dict(doc)
-        stored.setdefault("_id", f"oid_{len(self.docs)}")
-        self.docs.append(stored)
-        return type("R", (), {"inserted_id": stored["_id"]})()
-
-    async def find_one(self, q, projection=None, session=None):
-        for d in self.docs:
-            if all(d.get(k) == v for k, v in q.items()):
-                out = {k: v for k, v in d.items()}
-                if projection and projection.get("_id") == 0:
-                    out.pop("_id", None)
-                return out
-        return None
-
-    async def update_one(self, q, update, session=None):
-        for d in self.docs:
-            if all(d.get(k) == v for k, v in q.items()):
-                d.update(update.get("$set", {}))
-                return type("R", (), {"matched_count": 1})()
-        return type("R", (), {"matched_count": 0})()
-
-    async def replace_one(self, q, doc, session=None):
-        for i, d in enumerate(self.docs):
-            if all(d.get(k) == v for k, v in q.items()):
-                self.docs[i] = dict(doc)
-                return type("R", (), {"matched_count": 1})()
-        return type("R", (), {"matched_count": 0})()
-
-    async def delete_one(self, q, session=None):
-        for i, d in enumerate(self.docs):
-            if all(d.get(k) == v for k, v in q.items()):
-                self.docs.pop(i)
-                return type("R", (), {"deleted_count": 1})()
-        return type("R", (), {"deleted_count": 0})()
-
-    def count(self):
-        return len(self.docs)
-
-
-class _FakeDB:
-    """Standalone (non-replica-set) Mongo: transactions unsupported, so crud_*
-    exercises the compensating-rollback fallback path — the harder case to prove."""
-    def __init__(self, audit_fails=False):
-        self._cols: dict[str, _FakeCollection] = {}
-        self.audit_logs = _FakeCollection(fail_on_insert=audit_fails)
-        self._cols["audit_logs"] = self.audit_logs
-
-    def __getitem__(self, name):
-        if name not in self._cols:
-            self._cols[name] = _FakeCollection()
-        return self._cols[name]
-
-    def __getattr__(self, name):
-        # Attribute access (db.foo) maps to the same collections as db["foo"].
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return self[name]
-
-
-def _patch_db(fake):
-    """Point both core.db.db and the already-imported core.utils.db at the fake."""
-    core.db.db = fake
-    utils.db = fake
-    utils._txn_supported = False  # force the no-transaction fallback path
+from core.db import db
 
 
 USER = {"id": "u1", "name": "Auditor Tester", "role": "admin"}
+
+
+async def _audit_rows_for(collection: str, doc_id: str) -> list[dict]:
+    """Read every audit row written for one business document, newest first."""
+    return await db.audit_logs.find(
+        {"collection": collection, "doc_id": doc_id}
+    ).sort("created_at", -1).to_list(50)
+
+
+async def _cleanup(collection: str, doc_id: str):
+    """Remove the business row + its audit trail so the shared DB stays clean."""
+    await db.audit_logs.delete_many({"collection": collection, "doc_id": doc_id})
+    await db[collection].delete_one({"id": doc_id})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -105,66 +46,98 @@ USER = {"id": "u1", "name": "Auditor Tester", "role": "admin"}
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_create_writes_business_doc_and_audit_row_together():
-    fake = _FakeDB()
-    _patch_db(fake)
+    doc = asyncio.run(utils.crud_create("purchase_orders", {"po_number": "AUDIT-PO-1"}, user=USER))
+    try:
+        # Business row persisted.
+        row = asyncio.run(db.purchase_orders.find_one({"id": doc["id"]}))
+        assert row is not None
+        assert row["po_number"] == "AUDIT-PO-1"
 
-    doc = asyncio.run(utils.crud_create("purchase_orders", {"po_number": "PO-1"}, user=USER))
+        # Exactly one audit row, with the create action + after-image.
+        logs = asyncio.run(_audit_rows_for("purchase_orders", doc["id"]))
+        assert len(logs) == 1
+        log = logs[0]
+        assert log["action"] == "create"
+        assert log["collection"] == "purchase_orders"
+        assert log["doc_id"] == doc["id"]
+        assert log["after"]["po_number"] == "AUDIT-PO-1"
+        # Mongo's _id must never leak into the captured snapshot.
+        assert "_id" not in (log["after"] or {})
+    finally:
+        asyncio.run(_cleanup("purchase_orders", doc["id"]))
 
-    assert fake["purchase_orders"].count() == 1
-    assert fake.audit_logs.count() == 1
-    log = fake.audit_logs.docs[0]
-    assert log["action"] == "CREATE"
-    assert log["entity_type"] == "purchase_orders"
-    assert log["entity_id"] == doc["id"]
-    assert log["after_json"]["po_number"] == "PO-1"
-    # Mongo's _id must never leak into the captured snapshot.
-    assert "_id" not in (log["after_json"] or {})
 
+def test_create_rolls_back_business_doc_when_audit_insert_fails(monkeypatch):
+    """If the audit row can't be written, the business row must NOT persist —
+    they share one transaction. We force the audit insert to fail by making the
+    audit-entry builder raise, then assert nothing was committed."""
+    doc_id_holder = {}
 
-def test_create_rolls_back_business_doc_when_audit_insert_fails():
-    fake = _FakeDB(audit_fails=True)
-    _patch_db(fake)
+    real_build = utils.build_audit_entry
+
+    def boom(*args, **kwargs):
+        # Capture the id that crud_create allocated, then sabotage the audit write.
+        entry = real_build(*args, **kwargs)
+        doc_id_holder["id"] = entry.get("doc_id")
+        raise RuntimeError("simulated audit-store failure")
+
+    monkeypatch.setattr(utils, "build_audit_entry", boom)
 
     raised = False
     try:
-        asyncio.run(utils.crud_create("purchase_orders", {"po_number": "PO-2"}, user=USER))
+        asyncio.run(utils.crud_create("purchase_orders", {"po_number": "AUDIT-PO-2"}, user=USER))
     except RuntimeError:
         raised = True
+    monkeypatch.undo()
 
     assert raised, "audit failure should propagate"
     # The business write must NOT persist without its audit row.
-    assert fake["purchase_orders"].count() == 0
-    assert fake.audit_logs.count() == 0
+    pid = doc_id_holder.get("id")
+    if pid:
+        row = asyncio.run(db.purchase_orders.find_one({"id": pid}))
+        assert row is None, "business row must roll back when audit insert fails"
+        asyncio.run(_cleanup("purchase_orders", pid))
+    # Belt-and-braces: no audit row for this PO number either.
+    leaked = asyncio.run(db.purchase_orders.find({"po_number": "AUDIT-PO-2"}).to_list(10))
+    for r in leaked:
+        asyncio.run(_cleanup("purchase_orders", r["id"]))
+    assert leaked == [], "no business row should exist for the failed create"
 
 
 def test_update_records_changed_fields():
-    fake = _FakeDB()
-    _patch_db(fake)
+    doc = asyncio.run(utils.crud_create("vendors", {"name": "Acme", "phone": "111"}, user=USER))
+    try:
+        asyncio.run(utils.crud_update("vendors", doc["id"], {"phone": "222"}, user=USER))
 
-    doc = asyncio.run(utils.crud_create("suppliers", {"name": "Acme", "phone": "111"}, user=USER))
-    asyncio.run(utils.crud_update("suppliers", doc["id"], {"phone": "222"}, user=USER))
-
-    update_log = [l for l in fake.audit_logs.docs if l["action"] == "UPDATE"][0]
-    assert "phone" in update_log["changed_fields"]
-    assert "name" not in update_log["changed_fields"]
-    assert update_log["before_json"]["phone"] == "111"
-    assert update_log["after_json"]["phone"] == "222"
+        logs = asyncio.run(_audit_rows_for("vendors", doc["id"]))
+        update_log = [l for l in logs if l["action"] == "update"][0]
+        # The update audit carries the before-image and the applied changes.
+        assert update_log["before"]["phone"] == "111"
+        assert update_log["after"]["phone"] == "222"
+        # The substantive change is the phone, not the name.
+        changed = utils._diff_fields(update_log["before"], update_log["after"])
+        assert "phone" in changed
+        assert "name" not in changed
+    finally:
+        asyncio.run(_cleanup("vendors", doc["id"]))
 
 
 def test_delete_captures_before_image_and_audit():
-    fake = _FakeDB()
-    _patch_db(fake)
-
-    doc = asyncio.run(utils.crud_create("suppliers", {"name": "Gone Inc"}, user=USER))
-    asyncio.run(utils.crud_delete("suppliers", doc["id"], user=USER))
-
-    assert fake["suppliers"].count() == 0
-    del_log = [l for l in fake.audit_logs.docs if l["action"] == "DELETE"][0]
-    assert del_log["before_json"]["name"] == "Gone Inc"
+    doc = asyncio.run(utils.crud_create("vendors", {"name": "Gone Inc"}, user=USER))
+    asyncio.run(utils.crud_delete("vendors", doc["id"], user=USER))
+    try:
+        # Business row is gone.
+        assert asyncio.run(db.vendors.find_one({"id": doc["id"]})) is None
+        logs = asyncio.run(_audit_rows_for("vendors", doc["id"]))
+        del_log = [l for l in logs if l["action"] == "delete"][0]
+        assert del_log["before"]["name"] == "Gone Inc"
+    finally:
+        # crud_delete removed the business row; clear the audit trail.
+        asyncio.run(db.audit_logs.delete_many({"collection": "vendors", "doc_id": doc["id"]}))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. Immutability: no application path mutates an audit row
+# 2. Immutability: no application path mutates an audit row (pure/structural)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_audit_module_exposes_no_write_routes():
@@ -182,11 +155,9 @@ def test_audit_module_exposes_no_write_routes():
 def test_utils_has_no_audit_update_or_delete_helper():
     """core.utils offers no helper that updates or deletes audit rows."""
     audit_names = [n for n in dir(utils) if "audit" in n.lower()]
-    # No audit helper hints at mutation/removal of existing rows.
     forbidden = ("update", "edit", "delete", "remove", "purge", "modify")
     offenders = [n for n in audit_names if any(f in n.lower() for f in forbidden)]
     assert offenders == [], f"audit helpers must be append-only, found: {offenders}"
-    # And the only public audit writer is the append-only log_audit.
     assert "log_audit" in audit_names
 
 

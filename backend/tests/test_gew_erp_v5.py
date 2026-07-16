@@ -1,4 +1,4 @@
-"""Iteration 5 backend tests — HRM & Payroll regression.
+﻿"""Iteration 5 backend tests — HRM & Payroll regression.
 
 Covers:
 - HR Setup CRUD (branches, departments, designations, shifts, holidays, leave types)
@@ -18,8 +18,15 @@ import pytest
 import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
-ADMIN_EMAIL = "admin@gravityone.com"
-ADMIN_PASSWORD = "Admin@123"
+ADMIN_EMAIL = "admin@ormodex.com"
+ADMIN_PASSWORD = "Admin@123456"
+
+
+class TestState:
+    _v5_leave_id = None
+    _v5_run_id = None
+    _v5_payslip_id = None
+    _v5_payslip_share_token = None
 
 
 # ============================================================
@@ -35,7 +42,7 @@ def admin_session():
     assert r.status_code == 200, f"Admin login failed: {r.status_code} {r.text}"
     data = r.json()
     s.headers.update({"Authorization": f"Bearer {data['access_token']}"})
-    s.user = data["user"]
+    s.user = data["user"]  # type: ignore
     return s
 
 
@@ -108,7 +115,7 @@ def employee_record(admin_session, setup_data):
         "designation": "V5 Tester",
         "basic_salary": 30000,
         "create_login": True,
-        "login_password": "EmpPass@123",
+        "login_password": "EmpPass@1234",
         "bank_name": "HDFC",
         "account_number": "1234567890",
         "ifsc_code": "HDFC0001234",
@@ -130,7 +137,7 @@ def employee_session(employee_record):
     s = requests.Session()
     r = s.post(
         f"{BASE_URL}/api/auth/login",
-        json={"email": "v5emp001@gravity-test.com", "password": "EmpPass@123"},
+        json={"email": "v5emp001@gravity-test.com", "password": "EmpPass@1234"},
     )
     if r.status_code != 200:
         pytest.skip(f"employee login failed: {r.status_code} {r.text}")
@@ -401,7 +408,7 @@ class TestLeaves:
         leave = r.json()
         assert leave["total_days"] == 3
         assert leave["status"] == "PENDING"
-        pytest._v5_leave_id = leave["id"]
+        TestState._v5_leave_id = leave["id"]
 
     def test_employee_self_apply_leave(self, employee_session, setup_data):
         r = employee_session.post(
@@ -431,7 +438,7 @@ class TestLeaves:
         assert r.status_code == 403
 
     def test_decide_approve(self, admin_session):
-        lid = getattr(pytest, "_v5_leave_id", None)
+        lid = getattr(TestState, "_v5_leave_id", None)
         assert lid, "previous test must set leave id"
         r = admin_session.post(
             f"{BASE_URL}/api/hr/leaves/{lid}/decide",
@@ -471,7 +478,7 @@ class TestPayroll:
         assert run["month"] == self.MONTH
         assert run["status"] == "DRAFT"
         assert run["employee_count"] >= 1
-        pytest._v5_run_id = run["id"]
+        TestState._v5_run_id = run["id"]
 
     def test_regenerate_overwrites_draft(self, admin_session, employee_record):
         r = admin_session.post(
@@ -482,7 +489,7 @@ class TestPayroll:
         assert r.json()["status"] == "DRAFT"
 
     def test_payslip_listing(self, admin_session, employee_record):
-        run_id = getattr(pytest, "_v5_run_id", None)
+        run_id = getattr(TestState, "_v5_run_id", None)
         r = admin_session.get(
             f"{BASE_URL}/api/hr/payslips",
             params={"run_id": run_id, "employee_id": employee_record["id"]},
@@ -493,11 +500,11 @@ class TestPayroll:
         ps = ps_list[0]
         assert {"earnings", "deductions", "gross_salary", "total_deduction", "net_salary"}.issubset(ps.keys())
         assert ps["status"] == "DRAFT"
-        pytest._v5_payslip_id = ps["id"]
-        pytest._v5_payslip_share_token = ps.get("share_token")
+        TestState._v5_payslip_id = ps["id"]
+        TestState._v5_payslip_share_token = ps.get("share_token")
 
     def test_edit_payslip_bonus(self, admin_session):
-        ps_id = getattr(pytest, "_v5_payslip_id")
+        ps_id = getattr(TestState, "_v5_payslip_id")
         r = admin_session.put(
             f"{BASE_URL}/api/hr/payslips/{ps_id}",
             json={"bonus": 1000, "incentive": 500},
@@ -507,17 +514,17 @@ class TestPayroll:
         assert r.json()["incentive"] == 500
 
     def test_public_payslip_blocked_before_lock(self, anon_session):
-        token = getattr(pytest, "_v5_payslip_share_token")
+        token = getattr(TestState, "_v5_payslip_share_token")
         r = anon_session.get(f"{BASE_URL}/api/hr/public/payslip/{token}/info")
         assert r.status_code == 404, "before lock, public share should be hidden"
 
     def test_lock_run(self, admin_session):
-        run_id = getattr(pytest, "_v5_run_id")
+        run_id = getattr(TestState, "_v5_run_id")
         r = admin_session.post(f"{BASE_URL}/api/hr/payroll-runs/{run_id}/lock")
         assert r.status_code == 200
 
     def test_locked_run_blocks_edit(self, admin_session):
-        ps_id = getattr(pytest, "_v5_payslip_id")
+        ps_id = getattr(TestState, "_v5_payslip_id")
         r = admin_session.put(
             f"{BASE_URL}/api/hr/payslips/{ps_id}",
             json={"bonus": 9999},
@@ -532,7 +539,7 @@ class TestPayroll:
         assert r.status_code == 400
 
     def test_public_payslip_works_after_lock(self, anon_session):
-        token = getattr(pytest, "_v5_payslip_share_token")
+        token = getattr(TestState, "_v5_payslip_share_token")
         info = anon_session.get(f"{BASE_URL}/api/hr/public/payslip/{token}/info")
         assert info.status_code == 200
         assert info.json()["employee_code"] == "V5EMP001"
@@ -541,14 +548,14 @@ class TestPayroll:
         assert pdf.content.startswith(b"%PDF-")
 
     def test_payslip_pdf(self, admin_session):
-        ps_id = getattr(pytest, "_v5_payslip_id")
+        ps_id = getattr(TestState, "_v5_payslip_id")
         r = admin_session.get(f"{BASE_URL}/api/hr/payslips/{ps_id}/pdf")
         assert r.status_code == 200
         assert r.content.startswith(b"%PDF-")
         assert r.headers.get("content-type", "").startswith("application/pdf")
 
     def test_whatsapp_link(self, admin_session):
-        ps_id = getattr(pytest, "_v5_payslip_id")
+        ps_id = getattr(TestState, "_v5_payslip_id")
         r = admin_session.get(f"{BASE_URL}/api/hr/payslips/{ps_id}/whatsapp-link")
         assert r.status_code == 200
         body = r.json()
@@ -568,11 +575,11 @@ class TestPayroll:
         assert pdf.content.startswith(b"%PDF-")
 
     def test_unlock_run(self, admin_session):
-        run_id = getattr(pytest, "_v5_run_id")
+        run_id = getattr(TestState, "_v5_run_id")
         r = admin_session.post(f"{BASE_URL}/api/hr/payroll-runs/{run_id}/unlock")
         assert r.status_code == 200
         # confirm payslip is DRAFT again
-        ps_id = getattr(pytest, "_v5_payslip_id")
+        ps_id = getattr(TestState, "_v5_payslip_id")
         ps = admin_session.get(f"{BASE_URL}/api/hr/payslips/{ps_id}").json()
         assert ps["status"] == "DRAFT"
 
@@ -593,11 +600,11 @@ class TestDashboardAndRoles:
     def test_create_hr_user(self, admin_session):
         admin_session.post(f"{BASE_URL}/api/users", json={
             "name": "TEST HR User", "email": "v5_hr@gravity-test.com",
-            "phone": "9999999111", "role": "hr", "password": "HrPass@123",
+            "phone": "9999999111", "role": "hr", "password": "HrPass@1234",
         })
         s = requests.Session()
         r = s.post(f"{BASE_URL}/api/auth/login",
-                   json={"email": "v5_hr@gravity-test.com", "password": "HrPass@123"})
+                   json={"email": "v5_hr@gravity-test.com", "password": "HrPass@1234"})
         if r.status_code != 200:
             pytest.skip("HR login skipped")
         s.headers.update({"Authorization": f"Bearer {r.json()['access_token']}"})
@@ -607,11 +614,11 @@ class TestDashboardAndRoles:
     def test_create_accountant_user(self, admin_session):
         admin_session.post(f"{BASE_URL}/api/users", json={
             "name": "TEST Accountant", "email": "v5_acc@gravity-test.com",
-            "phone": "9999999222", "role": "accountant", "password": "AccPass@123",
+            "phone": "9999999222", "role": "accountant", "password": "AccPass@1234",
         })
         s = requests.Session()
         r = s.post(f"{BASE_URL}/api/auth/login",
-                   json={"email": "v5_acc@gravity-test.com", "password": "AccPass@123"})
+                   json={"email": "v5_acc@gravity-test.com", "password": "AccPass@1234"})
         if r.status_code != 200:
             pytest.skip("Accountant login skipped")
         s.headers.update({"Authorization": f"Bearer {r.json()['access_token']}"})

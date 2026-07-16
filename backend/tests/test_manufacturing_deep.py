@@ -67,7 +67,7 @@ class TestBomExplosion:
 
         bom = _bom("FG1", [_comp("RM1", qty_per=2.0), _comp("RM2", qty_per=3.0)])
 
-        async def fake_resolve(item_id):
+        async def fake_resolve(item_id, bom_index=None):
             return None  # raw materials — no sub-BOM
 
         with patch("routers.manufacturing._resolve_bom_for_item", side_effect=fake_resolve):
@@ -109,7 +109,7 @@ class TestBomExplosion:
         bom_fg = _bom("FG", [_comp("SA1", qty_per=2.0, scrap_pct=0.0)], bom_id="bom_FG")
         bom_sa1 = _bom("SA1", [_comp("RM1", qty_per=3.0, scrap_pct=10.0), _comp("RM2", qty_per=1.0)], bom_id="bom_SA1")
 
-        async def fake_resolve(item_id):
+        async def fake_resolve(item_id, bom_index=None):
             if item_id == "SA1":
                 return bom_sa1
             return None
@@ -141,7 +141,7 @@ class TestBomExplosion:
         bom_l2 = _bom("L2", [_comp("L3", qty_per=4.0, scrap_pct=10.0)])
         bom_l3 = _bom("L3", [_comp("RM", qty_per=5.0, scrap_pct=20.0)])
 
-        async def fake_resolve(item_id):
+        async def fake_resolve(item_id, bom_index=None):
             return {"L2": bom_l2, "L3": bom_l3}.get(item_id)
 
         with patch("routers.manufacturing._resolve_bom_for_item", side_effect=fake_resolve):
@@ -173,11 +173,12 @@ class TestBomExplosion:
         bom_fg = _bom("FG", [_comp("SA", qty_per=1.0)])
         bom_sa = _bom("SA", [_comp("FG", qty_per=1.0)])  # refers back to FG → cycle
 
-        async def fake_resolve(item_id):
+        async def fake_resolve(item_id, bom_index=None):
             return {"SA": bom_sa}.get(item_id)
 
-        with pytest.raises(HTTPException) as exc_info:
-            await _explode_bom(bom_fg, target_qty=1.0, ancestor_ids={"FG"})
+        with patch("routers.manufacturing._resolve_bom_for_item", side_effect=fake_resolve):
+            with pytest.raises(HTTPException) as exc_info:
+                await _explode_bom(bom_fg, target_qty=1.0, ancestor_ids={"FG"})
 
         assert exc_info.value.status_code == 400
         assert "cyclic" in exc_info.value.detail.lower()
@@ -240,27 +241,41 @@ class TestWorkOrderCompletion:
             "FG1": _prod("FG1", quantity=0.0),
         }
 
-        updated_quantities = {}
-
-        async def fake_update(query, update, *a, **kw):
-            pid = query.get("id")
-            qty = update.get("$set", {}).get("quantity")
-            if pid and qty is not None:
-                updated_quantities[pid] = qty
-
         async def fake_find(query, *a, **kw):
             pid = query.get("id")
             p = products.get(pid)
             return dict(p) if p else None
 
+        def fake_find_many(query, *a, **kw):
+            ids = query.get("id", {}).get("$in", [])
+            class FC:
+                async def to_list(self, n):
+                    return [dict(products[i]) for i in ids if i in products]
+            return FC()
+
         from fastapi import HTTPException
         import routers.manufacturing as mfg_mod
 
+        # complete_work_order now posts each movement through post_entry
+        # (core.stock_ledger) instead of writing products.quantity /
+        # stock_transactions directly — assert on the qty/stock_item_id it
+        # was called with rather than a raw products.update_one write.
+        posted = []
+
+        async def fake_post_entry(*, stock_item_id, godown_id, qty, movement_type, **kw):
+            posted.append({"stock_item_id": stock_item_id, "qty": qty, "movement_type": movement_type})
+            return {"id": "entry1", "stock_item_id": stock_item_id, "qty": qty, "rate": kw.get("rate") or 0, "value": 0}
+
+        async def fake_resolve_stock_item_ids(product_ids, user=None):
+            return {pid: pid for pid in dict.fromkeys(product_ids) if pid}  # 1:1 in this test's fixtures
+
+        async def fake_resolve_godown_id(godown_id):
+            return godown_id or "godown1"
+
         with patch.object(mfg_mod, "db") as mock_db:
             mock_db.products.find_one = AsyncMock(side_effect=fake_find)
-            mock_db.products.update_one = AsyncMock(side_effect=fake_update)
+            mock_db.products.find = MagicMock(side_effect=fake_find_many)
             mock_db.boms.find_one = AsyncMock(return_value=bom_doc)
-            mock_db.stock_transactions.insert_one = AsyncMock()
             mock_db.work_orders.find_one = AsyncMock(return_value=wo_doc)
             mock_db.work_orders.update_one = AsyncMock()
             mock_db.audit_logs.insert_one = AsyncMock()
@@ -274,17 +289,21 @@ class TestWorkOrderCompletion:
             async def fake_crud_update(collection, item_id, update, user=None):
                 return {**wo_doc, **update}
 
-            with patch.object(mfg_mod, "crud_get", side_effect=fake_crud_get):
-                with patch.object(mfg_mod, "crud_update", side_effect=fake_crud_update):
-                    user = {"id": "u1", "name": "Tester", "role": "admin"}
-                    result = await mfg_mod.complete_work_order("wo1", user)
+            with patch.object(mfg_mod, "crud_get", side_effect=fake_crud_get), \
+                 patch.object(mfg_mod, "crud_update", side_effect=fake_crud_update), \
+                 patch.object(mfg_mod, "post_entry", side_effect=fake_post_entry), \
+                 patch.object(mfg_mod, "resolve_stock_item_ids_for_products", side_effect=fake_resolve_stock_item_ids), \
+                 patch.object(mfg_mod, "resolve_godown_id", side_effect=fake_resolve_godown_id):
+                user = {"id": "u1", "name": "Tester", "role": "admin"}
+                result = await mfg_mod.complete_work_order("wo1", user)
 
-        # RM1: 2.0 * 5 = 10 consumed → 50 - 10 = 40
-        assert abs(updated_quantities.get("RM1", -1) - 40.0) < 1e-5
-        # RM2: 3.0 * 1.10 * 5 = 16.5 consumed → 30 - 16.5 = 13.5
-        assert abs(updated_quantities.get("RM2", -1) - 13.5) < 1e-5
-        # FG1: 0 + 5 = 5
-        assert abs(updated_quantities.get("FG1", -1) - 5.0) < 1e-5
+        posted_by_item = {p["stock_item_id"]: p["qty"] for p in posted}
+        # RM1: 2.0 * 5 = 10 consumed (negative delta)
+        assert abs(posted_by_item.get("RM1", 0) - (-10.0)) < 1e-5
+        # RM2: 3.0 * 1.10 * 5 = 16.5 consumed (negative delta)
+        assert abs(posted_by_item.get("RM2", 0) - (-16.5)) < 1e-5
+        # FG1: +5 produced
+        assert abs(posted_by_item.get("FG1", 0) - 5.0) < 1e-5
 
     @pytest.mark.asyncio
     async def test_insufficient_stock_raises_400(self):
@@ -300,8 +319,16 @@ class TestWorkOrderCompletion:
         }
         products = {"RM1": _prod("RM1", quantity=10.0)}  # only 10, need 500
 
+        def fake_find_many(query, *a, **kw):
+            ids = query.get("id", {}).get("$in", [])
+            class FC:
+                async def to_list(self, n):
+                    return [dict(products[i]) for i in ids if i in products]
+            return FC()
+
         with patch.object(mfg_mod, "db") as mock_db:
             mock_db.products.find_one = AsyncMock(side_effect=lambda q, *a, **kw: products.get(q["id"]))
+            mock_db.products.find = MagicMock(side_effect=fake_find_many)
             mock_db.boms.find_one = AsyncMock(return_value=bom_doc)
 
             async def fake_crud_get(collection, item_id):
@@ -336,16 +363,15 @@ class TestProductionJournal:
             "FG":  {"id": "FG",  "name": "FG",  "quantity": 0.0,  "cost_price": 0.0},
         }
 
-        updated = {}
-
         async def fake_find(query, *a, **kw):
             return dict(products.get(query.get("id"), {})) or None
 
-        async def fake_update(query, update, *a, **kw):
-            pid = query.get("id")
-            qty = update.get("$set", {}).get("quantity")
-            if pid and qty is not None:
-                updated[pid] = qty
+        def fake_find_many(query, *a, **kw):
+            ids = query.get("id", {}).get("$in", [])
+            class FC:
+                async def to_list(self, n):
+                    return [dict(products[i]) for i in ids if i in products]
+            return FC()
 
         payload = ProductionJournal(
             work_order_id="wo1",
@@ -354,28 +380,46 @@ class TestProductionJournal:
             output=[OutputLine(item_id="FG", item_name="FG", qty=4.0)],
         )
 
+        # create_production_journal now posts each movement through
+        # post_entry (core.stock_ledger) instead of writing products.quantity
+        # / stock_transactions directly — assert on what it was called with.
+        posted = []
+
+        async def fake_post_entry(*, stock_item_id, godown_id, qty, movement_type, **kw):
+            posted.append({"stock_item_id": stock_item_id, "qty": qty, "movement_type": movement_type})
+            return {"id": "entry1", "stock_item_id": stock_item_id, "qty": qty, "rate": kw.get("rate") or 0, "value": 0}
+
+        async def fake_resolve_stock_item_ids(product_ids, user=None):
+            return {pid: pid for pid in dict.fromkeys(product_ids) if pid}  # 1:1 in this test's fixtures
+
+        async def fake_resolve_godown_id(godown_id):
+            return godown_id or "godown1"
+
         with patch.object(mfg_mod, "db") as mock_db:
             mock_db.products.find_one = AsyncMock(side_effect=fake_find)
-            mock_db.products.update_one = AsyncMock(side_effect=fake_update)
-            mock_db.stock_transactions.insert_one = AsyncMock()
+            mock_db.products.find = MagicMock(side_effect=fake_find_many)
             mock_db.work_orders.update_one = AsyncMock()
             mock_db.production_journals.insert_one = AsyncMock()
             mock_db.audit_logs.insert_one = AsyncMock()
             mock_db.counters.find_one_and_update = AsyncMock(return_value={"seq": 1})
-
             async def fake_crud_get(coll, id_):
                 return wo_doc
 
             async def fake_crud_create(coll, doc, user=None):
                 return doc
 
-            with patch.object(mfg_mod, "crud_get", side_effect=fake_crud_get):
-                with patch.object(mfg_mod, "crud_create", side_effect=fake_crud_create):
-                    user = {"id": "u1", "name": "T", "role": "admin"}
-                    result = await mfg_mod.create_production_journal(payload, user)
+            with patch.object(mfg_mod, "crud_get", side_effect=fake_crud_get), \
+                 patch.object(mfg_mod, "crud_create", side_effect=fake_crud_create), \
+                 patch.object(mfg_mod, "post_entry", side_effect=fake_post_entry), \
+                 patch.object(mfg_mod, "resolve_stock_item_ids_for_products", side_effect=fake_resolve_stock_item_ids), \
+                 patch.object(mfg_mod, "resolve_godown_id", side_effect=fake_resolve_godown_id), \
+                 patch("routers.manufacturing.next_doc_number", AsyncMock(return_value="PJ-26-00001")):
+                user = {"id": "u1", "name": "T", "role": "admin"}
+                result = await mfg_mod.create_production_journal(payload, user)
 
-        assert abs(updated.get("RM1", -1) - 30.0) < 1e-6  # 50 - 20
-        assert abs(updated.get("FG", -1) - 4.0) < 1e-6    # 0 + 4
+        posted_by_item = {p["stock_item_id"]: p["qty"] for p in posted}
+        assert abs(posted_by_item.get("RM1", 0) - (-20.0)) < 1e-6  # consumed
+        assert abs(posted_by_item.get("FG", 0) - 4.0) < 1e-6       # produced
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -405,9 +449,10 @@ class TestWastage:
                 return doc
 
             with patch.object(mfg_mod, "crud_create", side_effect=fake_create):
-                payload = WastageEntry(item_id="RM1", item_name="RM1", qty=8.0, reason_code="NORMAL")
-                user = {"id": "u1", "name": "T", "role": "admin"}
-                await mfg_mod.create_wastage(payload, user)
+                with patch("routers.manufacturing.next_doc_number", AsyncMock(return_value="WE-26-00001")):
+                    payload = WastageEntry(item_id="RM1", item_name="RM1", qty=8.0, reason_code="NORMAL")
+                    user = {"id": "u1", "name": "T", "role": "admin"}
+                    await mfg_mod.create_wastage(payload, user)
 
         assert abs(saved.get("valuation", 0) - 100.0) < 1e-6  # 12.5 * 8
 
@@ -428,8 +473,9 @@ class TestWastage:
                 return doc
 
             with patch.object(mfg_mod, "crud_create", side_effect=fake_create):
-                payload = WastageEntry(item_id="RM2", item_name="RM2", qty=3.0, reason_code="ABNORMAL")
-                await mfg_mod.create_wastage(payload, {"id": "u1", "name": "T", "role": "admin"})
+                with patch("routers.manufacturing.next_doc_number", AsyncMock(return_value="WE-26-00002")):
+                    payload = WastageEntry(item_id="RM2", item_name="RM2", qty=3.0, reason_code="ABNORMAL")
+                    await mfg_mod.create_wastage(payload, {"id": "u1", "name": "T", "role": "admin"})
 
         assert saved.get("reason_code") == "ABNORMAL"
 
@@ -474,10 +520,20 @@ class TestItc04:
         challan_out = self._make_challan("C2", "2025-05-01", taxable_value=2000.0)  # outside period
         receipt_in = self._make_receipt("R1", "C1", "2025-06-15", qty_recv=8.0, scrap=1.0)
 
-        async def mock_challan_find(query, *a, **kw):
-            start = query.get("date", {}).get("$gte", "")
-            end = query.get("date", {}).get("$lt", "")
-            results = [c for c in [challan_in, challan_out] if start <= c["date"] < end]
+        all_challans = {"C1": challan_in, "C2": challan_out}
+
+        def mock_challan_find(query, *a, **kw):
+            # get_itc04 calls job_work_challans.find() twice with different
+            # filter shapes: a date-range query for the period itself, and a
+            # batched {"id": {"$in": [...]}} lookup (the N+1 fix) to resolve
+            # each inward receipt's parent challan for reference/reporting.
+            if "id" in query and "$in" in query.get("id", {}):
+                ids = query["id"]["$in"]
+                results = [all_challans[i] for i in ids if i in all_challans]
+            else:
+                start = query.get("date", {}).get("$gte", "")
+                end = query.get("date", {}).get("$lt", "")
+                results = [c for c in [challan_in, challan_out] if start <= c["date"] < end]
 
             class FakeCursor:
                 def __init__(self, data): self._data = data
@@ -486,7 +542,7 @@ class TestItc04:
 
             return FakeCursor(results)
 
-        async def mock_receipt_find(query, *a, **kw):
+        def mock_receipt_find(query, *a, **kw):
             start = query.get("date", {}).get("$gte", "")
             end = query.get("date", {}).get("$lt", "")
             results = [r for r in [receipt_in] if start <= r["date"] < end]
@@ -519,13 +575,13 @@ class TestItc04:
         challan = self._make_challan("C1", "2025-06-05", qty=10.0, taxable_value=1000.0)
         receipt = self._make_receipt("R1", "C1", "2025-06-20", qty_recv=7.0, scrap=2.0)
 
-        async def mock_challan_find(query, *a, **kw):
+        def mock_challan_find(query, *a, **kw):
             class FC:
                 def sort(self, *a, **kw): return self
                 async def to_list(self, n): return [challan]
             return FC()
 
-        async def mock_receipt_find(query, *a, **kw):
+        def mock_receipt_find(query, *a, **kw):
             class FC:
                 def sort(self, *a, **kw): return self
                 async def to_list(self, n): return [receipt]
@@ -564,12 +620,12 @@ class TestItc04:
         challan = self._make_challan("C1", "2024-01-01", status="PENDING",
                                      qty=10.0, due_date=past_due, is_overdue=True)
 
-        async def mock_find(query, *a, **kw):
+        def mock_find(query, *a, **kw):
             class FC:
                 async def to_list(self, n): return [challan]
             return FC()
 
-        async def mock_receipt_find(query, *a, **kw):
+        def mock_receipt_find(query, *a, **kw):
             class FC:
                 async def to_list(self, n): return []
             return FC()

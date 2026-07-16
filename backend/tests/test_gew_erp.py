@@ -1,4 +1,4 @@
-"""Comprehensive backend tests for Gravity Engineering Works ERP."""
+﻿"""Comprehensive backend tests for Ormodex ERP."""
 import os
 import time
 from typing import Any
@@ -6,8 +6,8 @@ import pytest
 import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
-ADMIN_EMAIL = "admin@gravityone.com"
-ADMIN_PASSWORD = "Admin@123"
+ADMIN_EMAIL = "admin@ormodex.com"
+ADMIN_PASSWORD = "Admin@123456"
 
 
 @pytest.fixture(scope="session")
@@ -18,7 +18,7 @@ def admin_session() -> Any:
     data = r.json()
     assert "user" in data and "access_token" in data
     s.headers.update({"Authorization": f"Bearer {data['access_token']}"})
-    s.user = data["user"]
+    s.user = data["user"]  # type: ignore
     return s
 
 
@@ -257,7 +257,7 @@ class TestDashboard:
 class TestUsersAdmin:
     def test_create_employee_and_role_check(self, admin_session):
         email = f"test_emp_{int(time.time())}@test.com"
-        r = admin_session.post(f"{BASE_URL}/api/users", json={"name": "TEST_Emp", "email": email, "password": "Pass@123", "role": "employee"})
+        r = admin_session.post(f"{BASE_URL}/api/users", json={"name": "TEST_Emp", "email": email, "password": "Pass@123456789", "role": "employee"})
         assert r.status_code == 200, r.text
         uid = r.json()["id"]
         assert "_id" not in r.json()
@@ -265,7 +265,7 @@ class TestUsersAdmin:
 
         # Login as employee
         emp = requests.Session()
-        rl = emp.post(f"{BASE_URL}/api/auth/login", json={"email": email, "password": "Pass@123"})
+        rl = emp.post(f"{BASE_URL}/api/auth/login", json={"email": email, "password": "Pass@123456789"})
         assert rl.status_code == 200
         emp.headers.update({"Authorization": f"Bearer {rl.json()['access_token']}"})
         # Employee CAN list products

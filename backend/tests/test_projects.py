@@ -10,14 +10,13 @@ Covers:
 import os
 import sys
 
-os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017/test")
 os.environ.setdefault("DB_NAME", "test_erp")
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from routers.projects import _time_cost, _billable_value, _compute_pnl
+from routers.projects import _time_cost, _billable_value, _compute_pnl, _bill_time_lines
 
 
 # ══════════════════════════════════════════════════════════════
@@ -113,3 +112,48 @@ class TestPnl:
         remaining = round(budget - p["total_cost"], 2)
         assert remaining == 2000
         assert p["total_cost"] < budget  # under budget
+
+
+# ══════════════════════════════════════════════════════════════
+# Bill-time invoice line building
+# ══════════════════════════════════════════════════════════════
+
+class TestBillTimeLines:
+    def test_groups_by_rate_band(self):
+        entries = [
+            {"hours": 4, "rate": 1000},
+            {"hours": 6, "rate": 1000},
+            {"hours": 2, "rate": 1500},
+        ]
+        lines = _bill_time_lines(entries, "PRJ")
+        assert len(lines) == 2
+        # sorted by rate ascending: 1000 band then 1500 band
+        assert lines[0]["unit_price"] == 1000
+        assert lines[0]["quantity"] == 10  # 4 + 6
+        assert lines[1]["unit_price"] == 1500
+        assert lines[1]["quantity"] == 2
+
+    def test_lines_are_salesitem_shaped(self):
+        # PDF/GST reports read these keys; missing them breaks the invoice PDF.
+        lines = _bill_time_lines([{"hours": 1, "rate": 500}], "PRJ-9")
+        line = lines[0]
+        for key in ("product_id", "product_name", "sku", "quantity", "unit_price", "gst_rate"):
+            assert key in line
+        assert line["gst_rate"] == 18.0
+        assert line["project_id"] == "PRJ-9"
+
+    def test_skips_zero_and_none_rate(self):
+        # entries with no/zero rate or hours contribute nothing and never crash
+        entries = [
+            {"hours": 5, "rate": None},
+            {"hours": 0, "rate": 1000},
+            {"hours": 3},               # no rate key
+            {"hours": 2, "rate": 800},
+        ]
+        lines = _bill_time_lines(entries, "PRJ")
+        assert len(lines) == 1
+        assert lines[0]["unit_price"] == 800
+        assert lines[0]["quantity"] == 2
+
+    def test_empty(self):
+        assert _bill_time_lines([], "PRJ") == []

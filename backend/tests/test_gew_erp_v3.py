@@ -5,30 +5,31 @@ auth + admin-only delete, _id leakage, persistence of all standard PI fields.
 """
 import os
 import time
+from typing import Any
 
 import pytest
 import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
-ADMIN_EMAIL = "admin@gravityone.com"
-ADMIN_PASSWORD = "Admin@123"
+ADMIN_EMAIL = "admin@ormodex.com"
+ADMIN_PASSWORD = "Admin@123456"
 
 
 @pytest.fixture(scope="module")
-def admin_session():
-    s = requests.Session()
+def admin_session() -> Any:
+    s: Any = requests.Session()
     r = s.post(f"{BASE_URL}/api/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
     assert r.status_code == 200, f"Admin login failed: {r.status_code} {r.text}"
     data = r.json()
     s.headers.update({"Authorization": f"Bearer {data['access_token']}"})
-    s.user = data["user"]
+    s.user = data["user"]  # type: ignore
     return s
 
 
 @pytest.fixture(scope="module")
 def employee_session(admin_session):
     """Create (or reuse) an employee and return an authed session."""
-    email = "test_pi_emp@gravityone.com"
+    email = "test_pi_emp@ormodex.com"
     pw = "EmpPass@123"
     # Best-effort create
     admin_session.post(f"{BASE_URL}/api/users", json={
@@ -212,16 +213,41 @@ class TestPICrud:
         assert r2.json()["total_amount"] == 1000
 
 
-# -------- Admin-only delete --------
-class TestPIDelete:
-    def test_employee_cannot_delete(self, admin_session, employee_session):
+# -------- PI Permissions --------
+class TestPIPermissions:
+    def test_employee_forbidden_all_ops(self, admin_session, employee_session):
         # Create a PI as admin first
         r = admin_session.post(f"{BASE_URL}/api/proforma-invoices", json=_sample_payload())
+        assert r.status_code == 200
         pid = r.json()["id"]
-        re = employee_session.delete(f"{BASE_URL}/api/proforma-invoices/{pid}")
-        assert re.status_code == 403
-        # cleanup
-        admin_session.delete(f"{BASE_URL}/api/proforma-invoices/{pid}")
+
+        try:
+            # Employee cannot list
+            re_list = employee_session.get(f"{BASE_URL}/api/proforma-invoices")
+            assert re_list.status_code == 403
+
+            # Employee cannot create
+            re_create = employee_session.post(f"{BASE_URL}/api/proforma-invoices", json=_sample_payload())
+            assert re_create.status_code == 403
+
+            # Employee cannot get
+            re_get = employee_session.get(f"{BASE_URL}/api/proforma-invoices/{pid}")
+            assert re_get.status_code == 403
+
+            # Employee cannot update
+            re_update = employee_session.put(f"{BASE_URL}/api/proforma-invoices/{pid}", json=_sample_payload())
+            assert re_update.status_code == 403
+
+            # Employee cannot view PDF
+            re_pdf = employee_session.get(f"{BASE_URL}/api/proforma-invoices/{pid}/pdf")
+            assert re_pdf.status_code == 403
+
+            # Employee cannot delete
+            re_delete = employee_session.delete(f"{BASE_URL}/api/proforma-invoices/{pid}")
+            assert re_delete.status_code == 403
+        finally:
+            # cleanup
+            admin_session.delete(f"{BASE_URL}/api/proforma-invoices/{pid}")
 
     def test_admin_can_delete(self, admin_session):
         r = admin_session.post(f"{BASE_URL}/api/proforma-invoices", json=_sample_payload())

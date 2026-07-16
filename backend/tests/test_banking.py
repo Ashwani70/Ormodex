@@ -8,8 +8,8 @@ Covers:
 """
 import os
 import sys
+from typing import Any, Dict
 
-os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017/test")
 os.environ.setdefault("DB_NAME", "test_erp")
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 
@@ -212,3 +212,35 @@ class TestOverdueInterest:
     def test_not_applicable_if_same_day_as_due(self):
         result = _compute_overdue_interest(100_000, "2024-06-01", "2024-06-01", 0, 18.0, "simple")
         assert result["applicable"] is False
+
+
+# ══════════════════════════════════════════════════════════════
+# Cheque PDF
+# ══════════════════════════════════════════════════════════════
+
+class TestChequePdf:
+    def _rendered(self) -> Dict[str, Any]:
+        return {
+            "format": "Standard HDFC A4", "bank_name": "HDFC Bank",
+            "fields": [
+                {"field": "payee", "x": 120, "y": 45, "font_size": 12, "font": "Arial", "value": "Acme Industries Pvt Ltd"},
+                {"field": "amount_numeric", "x": 400, "y": 45, "font_size": 12, "value": "12,34,567.50"},
+                {"field": "amount_words", "x": 80, "y": 65, "font_size": 10, "value": "Twelve Lakh Rupees Only"},
+                {"field": "date", "x": 420, "y": 25, "font_size": 11, "value": "2026-06-21"},
+            ],
+            "micr_line": "123456789 001234 0001",
+        }
+
+    def test_builds_valid_pdf(self):
+        from core.cheque_pdf import build_cheque_pdf
+        pdf = build_cheque_pdf(self._rendered())
+        assert pdf[:4] == b"%PDF"
+        assert len(pdf) > 500
+
+    def test_skips_empty_fields_without_error(self):
+        from core.cheque_pdf import build_cheque_pdf
+        r = self._rendered()
+        r["fields"].append({"field": "unknown", "x": 10, "y": 10, "font_size": 9, "value": ""})
+        r["micr_line"] = None
+        pdf = build_cheque_pdf(r)
+        assert pdf[:4] == b"%PDF"

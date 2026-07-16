@@ -11,7 +11,6 @@ Covers:
 import os
 import sys
 
-os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017/test")
 os.environ.setdefault("DB_NAME", "test_erp")
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret")

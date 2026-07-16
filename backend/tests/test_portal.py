@@ -10,7 +10,6 @@ Covers:
 import os
 import sys
 
-os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017/test")
 os.environ.setdefault("DB_NAME", "test_erp")
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret")
@@ -64,6 +63,16 @@ class TestPortalToken:
         tok = create_portal_token("pu1", "CUST-1", "customer", "a@b.com")
         with pytest.raises(HTTPException):
             decode_portal_token(tok + "tamper")
+
+    def test_secret_fails_closed_without_env_vars(self, monkeypatch):
+        # _portal_secret() must NOT fall back to a hardcoded string when
+        # JWT_SECRET/SECRET_KEY are both unset — that would let anyone forge
+        # a valid portal token against any deployment that forgot to
+        # configure them, since a hardcoded fallback is visible in source.
+        monkeypatch.delenv("JWT_SECRET", raising=False)
+        monkeypatch.delenv("SECRET_KEY", raising=False)
+        with pytest.raises(RuntimeError):
+            _portal_secret()
 
     def test_missing_party_id_rejected(self):
         import jwt

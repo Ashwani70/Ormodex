@@ -7,7 +7,6 @@ import os
 import sys
 
 # Must be set before any import that touches core.db (which reads env at import time)
-os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017/test")
 os.environ.setdefault("DB_NAME", "test_erp")
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 

@@ -204,3 +204,96 @@ def test_item_override_beats_company_default():
     _post("item1", GODOWN, 150, "PURCHASE", rate=130, dt="2026-01-03")
     out = _post("item1", GODOWN, -220, "SALE", dt="2026-01-04")
     assert abs(out["value"]) == 23200             # FIFO cost flow, not LIFO's 27200
+
+
+# ── Stock Log dual-write mirror (Stock Log fix 2026-07-15) ──
+#
+# post_entry() must mirror every posting into stock_transactions, since that's
+# the table the Stock Log grid, its summary cards, and its negative-stock
+# count all read exclusively from — see core/stock_ledger.py's "Dual-write"
+# docstring for the full story. These tests catch a regression where a v2
+# posting flow (GRN, Purchase Return, Stock Adjustment, ...) becomes invisible
+# to Stock Log again.
+
+def test_post_entry_mirrors_into_stock_transactions():
+    db = _setup()
+    asyncio.run(db.stock_items.insert_one(
+        {"id": "item1", "name": "Widget", "product_id": "prod1", "valuation_method": "FIFO"}
+    ))
+    entry = _post("item1", GODOWN, 50, "PURCHASE", rate=100, dt="2026-01-01")
+
+    mirrored = db["stock_transactions"].docs
+    assert len(mirrored) == 1
+    row = mirrored[0]
+    assert row["product_id"] == "prod1"          # resolved via stock_items link
+    assert row["product_name"] == "Widget"
+    assert row["godown_id"] == GODOWN
+    assert row["delta"] == 50
+    assert row["doc_type"] == "PURCHASE"
+    assert row["rate"] == entry["rate"]
+    assert row["value"] == entry["value"]
+
+
+def test_post_entry_mirror_falls_back_when_item_unlinked_to_product():
+    """A standalone v2 stock_items row (no product_id) must still get a
+    usable mirror row — Stock Log should show the item's own name, not a blank."""
+    db = _setup()
+    asyncio.run(db.stock_items.insert_one(
+        {"id": "item2", "name": "Standalone Item", "valuation_method": "WEIGHTED_AVG"}
+    ))
+    _post("item2", GODOWN, 10, "PURCHASE", rate=50, dt="2026-01-01")
+
+    row = db["stock_transactions"].docs[0]
+    assert row["product_id"] == "item2"           # falls back to stock_item_id
+    assert row["product_name"] == "Standalone Item"
+
+
+def test_post_entry_mirrors_outward_move_with_negative_delta():
+    db = _setup()
+    _seed_item(db, "WEIGHTED_AVG")
+    _post("item1", GODOWN, 20, "PURCHASE", rate=100, dt="2026-01-01")
+    _post("item1", GODOWN, -5, "SALE", dt="2026-01-02")
+
+    rows = db["stock_transactions"].docs
+    assert len(rows) == 2
+    out_row = rows[1]
+    assert out_row["delta"] == -5
+    assert out_row["doc_type"] == "SALES"          # SALE movement_type -> SALES doc_type
+
+
+def test_stock_transfer_posts_exactly_two_mirror_rows_no_double_write():
+    """Regression guard: Stock Transfer used to hand-write its own mirror rows
+    IN ADDITION to post_entry's; that would now double-post. Exactly one mirror
+    row per post_entry call (two calls for a transfer: OUT + IN)."""
+    db = _setup()
+    _seed_item(db, "FIFO")
+    _post("item1", "gA", 10, "PURCHASE", rate=100, dt="2026-01-01")
+    out = _post("item1", "gA", -4, "TRANSFER_OUT", dt="2026-01-02")
+    _post("item1", "gB", 4, "TRANSFER_IN", rate=out["rate"], dt="2026-01-02")
+
+    rows = db["stock_transactions"].docs
+    # 1 purchase + 1 transfer-out + 1 transfer-in = 3, never 4+ from double-mirroring.
+    assert len(rows) == 3
+    transfer_rows = [r for r in rows if r["doc_type"] == "STOCK_TRANSFER"]
+    assert len(transfer_rows) == 2
+    assert {r["delta"] for r in transfer_rows} == {-4, 4}
+
+
+def test_mirror_failure_does_not_block_the_ledger_write():
+    """The mirror is best-effort: if stock_transactions insert fails for any
+    reason, stock_ledger_entries (the valuation source of truth) must still
+    have been written — Stock Log visibility must never be able to break a
+    stock posting."""
+    db = _setup()
+    _seed_item(db, "FIFO")
+
+    class _BoomCollection(_Collection):
+        async def insert_one(self, doc, session=None):
+            raise RuntimeError("simulated stock_transactions outage")
+
+    db._cols["stock_transactions"] = _BoomCollection()
+
+    entry = _post("item1", GODOWN, 10, "PURCHASE", rate=100, dt="2026-01-01")
+    assert entry["id"]  # post_entry returned normally despite the mirror failure
+    oh = asyncio.run(sl.on_hand("item1"))
+    assert oh["qty"] == 10 and oh["value"] == 1000  # ledger truth is intact

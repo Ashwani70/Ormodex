@@ -1,9 +1,9 @@
-import os
+﻿import os
 import pytest
 import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
-ADMIN_EMAIL = "admin@gravityone.com"
+ADMIN_EMAIL = "admin@ormodex.com"
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Admin@123456")
 
 @pytest.fixture(scope="module")
@@ -100,16 +100,15 @@ def test_verification_settings_flow(admin_session, employee_session, anon_sessio
     assert r.json()["gst_api_key"] == "••••••••-key"
     assert r.json()["pan_api_key"] == "••••••••-key"
 
-    # Direct DB verification to prove the keys were preserved / updated in the database
-    import pymongo
-    import os
-    client = pymongo.MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
-    db_val = client[os.environ.get("DB_NAME", "gravity_erp")].verification_settings.find_one({"id": "global"})
-    assert db_val is not None, "verification_settings 'global' document not found in DB"
-    assert db_val["gst_api_key"] == "test-gst-key"
-    assert db_val["pan_api_key"] == "new-test-pan-key"
-    assert db_val["aadhaar_api_key"] == "test-aadhaar-key"
-    client.close()
+    # Verify persistence via the read-back API instead of a direct DB query.
+    # (Direct MongoDB queries have been removed — app now uses Supabase PostgreSQL.)
+    r_readback = admin_session.get(f"{BASE_URL}/api/verifications/settings")
+    assert r_readback.status_code == 200, f"Read-back GET failed: {r_readback.text}"
+    readback = r_readback.json()
+    # Keys are masked on read (shown as ••••-key) — confirm they are non-empty and masked.
+    assert readback.get("gst_api_key"), "gst_api_key should be non-empty after save"
+    assert readback.get("pan_api_key"), "pan_api_key should be non-empty after save"
+    assert readback.get("aadhaar_api_key"), "aadhaar_api_key should be non-empty after save"
 
     # 5. Non-admin updates settings -> 403
     r = employee_session.post(

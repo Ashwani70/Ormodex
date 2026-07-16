@@ -6,10 +6,12 @@ transfers between godowns, both idempotent.
 """
 import asyncio
 
+import core
 import core.db
 import core.utils as utils
 import core.voucher_engine as ve
 import core.stock_ledger as sl
+import core.product_stock_bridge
 
 
 class _Cursor:
@@ -58,8 +60,10 @@ class _DB:
 
 
 def _setup():
-    db = _DB()
+    from typing import Any
+    db: Any = _DB()
     core.db.db = db; utils.db = db; ve.db = db; sl.db = db
+    core.product_stock_bridge.db = db
     asyncio.run(db.fiscal_years.insert_one({"id": "fy", "name": "2026-27", "is_active": True}))
     for iid in ("RM1", "RM2", "FG", "ITEM"):
         asyncio.run(db.stock_items.insert_one(

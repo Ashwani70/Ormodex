@@ -1,4 +1,4 @@
-"""Iteration 2 backend tests — object storage uploads, PDFs, multi-currency.
+﻿"""Iteration 2 backend tests — object storage uploads, PDFs, multi-currency.
 
 Reuses admin login pattern from test_gew_erp.py.
 """
@@ -12,8 +12,8 @@ import pytest
 import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
-ADMIN_EMAIL = "admin@gravityone.com"
-ADMIN_PASSWORD = "Admin@123"
+ADMIN_EMAIL = "admin@ormodex.com"
+ADMIN_PASSWORD = "Admin@123456"
 
 
 def _make_png_bytes(width=2, height=2):
@@ -81,6 +81,8 @@ class TestUploads:
         assert r.status_code == 400
 
     def test_serve_file_unauth(self, admin_session):
+        # Uploaded files now require authentication (security fix): an
+        # unauthenticated request must be rejected, not served.
         path = getattr(admin_session, "uploaded_path", None)
         if not path:
             pytest.skip("upload didn't run first")

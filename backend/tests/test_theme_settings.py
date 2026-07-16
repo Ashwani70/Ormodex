@@ -1,10 +1,10 @@
-import os
+﻿import os
 import pytest
 import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
-ADMIN_EMAIL = "admin@gravityone.com"
-ADMIN_PASSWORD = "Admin@123"
+ADMIN_EMAIL = "admin@ormodex.com"
+ADMIN_PASSWORD = "Admin@123456"
 
 @pytest.fixture(scope="module")
 def admin_session():
@@ -16,14 +16,15 @@ def admin_session():
     assert r.status_code == 200, f"Admin login failed: {r.status_code} {r.text}"
     data = r.json()
     s.headers.update({"Authorization": f"Bearer {data['access_token']}"})
-    s.user = data["user"]
+    s.user = data["user"]  # type: ignore
     return s
 
 @pytest.fixture(scope="module")
 def employee_session(admin_session):
-    email = "employee_theme@gravityone.com"
-    password = "Employee@123"
-    admin_session.post(
+    import uuid
+    email = f"employee_theme_{uuid.uuid4().hex[:6]}@ormodex.com"
+    password = "EmployeePass@123"
+    r_create = admin_session.post(
         f"{BASE_URL}/api/users",
         json={
             "name": "Employee Theme Test",
@@ -34,6 +35,7 @@ def employee_session(admin_session):
             "permissions": {}
         }
     )
+    assert r_create.status_code == 200, f"User creation failed: {r_create.text}"
     s = requests.Session()
     r = s.post(
         f"{BASE_URL}/api/auth/login",
@@ -42,7 +44,7 @@ def employee_session(admin_session):
     assert r.status_code == 200, f"Employee login failed: {r.status_code} {r.text}"
     data = r.json()
     s.headers.update({"Authorization": f"Bearer {data['access_token']}"})
-    s.user = data["user"]
+    s.user = data["user"]  # type: ignore
     return s
 
 @pytest.fixture(scope="module")

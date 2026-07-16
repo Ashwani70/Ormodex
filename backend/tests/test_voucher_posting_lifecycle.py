@@ -95,7 +95,7 @@ class _DB:
 
 def _setup():
     db = _DB()
-    core.db.db = db; utils.db = db; ve.db = db; sl.db = db
+    core.db.db = db; utils.db = db; ve.db = db; sl.db = db  # type: ignore[assignment]
     asyncio.run(db.fiscal_years.insert_one({"id": "fy", "name": "2026-27", "is_active": True}))
     # Stock item with a known valuation method (weighted avg).
     asyncio.run(db.stock_items.insert_one(

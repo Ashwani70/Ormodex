@@ -102,7 +102,7 @@ class _DB:
 
 def _setup():
     db = _DB()
-    core.db.db = db; utils.db = db; vn.db = db; ve.db = db
+    core.db.db = db; utils.db = db; vn.db = db; ve.db = db  # type: ignore[assignment]
     return db
 
 
@@ -135,6 +135,7 @@ def test_yearly_restart_resets_per_fy():
                                            fy="2026-27", voucher_date="2026-06-01"))
     b = asyncio.run(vn.generate_voucher_no(tenant=T, parent_type="sales", voucher_type_id="vt",
                                            fy="2027-28", voucher_date="2027-04-01"))
+    assert a is not None and b is not None
     assert a.endswith("00001") and b.endswith("00001")   # new FY restarts at 1
     assert "2026-27" in a and "2027-28" in b
 
@@ -145,6 +146,7 @@ def test_monthly_restart_buckets_by_month():
                                            fy="2026-27", voucher_date="2026-06-01"))
     b = asyncio.run(vn.generate_voucher_no(tenant=T, parent_type="sales", voucher_type_id="vt",
                                            fy="2026-27", voucher_date="2026-07-01"))
+    assert a is not None and b is not None
     assert "2026-06" in a and a.endswith("00001")
     assert "2026-07" in b and b.endswith("00001")        # July restarts
 
@@ -182,6 +184,7 @@ def test_numbering_is_tenant_isolated():
          "prefix": "SV", "restart_rule": "yearly"}))
     a = asyncio.run(vn.generate_voucher_no(tenant="t1", parent_type="sales", voucher_type_id="vt", fy="2026-27", voucher_date="2026-06-01"))
     b = asyncio.run(vn.generate_voucher_no(tenant="t2", parent_type="sales", voucher_type_id="vt", fy="2026-27", voucher_date="2026-06-01"))
+    assert a is not None and b is not None
     assert a.endswith("00001") and b.endswith("00001")   # separate counters per tenant
 
 
