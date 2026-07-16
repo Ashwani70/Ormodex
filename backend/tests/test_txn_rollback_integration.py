@@ -113,6 +113,15 @@ def _setup() -> _DB:
     utils.db = db  # type: ignore[assignment]
     ve.db = db  # type: ignore[assignment]
     asyncio.run(db.fiscal_years.insert_one({"id": "fy", "name": "2026-27", "is_active": True}))
+
+    # Ledger -> chart_of_accounts links (voucher_engine._ledger_coa requires
+    # every posted line's ledger to resolve a coa_account_id).
+    asyncio.run(db.chart_of_accounts.insert_one({"id": "coa_1", "code": "1002", "name": "Bank Account"}))
+    for tenant in ("t1", "tenantA", "tenantB"):
+        for ledger_id in ("L_vendor", "L_bank", "a", "b"):
+            asyncio.run(db.master_ledgers.insert_one({
+                "id": ledger_id, "tenant_id": tenant, "name": ledger_id, "coa_account_id": "coa_1",
+            }))
     return db
 
 

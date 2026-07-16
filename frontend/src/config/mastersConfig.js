@@ -32,10 +32,11 @@ export const MASTERS = {
     title: "Ledgers", singular: "Ledger", eyebrow: "Accounting Masters",
     description: "Ledger accounts under a group, with GST / PAN / TDS attributes.",
     endpoint: "/masters/ledgers",
-    refSources: { groups: "/masters/groups", products: "/products" },
+    refSources: { groups: "/masters/groups", products: "/products", coa: "/accounting/chart-of-accounts" },
     columns: [
       { key: "name", label: "Name" },
       { key: "group_id", label: "Group", render: (r, h) => h.refLabel("groups", r.group_id) },
+      { key: "coa_account_id", label: "CoA Account", render: (r, h) => h.refLabel("coa", r.coa_account_id) },
       { key: "opening_balance", label: "Opening", render: (r) => `${r.opening_balance ?? 0} ${r.dr_cr || ""}` },
       { key: "gstin", label: "GSTIN" },
       { key: "product_id", label: "Linked Item", render: (r, h) => r.product_id ? h.refLabel("products", r.product_id) : (r.product_name_manual || "—") },
@@ -43,6 +44,7 @@ export const MASTERS = {
     fields: [
       { key: "name", label: "Name", type: "text", required: true },
       { key: "group_id", label: "Group", type: "ref", ref: "groups", required: true },
+      { key: "coa_account_id", label: "Chart of Accounts Account", type: "ref", ref: "coa", required: true, renderOption: (a) => `${a.code} — ${a.name}`, hint: "Required so this ledger's postings can appear on Trial Balance / P&L / Balance Sheet" },
       { key: "opening_balance", label: "Opening Balance", type: "number" },
       { key: "dr_cr", label: "Dr / Cr", type: "select", options: ["Dr", "Cr"], default: "Dr" },
       { key: "gstin", label: "GSTIN", type: "text" },

@@ -55,6 +55,7 @@ GstRegType = Literal["Regular", "Composition", "Unregistered", "Consumer", "SEZ"
 class Ledger(BaseModel):
     name: str
     group_id: str
+    coa_account_id: str  # links to chart_of_accounts.id — required so the voucher engine can post a real account_code
     opening_balance: float = 0.0
     dr_cr: Literal["Dr", "Cr"] = "Dr"
     gstin: Optional[str] = None
@@ -71,6 +72,7 @@ class Ledger(BaseModel):
 class LedgerUpdate(BaseModel):
     name: Optional[str] = None
     group_id: Optional[str] = None
+    coa_account_id: Optional[str] = None
     opening_balance: Optional[float] = None
     dr_cr: Optional[Literal["Dr", "Cr"]] = None
     gstin: Optional[str] = None

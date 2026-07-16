@@ -134,9 +134,33 @@ async def _next_je_number(tenant: str) -> str:
     return f"JE/{fy_name}/{str(count + 1).zfill(5)}"
 
 
-async def _ledger_name(ledger_id: str, tenant: str) -> str:
-    led = await db["master_ledgers"].find_one(tenant_filter(tenant, {"id": ledger_id}), {"_id": 0, "name": 1})
-    return (led or {}).get("name", ledger_id)
+async def _ledger_coa(ledger_id: str, tenant: str) -> dict:
+    """Resolve a ledger's name + linked chart_of_accounts code.
+
+    Raises if the ledger has no coa_account_id (or it points at a missing/
+    deleted CoA row) — every report (Trial Balance/P&L/Balance Sheet, and
+    reports_engine.py's aggregations) groups journal lines strictly by
+    account_code, so posting a line without one would silently make it
+    unreportable rather than fail loudly.
+    """
+    led = await db["master_ledgers"].find_one(tenant_filter(tenant, {"id": ledger_id}), {"_id": 0})
+    if not led:
+        raise HTTPException(400, f"Ledger '{ledger_id}' not found")
+    coa_id = led.get("coa_account_id")
+    if not coa_id:
+        raise HTTPException(
+            400,
+            f"Ledger '{led.get('name', ledger_id)}' has no linked Chart of Accounts "
+            "code — edit the ledger master and assign one before posting.",
+        )
+    coa = await db.chart_of_accounts.find_one({"id": coa_id}, {"_id": 0, "code": 1})
+    if not coa:
+        raise HTTPException(
+            400,
+            f"Ledger '{led.get('name', ledger_id)}' is linked to a Chart of Accounts "
+            "entry that no longer exists — edit the ledger master and re-assign one.",
+        )
+    return {"name": led.get("name", ledger_id), "account_code": coa["code"]}
 
 
 async def _post_journal_from_lines(voucher: dict, tenant: str, user: dict, *, reversing: bool = False) -> Optional[dict]:
@@ -152,9 +176,11 @@ async def _post_journal_from_lines(voucher: dict, tenant: str, user: dict, *, re
     lines = voucher.get("accounting_lines") or []
     je_lines = []
     for l in lines:
+        ledger = await _ledger_coa(l["ledger_id"], tenant)
         je_lines.append({
             "ledger_id": l["ledger_id"],
-            "account_name": await _ledger_name(l["ledger_id"], tenant),
+            "account_code": ledger["account_code"],
+            "account_name": ledger["name"],
             "debit": round(l["amount"], 2) if l["dr_cr"] == "Dr" else 0.0,
             "credit": round(l["amount"], 2) if l["dr_cr"] == "Cr" else 0.0,
             "narration": l.get("narration"),

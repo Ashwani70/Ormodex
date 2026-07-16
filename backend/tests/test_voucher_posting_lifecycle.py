@@ -100,6 +100,12 @@ def _setup():
     # Stock item with a known valuation method (weighted avg).
     asyncio.run(db.stock_items.insert_one(
         {"id": "I1", "tenant_id": "t1", "is_deleted": False, "valuation_method": "WEIGHTED_AVG"}))
+    # Ledgers for the accounting-voucher lifecycle test (voucher_engine._ledger_coa
+    # requires every posted line's ledger to resolve a coa_account_id).
+    asyncio.run(db.chart_of_accounts.insert_one({"id": "coa_1", "code": "1002", "name": "Bank Account"}))
+    for ledger_id in ("L_v", "L_b"):
+        asyncio.run(db.master_ledgers.insert_one(
+            {"id": ledger_id, "tenant_id": "t1", "is_deleted": False, "name": ledger_id, "coa_account_id": "coa_1"}))
     return db
 
 

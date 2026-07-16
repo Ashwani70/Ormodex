@@ -293,7 +293,9 @@ async def trial_balance(
     balances: dict = {}
     for e in entries:
         for line in e.get("lines", []):
-            code = line["account_code"]
+            # Defensive fallback: entries posted before every JE line was
+            # required to carry account_code (see master_ledgers.coa_account_id).
+            code = line.get("account_code") or "UNMAPPED"
             if code not in balances:
                 balances[code] = {"account_code": code, "account_name": line["account_name"], "debit": 0, "credit": 0}
             balances[code]["debit"] += line.get("debit", 0)
@@ -343,7 +345,7 @@ async def profit_and_loss(
     expense = {}
     for e in entries:
         for line in e.get("lines", []):
-            code = line["account_code"]
+            code = line.get("account_code") or "UNMAPPED"
             acc = accounts.get(code, {})
             acc_type = acc.get("account_type")
             net = line.get("credit", 0) - line.get("debit", 0)
@@ -384,7 +386,7 @@ async def balance_sheet(as_of_date: Optional[str] = None, user=Depends(get_curre
     summary: dict = {}
     for e in entries:
         for line in e.get("lines", []):
-            code = line["account_code"]
+            code = line.get("account_code") or "UNMAPPED"
             acc = accounts.get(code, {})
             if code not in summary:
                 summary[code] = {

@@ -406,6 +406,23 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         logger.warning("stock_log index fix skipped (non-fatal): %s", _e)
 
+    # Ledger→Chart of Accounts link: voucher_engine stamps account_code onto
+    # journal lines by resolving each line's ledger_id through this column.
+    # Without it, Trial Balance/P&L/Balance Sheet KeyError on any
+    # voucher-engine-posted entry (they group strictly by account_code).
+    # Mirrors alembic migration 023.
+    _ledger_coa_link_fix = """
+        ALTER TABLE IF EXISTS master_ledgers ADD COLUMN IF NOT EXISTS coa_account_id TEXT DEFAULT NULL;
+        CREATE INDEX IF NOT EXISTS ix_master_ledgers_coa_account_id ON master_ledgers (coa_account_id);
+    """
+    try:
+        async with engine.begin() as conn:
+            for _stmt in [s.strip() for s in _ledger_coa_link_fix.strip().split(";") if s.strip()]:
+                await conn.execute(text(_stmt))
+        logger.info("master_ledgers.coa_account_id ensured")
+    except Exception as _e:
+        logger.warning("ledger CoA link fix skipped (non-fatal): %s", _e)
+
     # Database indexes for inventory query optimization
     _inventory_performance_indexes = """
         CREATE INDEX IF NOT EXISTS ix_stock_ledger_item_godown_date ON stock_ledger_entries (stock_item_id, godown_id, entry_date);

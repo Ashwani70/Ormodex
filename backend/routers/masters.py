@@ -136,6 +136,7 @@ async def create_ledger(payload: Ledger, tenant: str = Depends(tenant_ctx), user
     _require_masters(user)
     data = payload.model_dump()
     await _ensure_ref(COLL["groups"], data["group_id"], tenant, "group_id")
+    await _ensure_coa_account(data["coa_account_id"])
     return await masters_create(COLL["ledgers"], data, tenant, user, unique_fields=["name"])
 
 
@@ -145,6 +146,8 @@ async def update_ledger(item_id: str, payload: LedgerUpdate, tenant: str = Depen
     data = _clean(payload)
     if "group_id" in data:
         await _ensure_ref(COLL["groups"], data["group_id"], tenant, "group_id")
+    if "coa_account_id" in data:
+        await _ensure_coa_account(data["coa_account_id"])
     return await masters_update(COLL["ledgers"], item_id, data, tenant, user, unique_fields=["name"])
 
 
@@ -586,6 +589,16 @@ async def _ensure_ref(collection: str, ref_id: str, tenant: str, field: str):
     found = await db[collection].find_one(tenant_filter(tenant, {"id": ref_id}), {"_id": 0, "id": 1})
     if not found:
         raise HTTPException(400, f"Referenced {field} not found in this tenant")
+
+
+async def _ensure_coa_account(account_id: str):
+    """Validate a chart_of_accounts row exists. Not tenant-scoped: routers/accounting.py
+    itself never filters chart_of_accounts by tenant (single-tenant deployment)."""
+    if not account_id:
+        raise HTTPException(400, "coa_account_id is required")
+    found = await db.chart_of_accounts.find_one({"id": account_id}, {"_id": 0, "id": 1})
+    if not found:
+        raise HTTPException(400, "Referenced Chart of Accounts entry not found")
 
 
 async def _ensure_single_base_currency(tenant: str, exclude_id: Optional[str]):

@@ -78,6 +78,14 @@ def _setup():
     utils.db = db  # type: ignore
     ve.db = db  # type: ignore
     asyncio.run(db.fiscal_years.insert_one({"id": "fy", "name": "2026-27", "is_active": True}))
+
+    # Ledger -> chart_of_accounts links (voucher_engine._ledger_coa requires
+    # every posted line's ledger to resolve a coa_account_id).
+    asyncio.run(db.chart_of_accounts.insert_one({"id": "coa_1", "code": "1002", "name": "Bank Account - Primary"}))
+    for ledger_id in ("L_vendor", "L_bank", "a", "b", "bank", "cash"):
+        asyncio.run(db.master_ledgers.insert_one({
+            "id": ledger_id, "tenant_id": TENANT, "name": ledger_id, "coa_account_id": "coa_1",
+        }))
     return db
 
 
@@ -200,6 +208,11 @@ def test_reversing_journal_posts_reports_only_and_auto_reverses():
 
 def test_posted_entries_are_tenant_stamped():
     db = _setup()
+    for tenant in ("tenantA", "tenantB"):
+        for ledger_id in ("L_vendor", "L_bank"):
+            asyncio.run(db.master_ledgers.insert_one({
+                "id": ledger_id, "tenant_id": tenant, "name": ledger_id, "coa_account_id": "coa_1",
+            }))
     asyncio.run(ve.post_voucher(_voucher("payment", PAY_LINES, vid="a"), USER, "tenantA"))
     asyncio.run(ve.post_voucher(_voucher("payment", PAY_LINES, vid="b"), USER, "tenantB"))
     tenants = {j["tenant_id"] for j in db.journal_entries.docs}

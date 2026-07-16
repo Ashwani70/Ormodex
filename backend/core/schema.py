@@ -551,6 +551,11 @@ class MasterLedger(Base):
     id = _pk(); tenant_id = _text(); name = _text(); group_id = _text()
     opening_balance = _num(); balance_type = _text(); is_deleted = _bool()
     deleted_at = _ts(); created_at = _ts(); updated_at = _ts()
+    # Links this ledger to a chart_of_accounts row (by id) so the voucher
+    # engine can stamp a real account_code onto journal lines — every
+    # financial report (Trial Balance/P&L/Balance Sheet) groups by
+    # account_code, which master_ledgers never carried on its own.
+    coa_account_id = _text()
 
 
 class MasterGroup(Base):

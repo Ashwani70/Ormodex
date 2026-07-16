@@ -69,8 +69,10 @@ def _setup():
     asyncio.run(db.fiscal_years.insert_one({"id": "fy", "name": "2026-27", "is_active": True}))
     for code, name in [("5003", "Salaries & Wages"), ("2300", "Salary Payable"),
                        ("2006", "TDS Payable"), ("2002", "PF Payable"), ("2003", "ESI Payable")]:
+        asyncio.run(db.chart_of_accounts.insert_one({"id": f"coa_{code}", "code": code, "name": name}))
         asyncio.run(db.master_ledgers.insert_one(
-            {"id": f"L_{code}", "tenant_id": "t1", "is_deleted": False, "name": name}))
+            {"id": f"L_{code}", "tenant_id": "t1", "is_deleted": False, "name": name,
+             "coa_account_id": f"coa_{code}"}))
     return db
 
 
