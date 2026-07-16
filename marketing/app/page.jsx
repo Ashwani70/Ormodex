@@ -1,10 +1,11 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 import Reveal from "@/components/Reveal";
 import HeroIllustration from "@/components/HeroIllustration";
 import DemoForm from "@/components/DemoForm";
 import AuroraBackground from "@/components/AuroraBackground";
 import OSDownload from "@/components/OSDownload";
-import AuthButton from "@/components/AuthButton";
+import ProductTourVideo from "@/components/ProductTourVideo";
+import { ProblemIconMap } from "@/components/ProblemIcons";
 
 // ── Data ──────────────────────────────────────────────────────────────
 const LOGOS = ["NORTHFORGE", "SteelCraft", "VESTRA", "Apex Castings", "Loomwise", "EXIM Global"];
@@ -21,7 +22,7 @@ const PROBLEMS = [
 const FEATURES = [
   ["Sales & CRM", "Leads, quotes, orders and follow-ups in one pipeline.", "M3 7h18M3 12h18M3 17h12"],
   ["Purchase Management", "POs, GRNs, vendor bills and returns end-to-end.", "M6 2l1 4h13l-2 9H8L6 2H3"],
-  ["Inventory & Warehouse", "Multi-godown stock, batches, serials and transfers.", "M3 7l9-4 9 4-9 4-9-4zM3 7v10l9 4 9-4V7"],
+  ["Inventory & Warehouse", "Multi-warehouse stock, batches, serials and transfers.", "M3 7l9-4 9 4-9 4-9-4zM3 7v10l9 4 9-4V7"],
   ["Production Planning", "BOMs, work orders and job-work tracking.", "M12 2v20M2 12h20"],
   ["Accounting & GST", "Tally-style books with GST baked in.", "M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"],
   ["e-Invoicing", "IRN + QR generation, no separate portal.", "M5 3h14v18l-7-3-7 3z"],
@@ -32,11 +33,41 @@ const FEATURES = [
 ];
 
 const INDUSTRIES = [
-  ["Manufacturing", "BOMs, work orders, costing and shop-floor visibility."],
-  ["Forging & Casting", "Heat-wise tracking, scrap, and job-work outsourcing."],
-  ["Garments", "Style/size/colour matrices and lot-based inventory."],
-  ["Trading", "Fast billing, multi-rate pricing and stock turns."],
-  ["Export Businesses", "Multi-currency, export invoices and documentation."],
+  {
+    title: "Manufacturing",
+    description: "BOMs, work orders, costing and shop-floor visibility.",
+    image: "/images/manufacturing.png",
+    id: "manufacturing",
+    features: ["Multi-level BOMs", "Job Card Tracking", "WIP Valuation", "Cost estimation"],
+  },
+  {
+    title: "Forging & Casting",
+    description: "Heat-wise tracking, scrap, and job-work outsourcing.",
+    image: "/images/forging.png",
+    id: "forging",
+    features: ["Heat-number traceability", "Scrap & recovery tracking", "Subcontracting / Job-work", "Furnace logbooks"],
+  },
+  {
+    title: "Garments",
+    description: "Style/size/colour matrices and lot-based inventory.",
+    image: "/images/garments.png",
+    id: "garments",
+    features: ["Matrix grid inputs", "Lot & bundle tracking", "Bespoke production orders", "Trim & accessory planning"],
+  },
+  {
+    title: "Trading",
+    description: "Fast billing, multi-rate pricing and stock turns.",
+    image: "/images/trading.png",
+    id: "trading",
+    features: ["Point of Sale (POS)", "Batch & expiry management", "Multiple price lists", "Real-time stock aging"],
+  },
+  {
+    title: "Export Businesses",
+    description: "Multi-currency, export invoices and documentation.",
+    image: "/images/export.png",
+    id: "export",
+    features: ["Multi-currency billing", "Export invoices & packing lists", "Duty drawback tracking", "Shipping bill reference"],
+  },
 ];
 
 const BENEFITS = [
@@ -51,37 +82,32 @@ const PLANS = [
   {
     name: "Single User",
     who: "Solo founders, accountants & small shops",
-    price: "Starter",
+    price: "₹1,499",
+    unit: "/month",
     featured: false,
     points: ["1 user login", "All core modules", "GST billing & e-Invoicing", "Desktop + web access", "Email support"],
   },
   {
     name: "Multi User",
     who: "Growing teams that run on shared data",
-    price: "Most popular",
+    price: "₹999",
+    unit: "/user/month",
     featured: true,
-    points: ["Unlimited users & roles", "Everything in Single User", "Multi-branch / multi-godown", "Approvals & audit trail", "Priority support + onboarding"],
+    points: ["Unlimited users & roles", "Everything in Single User", "Multi-branch / multi-warehouse", "Approvals & audit trail", "Priority support + onboarding"],
   },
   {
     name: "Enterprise",
     who: "Large organisations & custom workflows",
     price: "Custom",
+    unit: "",
     featured: false,
     points: ["Dedicated environment", "Custom modules & API", "SSO & advanced security", "On-prem / private cloud", "Dedicated success manager"],
   },
 ];
 
-const ADDONS = [
-  ["e-Invoicing & e-Way Bill", "Direct IRN/QR + e-Way Bill generation from billing."],
-  ["AI Assistant", "Natural-language reports, anomaly alerts and insights."],
-  ["WhatsApp & SMS", "Send invoices, payment reminders and OTPs automatically."],
-  ["Payment Gateway", "Collect online payments with auto-reconciliation."],
-  ["Tally / Excel Bridge", "Two-way sync and bulk import with what you use today."],
-  ["Mobile App", "Approvals, dashboards and field sales on the go."],
-];
 
 const TESTIMONIALS = [
-  ["Gravity One cut our monthly closing from 9 days to 2. The GST module alone paid for itself.", "Operations Head", "Forging Industry"],
+  ["Ormodex cut our monthly closing from 9 days to 2. The GST module alone paid for itself.", "Operations Head", "Forging Industry"],
   ["Stock accuracy went from chaos to 99%. Our sales team finally trusts the numbers.", "Director", "Garment Manufacturer"],
   ["e-Invoicing and e-Way Bills in the same screen as billing — huge time saver for exports.", "Finance Manager", "Export House"],
 ];
@@ -130,13 +156,12 @@ export default function Home() {
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <OSDownload compact />
-              <AuthButton variant="primary" />
-              <Link
+              <a
                 href="#tour"
                 className="rounded-md border border-slate-200 bg-white px-6 py-3 text-sm font-semibold text-ink transition hover:border-primary/40 hover:text-primary"
               >
                 ▶ Watch Product Tour
-              </Link>
+              </a>
             </div>
             <div className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-body">
               <span>✓ GST Compliant</span>
@@ -176,15 +201,26 @@ export default function Home() {
           <p className="mt-3 text-body">If any of these sound familiar, you're running your business on borrowed time.</p>
         </Reveal>
         <div className="mt-14 grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-          {PROBLEMS.map(([t, d], i) => (
-            <Reveal key={t} delay={i * 60}>
-              <div className="h-full rounded-2xl border border-slate-100 bg-white p-6 shadow-soft transition hover:-translate-y-1 hover:shadow-card">
-                <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-red-50 text-red-500">✕</div>
-                <h3 className="font-bold text-ink">{t}</h3>
-                <p className="mt-1.5 text-sm text-body">{d}</p>
-              </div>
-            </Reveal>
-          ))}
+          {PROBLEMS.map(([t, d], i) => {
+            const ProblemIcon = ProblemIconMap[t];
+            return (
+              <Reveal key={t} delay={i * 60}>
+                <div className="group h-full rounded-2xl border border-slate-100/80 border-t-2 border-t-red-400/20 bg-gradient-to-b from-white to-slate-50/40 p-6 shadow-soft transition-all duration-300 hover:-translate-y-1.5 hover:border-t-red-500 hover:shadow-card">
+                  <div className="relative mb-4 inline-flex p-3 rounded-2xl bg-white border border-slate-100 shadow-sm transition-transform duration-300 group-hover:scale-110">
+                    {ProblemIcon ? (
+                      <ProblemIcon className="w-10 h-10" />
+                    ) : (
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-50 text-red-500">
+                        <Icon d="M18 6 6 18M6 6l12 12" />
+                      </div>
+                    )}
+                  </div>
+                  <h3 className="font-bold text-ink text-lg transition-colors duration-300 group-hover:text-red-500">{t}</h3>
+                  <p className="mt-2 text-sm text-body leading-relaxed">{d}</p>
+                </div>
+              </Reveal>
+            );
+          })}
         </div>
       </section>
 
@@ -199,11 +235,11 @@ export default function Home() {
           <div className="mt-14 grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
             {FEATURES.map(([t, d, icon], i) => (
               <Reveal key={t} delay={(i % 5) * 50}>
-                <div className="h-full rounded-2xl border border-slate-100 bg-white p-5 shadow-soft transition hover:-translate-y-1 hover:shadow-card">
-                  <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-mint text-primary">
+                <div className="group h-full rounded-2xl border border-slate-100/80 border-t-2 border-t-primary/20 bg-gradient-to-b from-white to-slate-50/40 p-5 shadow-soft transition-all duration-300 hover:-translate-y-1.5 hover:border-t-primary hover:shadow-card">
+                  <div className="relative mb-4 inline-flex p-2 rounded-xl bg-white border border-slate-100 shadow-sm transition-transform duration-300 group-hover:scale-110 text-primary">
                     <Icon d={icon} />
                   </div>
-                  <h3 className="text-sm font-bold text-ink">{t}</h3>
+                  <h3 className="text-sm font-bold text-ink transition-colors duration-300 group-hover:text-primary">{t}</h3>
                   <p className="mt-1.5 text-xs leading-relaxed text-body">{d}</p>
                 </div>
               </Reveal>
@@ -238,15 +274,48 @@ export default function Home() {
           <h2 className="mt-4 text-3xl font-bold tracking-tight text-ink sm:text-4xl">Industry solutions</h2>
         </Reveal>
         <div className="mt-14 grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-          {INDUSTRIES.map(([t, d], i) => (
-            <Reveal key={t} delay={i * 60}>
-              <div className="group h-full overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-soft transition hover:-translate-y-1 hover:shadow-card">
-                <div className="h-1.5 bg-primary" />
-                <div className="p-6">
-                  <h3 className="text-lg font-bold text-ink">{t}</h3>
-                  <p className="mt-2 text-sm text-body">{d}</p>
+          {INDUSTRIES.map(({ title, description, image, id, features }, i) => (
+            <Reveal key={title} delay={i * 60}>
+              <Link href={`/industries#${id}`} className="group block h-full">
+                <div className="flex h-full flex-col overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-soft transition-all duration-300 hover:-translate-y-2 hover:shadow-card">
+                  <div className="relative h-48 w-full overflow-hidden bg-slate-100">
+                    <div className="absolute top-4 left-4 z-10 rounded-full bg-white/95 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-primary shadow-sm backdrop-blur-sm">
+                      ERP Solution
+                    </div>
+                    <img
+                      src={image}
+                      alt={title}
+                      className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                    />
+                  </div>
+                  <div className="flex flex-1 flex-col p-6">
+                    <h3 className="text-lg font-bold text-ink transition-colors duration-300 group-hover:text-primary">
+                      {title}
+                    </h3>
+                    <p className="mt-2 text-sm leading-relaxed text-body">{description}</p>
+                    <div className="my-4 border-t border-slate-100" />
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Key Capabilities
+                    </p>
+                    <ul className="mt-3 flex-1 space-y-2">
+                      {features.map((feat) => (
+                        <li key={feat} className="flex items-center gap-2 text-xs text-body">
+                          <svg className="h-4 w-4 shrink-0 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                          <span>{feat}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="mt-6 flex items-center gap-1.5 text-xs font-semibold text-primary">
+                      <span>Learn more</span>
+                      <svg className="h-3.5 w-3.5 transition-transform duration-300 group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                      </svg>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              </Link>
             </Reveal>
           ))}
         </div>
@@ -261,14 +330,7 @@ export default function Home() {
             <p className="mt-3 text-body">A quick walkthrough of dashboards, billing, inventory and reports.</p>
           </Reveal>
           <Reveal className="mt-12">
-            <div className="relative mx-auto flex aspect-video max-w-4xl items-center justify-center overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-card">
-              <button
-                className="relative flex h-20 w-20 items-center justify-center rounded-full bg-primary text-white shadow-glow transition hover:scale-110"
-                aria-label="Play product tour"
-              >
-                <span className="ml-1 text-2xl">▶</span>
-              </button>
-            </div>
+            <ProductTourVideo />
           </Reveal>
         </div>
       </section>
@@ -278,7 +340,7 @@ export default function Home() {
         <Reveal className="mx-auto max-w-2xl text-center">
           <Pill>Download the app</Pill>
           <h2 className="mt-4 text-3xl font-bold tracking-tight text-ink sm:text-4xl">
-            Get Gravity One on every device
+            Get Ormodex on every device
           </h2>
           <p className="mt-3 text-body">
             Native desktop apps for Windows, macOS and Linux — or open it instantly in your browser.
@@ -295,7 +357,7 @@ export default function Home() {
           <Reveal className="mx-auto max-w-2xl text-center">
             <Pill>Simple pricing</Pill>
             <h2 className="mt-4 text-3xl font-bold tracking-tight text-ink sm:text-4xl">Single user or your whole team</h2>
-            <p className="mt-3 text-body">Start solo, scale to unlimited users. Upgrade anytime — your data comes with you.</p>
+            <p className="mt-3 text-body">Start solo, scale to unlimited users. Upgrade anytime — your data comes with you. Prices in INR, exclusive of GST.</p>
           </Reveal>
           <div className="mt-14 grid gap-6 lg:grid-cols-3">
             {PLANS.map((p, i) => (
@@ -314,7 +376,10 @@ export default function Home() {
                   )}
                   <h3 className="text-xl font-bold text-ink">{p.name}</h3>
                   <p className="mt-1 text-sm text-body">{p.who}</p>
-                  <div className="mt-5 text-lg font-bold text-primary">{p.price}</div>
+                  <div className="mt-5">
+                    <span className="text-3xl font-bold text-primary">{p.price}</span>
+                    {p.unit && <span className="text-sm font-medium text-body">{p.unit}</span>}
+                  </div>
                   <ul className="mt-5 flex-1 space-y-2.5 text-sm text-body">
                     {p.points.map((pt) => (
                       <li key={pt} className="flex items-start gap-2">
@@ -337,28 +402,6 @@ export default function Home() {
               </Reveal>
             ))}
           </div>
-        </div>
-      </section>
-
-      {/* 9 ── ADD-ONS ────────────────────────────────────────────── */}
-      <section className="mx-auto max-w-7xl px-5 py-24">
-        <Reveal className="mx-auto max-w-2xl text-center">
-          <Pill>Power-ups</Pill>
-          <h2 className="mt-4 text-3xl font-bold tracking-tight text-ink sm:text-4xl">Add-ons that grow with you</h2>
-          <p className="mt-3 text-body">Switch on extra capabilities for single-user or multi-user plans — only pay for what you use.</p>
-        </Reveal>
-        <div className="mt-14 grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-          {ADDONS.map(([t, d], i) => (
-            <Reveal key={t} delay={i * 50}>
-              <div className="flex h-full items-start gap-4 rounded-2xl border border-slate-100 bg-white p-6 shadow-soft transition hover:-translate-y-1 hover:shadow-card">
-                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-mint text-primary">+</span>
-                <div>
-                  <h3 className="font-bold text-ink">{t}</h3>
-                  <p className="mt-1 text-sm text-body">{d}</p>
-                </div>
-              </div>
-            </Reveal>
-          ))}
         </div>
       </section>
 
@@ -414,7 +457,7 @@ export default function Home() {
         <div className="mx-auto grid max-w-7xl items-start gap-12 px-5 lg:grid-cols-2">
           <Reveal>
             <Pill>Book a demo</Pill>
-            <h2 className="mt-4 text-3xl font-bold tracking-tight text-ink sm:text-4xl">See Gravity One on your data</h2>
+            <h2 className="mt-4 text-3xl font-bold tracking-tight text-ink sm:text-4xl">See Ormodex on your data</h2>
             <p className="mt-4 max-w-md text-body">
               Tell us about your business and we'll tailor a walkthrough. Submissions go straight
               into our team's pipeline — no bots, no call-center runaround.
@@ -425,7 +468,6 @@ export default function Home() {
               <li>✓ Free trial, install help and onboarding</li>
             </ul>
             <div className="mt-8">
-              <AuthButton variant="primary" />
             </div>
           </Reveal>
           <Reveal delay={120}>

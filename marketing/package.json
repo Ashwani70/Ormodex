@@ -1,8 +1,8 @@
 {
-  "name": "gravityone-marketing",
+  "name": "ormodex-marketing",
   "version": "1.0.0",
   "private": true,
-  "description": "Marketing website for Gravity One ERP (Next.js + Tailwind, Vercel-ready).",
+  "description": "Marketing website for Ormodex ERP (Next.js + Tailwind, Vercel-ready).",
   "scripts": {
     "dev": "next dev -p 3100",
     "build": "next build",

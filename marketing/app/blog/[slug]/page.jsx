@@ -1,4 +1,4 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 import { notFound } from "next/navigation";
 import { POSTS, getPost } from "../posts";
 
@@ -28,7 +28,7 @@ export default function BlogPost({ params }) {
     description: post.description,
     datePublished: post.date,
     keywords: post.keyword,
-    author: { "@type": "Organization", name: "Gravity One ERP" },
+    author: { "@type": "Organization", name: "Ormodex ERP" },
   };
 
   return (
@@ -48,7 +48,7 @@ export default function BlogPost({ params }) {
         ))}
       </div>
       <div className="mt-12 rounded-3xl border border-primary/20 bg-mint p-8 text-center">
-        <h3 className="text-xl font-bold text-ink">See Gravity One ERP in action</h3>
+        <h3 className="text-xl font-bold text-ink">See Ormodex ERP in action</h3>
         <p className="mt-2 text-sm text-body">Book a personalised demo for your industry.</p>
         <Link href="/contact#demo" className="mt-5 inline-block rounded-md bg-primary px-6 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-primary-dark">Book a Demo</Link>
       </div>

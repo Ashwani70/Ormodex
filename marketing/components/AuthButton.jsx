@@ -1,20 +1,10 @@
 "use client";
-import { ERP_LOGIN_URL, ERP_SIGNUP_URL } from "@/lib/site";
+import { ERP_LOGIN_URL } from "@/lib/site";
 
 // Direct deep-link into the live ERP app's auth. The marketing site itself is
 // stateless — login/logout happen in the product app. We send users straight to
 // the ERP /login route (configurable via NEXT_PUBLIC_ERP_APP_URL).
 export default function AuthButton({ variant = "nav" }) {
-  if (variant === "primary") {
-    return (
-      <a
-        href={ERP_SIGNUP_URL}
-        className="inline-flex items-center gap-1.5 rounded-md bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-soft transition hover:bg-primary-dark"
-      >
-        Open the App
-      </a>
-    );
-  }
   return (
     <a
       href={ERP_LOGIN_URL}

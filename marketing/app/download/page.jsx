@@ -1,4 +1,4 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 import PageHero from "@/components/PageHero";
 import Reveal from "@/components/Reveal";
 import OSDownload from "@/components/OSDownload";
@@ -9,13 +9,13 @@ import { APP_VERSION } from "@/lib/site";
 export const metadata = {
   title: "Download — Windows, macOS & Linux",
   description:
-    "Download the Gravity One ERP desktop app for Windows, macOS and Linux, or run it in your browser. Cross-platform, auto-updating, signed installers.",
+    "Download the Ormodex ERP desktop app for Windows, macOS and Linux, or run it in your browser. Cross-platform, auto-updating, signed installers.",
 };
 
 const STEPS = [
   ["Download", "Pick your platform above. The installer is signed and ~80 MB."],
   ["Install", "Run the installer — Windows .exe, macOS .dmg or Linux .AppImage."],
-  ["Sign in", "Open the app and log in with your Gravity One account. Your data syncs instantly."],
+  ["Sign in", "Open the app and log in with your Ormodex account. Your data syncs instantly."],
 ];
 
 const REQUIREMENTS = [
@@ -25,7 +25,7 @@ const REQUIREMENTS = [
 ];
 
 const FAQ = [
-  ["Do I need to download to use it?", "No — Gravity One runs fully in the browser too. The desktop apps add offline drafts, faster printing and OS notifications."],
+  ["Do I need to download to use it?", "No — Ormodex runs fully in the browser too. The desktop apps add offline drafts, faster printing and OS notifications."],
   ["Is it the same on every platform?", "Yes. The same features, data and login work across Windows, macOS, Linux and web. Switch devices anytime."],
   ["How do updates work?", "Desktop apps auto-update in the background, so you're always on the latest, most secure version."],
 ];
@@ -35,7 +35,7 @@ export default function DownloadPage() {
     <>
       <PageHero
         eyebrow="Download"
-        title="Get Gravity One on every device"
+        title="Get Ormodex on every device"
         subtitle={`Native apps for Windows, macOS and Linux — or open it in the browser. Current version v${APP_VERSION}.`}
       />
 

@@ -10,7 +10,7 @@ export const POSTS = [
     keyword: "ERP software for manufacturing",
     body: [
       { h: "Why manufacturers outgrow spreadsheets", p: "As order volume grows, disconnected spreadsheets create stock mismatches, costing errors and late invoices. A manufacturing ERP unifies production, inventory and accounting on one database." },
-      { h: "Must-have modules", p: "Look for bills of material, work orders, multi-godown inventory with batch/serial tracking, production costing, and GST-ready accounting with e-Invoicing and e-Way Bill generation built in." },
+      { h: "Must-have modules", p: "Look for bills of material, work orders, multi-warehouse inventory with batch/serial tracking, production costing, and GST-ready accounting with e-Invoicing and e-Way Bill generation built in." },
       { h: "Real-time visibility", p: "The biggest payoff is live reporting: knowing today's WIP, stock and receivables — not last month's. Role-based dashboards keep the shop floor, sales and finance aligned." },
     ],
   },
@@ -39,7 +39,7 @@ export const POSTS = [
   {
     slug: "inventory-management-software-india",
     title: "Inventory Management Software in India: A Checklist",
-    description: "Multi-godown stock, batch/serial tracking, valuation methods and real-time accuracy for Indian businesses.",
+    description: "Multi-warehouse stock, batch/serial tracking, valuation methods and real-time accuracy for Indian businesses.",
     date: "2026-02-01",
     keyword: "inventory management software India",
     body: [

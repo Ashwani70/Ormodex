@@ -1,8 +1,8 @@
-import DemoForm from "@/components/DemoForm";
+﻿import DemoForm from "@/components/DemoForm";
 
 export const metadata = {
   title: "Contact & Book a Demo",
-  description: "Book a demo of Gravity One ERP. Tell us about your business and our team will reach out to schedule a personalised walkthrough.",
+  description: "Book a demo of Ormodex ERP. Tell us about your business and our team will reach out to schedule a personalised walkthrough.",
 };
 
 export default function ContactPage() {
@@ -15,8 +15,8 @@ export default function ContactPage() {
           get back within one business day. Your details go straight into our CRM.
         </p>
         <div className="mt-8 space-y-3 text-sm text-body">
-          <p>📧 <a className="text-primary hover:underline" href="mailto:sales@gravityone.com">sales@gravityone.com</a></p>
-          <p>📞 +91-00000-00000</p>
+          <p>📧 <a className="text-primary hover:underline" href="mailto:Info@ormodex.com">Info@ormodex.com</a></p>
+          <p>📞 +91-9056908758</p>
           <p>🏢 India</p>
         </div>
       </div>

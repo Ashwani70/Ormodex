@@ -1,4 +1,4 @@
-// Central place for env-driven URLs so buttons (Login, downloads) are configurable
+﻿// Central place for env-driven URLs so buttons (Login, downloads) are configurable
 // per environment without touching component code. Set these in .env.local / Vercel.
 
 // Where the live ERP product app runs. The website's Login button deep-links to its
@@ -14,7 +14,7 @@ export const ERP_LOGOUT_URL = `${ERP_APP_URL.replace(/\/$/, "")}/logout`;
 // publishes installers here). `latest/download/<asset>` always resolves to the
 // newest release, so these links keep working across versions without edits.
 const GH_REPO =
-  process.env.NEXT_PUBLIC_GH_RELEASES_REPO || "Ashwani70/Gravity-engineering-works-ERP";
+  process.env.NEXT_PUBLIC_GH_RELEASES_REPO || "Ashwani70/Ormodex-ERP";
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "2.4.0";
 const ghAsset = (file) => `https://github.com/${GH_REPO}/releases/latest/download/${file}`;
 
@@ -27,19 +27,19 @@ export const DOWNLOADS = {
     label: "Windows",
     sub: "Windows 10/11 · 64-bit · .exe",
     icon: "windows",
-    url: process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS || ghAsset("GravityOne-ERP-Setup.exe"),
+    url: process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS || ghAsset("Ormodex-ERP-Setup.exe"),
   },
   mac: {
     label: "macOS",
     sub: "Apple Silicon & Intel · .dmg",
     icon: "apple",
-    url: process.env.NEXT_PUBLIC_DOWNLOAD_MAC || ghAsset("GravityOne-ERP.dmg"),
+    url: process.env.NEXT_PUBLIC_DOWNLOAD_MAC || ghAsset("Ormodex-ERP.dmg"),
   },
   linux: {
     label: "Linux",
     sub: "Debian/Ubuntu & RPM · .AppImage",
     icon: "linux",
-    url: process.env.NEXT_PUBLIC_DOWNLOAD_LINUX || ghAsset("GravityOne-ERP.AppImage"),
+    url: process.env.NEXT_PUBLIC_DOWNLOAD_LINUX || ghAsset("Ormodex-ERP.AppImage"),
   },
 };
 

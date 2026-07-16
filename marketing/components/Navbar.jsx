@@ -7,10 +7,24 @@ const LINKS = [
   { href: "/features", label: "Features" },
   { href: "/industries", label: "Industries" },
   { href: "/pricing", label: "Pricing" },
-  { href: "/download", label: "Download" },
   { href: "/docs", label: "Docs" },
   { href: "/contact", label: "Contact" },
 ];
+
+// Primary nav CTA: download the desktop app. Mirrors AuthButton's primary styling.
+function DownloadButton() {
+  return (
+    <Link
+      href="/download"
+      className="inline-flex items-center gap-1.5 rounded-md bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-soft transition hover:bg-primary-dark"
+    >
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d="M12 3v12m0 0l4-4m-4 4l-4-4M5 21h14" />
+      </svg>
+      Download
+    </Link>
+  );
+}
 
 export default function Navbar() {
   const [open, setOpen] = useState(false);
@@ -31,11 +45,9 @@ export default function Navbar() {
     >
       <nav className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4">
         <Link href="/" className="flex items-center gap-2.5">
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary font-black text-white">
-            G
-          </span>
+          <img src="/logo.png" alt="Ormodex" className="h-9 w-9 object-contain" />
           <span className="text-xl font-bold tracking-tight text-ink">
-            Gravity<span className="text-primary">One</span>
+            Ormodex
           </span>
         </Link>
 
@@ -53,7 +65,7 @@ export default function Navbar() {
 
         <div className="hidden items-center gap-3 lg:flex">
           <AuthButton variant="nav" />
-          <AuthButton variant="primary" />
+          <DownloadButton />
         </div>
 
         <button
@@ -82,7 +94,7 @@ export default function Navbar() {
             ))}
             <div className="mt-2 flex flex-col gap-2" onClick={() => setOpen(false)}>
               <AuthButton variant="nav" />
-              <AuthButton variant="primary" />
+              <DownloadButton />
             </div>
           </div>
         </div>

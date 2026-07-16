@@ -1,4 +1,4 @@
-import "./globals.css";
+﻿import "./globals.css";
 import Script from "next/script";
 import { Inter } from "next/font/google";
 import Navbar from "@/components/Navbar";
@@ -7,14 +7,14 @@ import WhatsAppButton from "@/components/WhatsAppButton";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://gravityone.com";
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://ormodex.com";
 const GA_ID = process.env.NEXT_PUBLIC_GA_ID; // e.g. G-XXXXXXX
 
 export const metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: "Gravity One ERP — Streamline Your Business Operations",
-    template: "%s | Gravity One ERP",
+    default: "Ormodex ERP — Streamline Your Business Operations",
+    template: "%s | Ormodex ERP",
   },
   description:
     "Manage sales, inventory, accounting, GST, production, HR, and e-Way Bills from a single platform. ERP software for manufacturing, forging, garments, trading and exporters.",
@@ -24,12 +24,12 @@ export const metadata = {
   ],
   openGraph: {
     type: "website",
-    title: "Gravity One ERP — Streamline Your Business Operations",
+    title: "Ormodex ERP — Streamline Your Business Operations",
     description: "All-in-one GST-compliant ERP for manufacturing, forging, garments, trading and exporters.",
     url: SITE_URL,
-    siteName: "Gravity One ERP",
+    siteName: "Ormodex ERP",
   },
-  twitter: { card: "summary_large_image", title: "Gravity One ERP" },
+  twitter: { card: "summary_large_image", title: "Ormodex ERP" },
   robots: { index: true, follow: true },
 };
 
@@ -41,7 +41,7 @@ export const viewport = {
 const jsonLd = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  name: "Gravity One ERP",
+  name: "Ormodex ERP",
   applicationCategory: "BusinessApplication",
   operatingSystem: "Windows, macOS, Linux, Web",
   offers: { "@type": "Offer", price: "0", priceCurrency: "INR", description: "Free trial available" },

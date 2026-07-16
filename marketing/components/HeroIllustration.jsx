@@ -1,4 +1,4 @@
-// Nexcent-style isometric hero artwork — a person beside a large dashboard screen,
+﻿// Nexcent-style isometric hero artwork — a person beside a large dashboard screen,
 // drawn as inline SVG so it ships without binary assets and inherits the green theme.
 // Soft, flat, friendly. Floats gently via the parent's animate-float.
 export default function HeroIllustration({ className = "" }) {
@@ -7,7 +7,7 @@ export default function HeroIllustration({ className = "" }) {
       viewBox="0 0 560 460"
       className={className}
       role="img"
-      aria-label="Illustration of a person working with the Gravity One dashboard"
+      aria-label="Illustration of a person working with the Ormodex dashboard"
     >
       <defs>
         <linearGradient id="screenG" x1="0" y1="0" x2="1" y2="1">

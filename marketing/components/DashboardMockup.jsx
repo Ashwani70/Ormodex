@@ -1,4 +1,4 @@
-// Pure-CSS light ERP dashboard mockup (no image asset needed). Used in the hero.
+﻿// Pure-CSS light ERP dashboard mockup (no image asset needed). Used in the hero.
 // Swap for a real <Image/> screenshot when available.
 export default function DashboardMockup() {
   const bars = [42, 66, 50, 82, 60, 92, 74, 58];
@@ -10,7 +10,7 @@ export default function DashboardMockup() {
         <span className="h-2.5 w-2.5 rounded-full bg-yellow-300" />
         <span className="h-2.5 w-2.5 rounded-full bg-green-300" />
         <span className="ml-3 rounded bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-400">
-          app.gravityone.com/dashboard
+          app.ormodex.com/dashboard
         </span>
       </div>
       <div className="grid grid-cols-4 gap-3">

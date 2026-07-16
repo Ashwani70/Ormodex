@@ -1,4 +1,4 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 import PageHero from "@/components/PageHero";
 import Reveal from "@/components/Reveal";
 import { ERP_LOGIN_URL } from "@/lib/site";
@@ -6,14 +6,14 @@ import { ERP_LOGIN_URL } from "@/lib/site";
 export const metadata = {
   title: "Documentation & Help Center",
   description:
-    "Guides, setup walkthroughs and module documentation for Gravity One ERP — getting started, billing & GST, inventory, production, HR, integrations and the API.",
+    "Guides, setup walkthroughs and module documentation for Ormodex ERP — getting started, billing & GST, inventory, production, HR, integrations and the API.",
 };
 
 const QUICKSTART = [
   ["Create your account", "Sign up, name your organization and pick single-user or multi-user.", ERP_LOGIN_URL],
-  ["Set up masters", "Add customers, vendors, items, tax rates and opening stock — or import from Excel/Tally.", "/docs#masters"],
-  ["Raise your first invoice", "Create a GST invoice, generate the IRN/QR and e-Way Bill in one screen.", "/docs#billing"],
-  ["Invite your team", "Add users, assign roles and module permissions (multi-user plans).", "/docs#users"],
+  ["Set up masters", "Add customers, vendors, items, tax rates and opening stock — or import from Excel/Tally.", "#masters"],
+  ["Raise your first invoice", "Create a GST invoice, generate the IRN/QR and e-Way Bill in one screen.", "#billing"],
+  ["Invite your team", "Add users, assign roles and module permissions (multi-user plans).", "#users"],
 ];
 
 const SECTIONS = [
@@ -33,7 +33,7 @@ const SECTIONS = [
     id: "inventory",
     title: "Inventory & Warehouse",
     icon: "📦",
-    items: ["Items, batches & serials", "Multi-godown stock", "Stock transfers & adjustments", "Reorder levels & valuation"],
+    items: ["Items, batches & serials", "Multi-warehouse stock", "Stock transfers & adjustments", "Reorder levels & valuation"],
   },
   {
     id: "production",
@@ -63,7 +63,7 @@ const SECTIONS = [
     id: "masters",
     title: "Masters Setup",
     icon: "🗂️",
-    items: ["Customers & vendors", "Item master", "Tax & pricing", "Branches & godowns"],
+    items: ["Customers & vendors", "Item master", "Tax & pricing", "Branches & warehouses"],
   },
 ];
 
@@ -73,7 +73,7 @@ export default function DocsPage() {
       <PageHero
         eyebrow="Help Center"
         title="Documentation & guides"
-        subtitle="Everything you need to set up, run and master Gravity One ERP — from your first invoice to advanced integrations."
+        subtitle="Everything you need to set up, run and master Ormodex ERP — from your first invoice to advanced integrations."
       />
 
       {/* search bar (visual; links to contact for now) */}
@@ -102,7 +102,7 @@ export default function DocsPage() {
         <div className="mt-12 grid gap-5 md:grid-cols-2 lg:grid-cols-4">
           {QUICKSTART.map(([t, d, href], i) => (
             <Reveal key={t} delay={i * 70}>
-              <Link
+              <a
                 href={href}
                 className="flex h-full flex-col rounded-2xl border border-slate-100 bg-white p-6 shadow-soft transition hover:-translate-y-1 hover:shadow-card"
               >
@@ -112,7 +112,7 @@ export default function DocsPage() {
                 <h3 className="font-bold text-ink">{t}</h3>
                 <p className="mt-1.5 flex-1 text-sm text-body">{d}</p>
                 <span className="mt-3 text-xs font-semibold text-primary">Read guide →</span>
-              </Link>
+              </a>
             </Reveal>
           ))}
         </div>

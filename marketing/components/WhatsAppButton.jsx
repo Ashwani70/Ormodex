@@ -1,9 +1,9 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 
 // Floating WhatsApp CTA. Set NEXT_PUBLIC_WHATSAPP (digits, country code, no +)
 // in the environment; defaults to a placeholder so the button always renders.
-const PHONE = process.env.NEXT_PUBLIC_WHATSAPP || "910000000000";
-const MSG = encodeURIComponent("Hi! I'd like to know more about Gravity One ERP.");
+const PHONE = process.env.NEXT_PUBLIC_WHATSAPP || "919056908758";
+const MSG = encodeURIComponent("Hi! I'd like to know more about Ormodex ERP.");
 
 export default function WhatsAppButton() {
   return (

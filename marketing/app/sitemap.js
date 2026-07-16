@@ -1,6 +1,6 @@
-import { POSTS } from "./blog/posts";
+﻿import { POSTS } from "./blog/posts";
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://gravityone.com";
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://ormodex.com";
 
 export default function sitemap() {
   const pages = ["", "/features", "/industries", "/pricing", "/download", "/docs", "/about", "/contact", "/blog"].map((p) => ({

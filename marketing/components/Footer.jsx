@@ -17,7 +17,6 @@ const COLS = [
       ["Documentation", "/docs"],
       ["Getting Started", "/docs#getting-started"],
       ["Blog", "/blog"],
-      ["Open the App", ERP_LOGIN_URL],
     ],
   },
   {
@@ -44,11 +43,9 @@ export default function Footer() {
       <div className="mx-auto grid max-w-7xl gap-10 px-5 py-16 md:grid-cols-2 lg:grid-cols-6">
         <div className="lg:col-span-2">
           <div className="flex items-center gap-2.5">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary font-black text-white">
-              G
-            </span>
+            <img src="/logo.png" alt="Ormodex" className="h-9 w-9 object-contain" />
             <span className="text-xl font-bold tracking-tight text-ink">
-              Gravity<span className="text-primary">One</span>
+              Ormodex
             </span>
           </div>
           <p className="mt-4 max-w-sm text-sm leading-relaxed text-body">
@@ -70,9 +67,15 @@ export default function Footer() {
             <ul className="space-y-2">
               {c.links.map(([label, href]) => (
                 <li key={label}>
-                  <Link href={href} className="text-sm text-body transition-colors hover:text-primary">
-                    {label}
-                  </Link>
+                  {href.includes("#") || href.startsWith("http") ? (
+                    <a href={href} className="text-sm text-body transition-colors hover:text-primary">
+                      {label}
+                    </a>
+                  ) : (
+                    <Link href={href} className="text-sm text-body transition-colors hover:text-primary">
+                      {label}
+                    </Link>
+                  )}
                 </li>
               ))}
             </ul>
@@ -81,7 +84,7 @@ export default function Footer() {
       </div>
       <div className="border-t border-slate-200">
         <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-2 px-5 py-5 text-xs text-slate-400 sm:flex-row">
-          <span>© {new Date().getFullYear()} Gravity One ERP. All rights reserved.</span>
+          <span>© {new Date().getFullYear()} Ormodex ERP. All rights reserved.</span>
           <span>GST-compliant · ISO-grade security · Made in India</span>
         </div>
       </div>

@@ -1,4 +1,4 @@
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://gravityone.com";
+﻿const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://ormodex.com";
 
 export default function robots() {
   return {
