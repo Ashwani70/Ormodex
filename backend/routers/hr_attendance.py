@@ -1,5 +1,5 @@
 """HR Attendance + QR check-in + Biometric webhook + Leaves + Advances."""
-from datetime import datetime, date, time
+from datetime import datetime, date
 from typing import Optional, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -147,20 +147,60 @@ async def attendance_check_out(payload: CheckInOut, _: dict = Depends(get_curren
 
 @router.post("/attendance/bulk")
 async def attendance_bulk(payload: AttendanceBulkIn, _: dict = Depends(require_hr_or_admin)):
+    """Same idempotent per-(employee_id, date) upsert semantics as
+    _upsert_attendance, batched: one query to find which rows already exist
+    for this date, then ONE bulk_update_by_id for the existing ones and ONE
+    chunked insert_many for the new ones — instead of an insert_one/
+    update_one pair per employee inside a loop (was up to hundreds of round
+    trips for a full day's attendance sheet).
+    """
+    employee_ids = [row.employee_id for row in payload.rows]
+    existing_rows = await db.attendance.find(
+        {"employee_id": {"$in": employee_ids}, "date": payload.date}, {"_id": 0}
+    ).to_list(len(employee_ids)) if employee_ids else []
+    existing_by_employee = {r["employee_id"]: r for r in existing_rows}
+
+    updates_by_id: dict = {}
+    new_rows: list = []
     saved = []
     for row in payload.rows:
-        saved.append(await _upsert_attendance(
-            employee_id=row.employee_id,
-            d=payload.date,
-            patch={
-                "status": row.status,
-                "check_in": row.check_in,
-                "check_out": row.check_out,
-                "overtime_hours": row.overtime_hours,
-                "remarks": row.remarks,
+        patch = {
+            "status": row.status,
+            "check_in": row.check_in,
+            "check_out": row.check_out,
+            "overtime_hours": row.overtime_hours,
+            "remarks": row.remarks,
+            "source": "manual",
+        }
+        existing = existing_by_employee.get(row.employee_id)
+        if existing:
+            merged: dict[str, Any] = {**existing, **patch}
+            merged["working_hours"] = _compute_hours(merged.get("check_in"), merged.get("check_out"))
+            merged["updated_at"] = now_iso()
+            updates_by_id[existing["id"]] = {"$set": merged}
+            saved.append(merged)
+        else:
+            new_row: dict[str, Any] = {
+                "id": new_id(),
+                "employee_id": row.employee_id,
+                "date": payload.date,
+                "status": "PRESENT",
+                "working_hours": 0,
+                "overtime_hours": 0,
                 "source": "manual",
-            },
-        ))
+                "created_at": now_iso(),
+                "updated_at": now_iso(),
+                **patch,
+            }
+            new_row["working_hours"] = _compute_hours(new_row.get("check_in"), new_row.get("check_out"))
+            new_rows.append(new_row)
+            saved.append(new_row)
+
+    if updates_by_id:
+        await db.attendance.bulk_update_by_id(updates_by_id)
+    for i in range(0, len(new_rows), 500):
+        await db.attendance.insert_many(new_rows[i:i + 500])
+
     return {"saved": len(saved)}
 
 

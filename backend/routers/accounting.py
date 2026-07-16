@@ -21,7 +21,7 @@ from core.accounting_models import (
     FiscalYear, FiscalYearUpdate,
     JournalEntry, JournalEntryUpdate,
 )
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 
 router = APIRouter(prefix="/accounting", tags=["Accounting"])
@@ -30,7 +30,7 @@ router = APIRouter(prefix="/accounting", tags=["Accounting"])
 # ─────────────────────────── Helpers ───────────────────────────
 
 def _require_accounting(user: dict):
-    if user.get("role") == "admin":
+    if is_admin_role(user.get("role")):
         return user
     perms = user.get("module_permissions", [])
     if "accounting" not in perms:
@@ -215,6 +215,18 @@ async def update_journal_entry(entry_id: str, data: JournalEntryUpdate, user=Dep
     upd["updated_at"] = datetime.now(timezone.utc).isoformat()
     upd["updated_by"] = user["id"]
     await db.journal_entries.update_one({"id": entry_id}, {"$set": upd})
+    return {"ok": True}
+
+
+@router.delete("/journal-entries/{entry_id}")
+async def delete_journal_entry(entry_id: str, user=Depends(get_current_user)):
+    _require_accounting(user)
+    entry = await db.journal_entries.find_one({"id": entry_id})
+    if not entry:
+        raise HTTPException(404, "Not found")
+    if entry.get("status") == "POSTED":
+        raise HTTPException(400, "Posted entries cannot be deleted")
+    await db.journal_entries.delete_one({"id": entry_id})
     return {"ok": True}
 
 
@@ -436,17 +448,29 @@ async def day_book(
     if not td:
         td = None
 
+    # No explicit day/range → defaults to today. This silently hides any
+    # backdated voucher (a vendor bill posted today but dated last week is
+    # very common) with no indication why — the response now always states
+    # the effective range it queried (applied_from/applied_to/is_default_range)
+    # so the frontend can show "Showing: <date>" instead of a bare empty/
+    # partial list with no explanation.
     q: dict[str, Any] = {}
+    is_default_range = False
     if day:
         q["date"] = day
+        applied_from = applied_to = day
     elif fd or td:
         q["date"] = {}
         if fd:
             q["date"]["$gte"] = fd
         if td:
             q["date"]["$lte"] = td
+        applied_from, applied_to = fd, td
     else:
-        q["date"] = date.today().isoformat()
+        today_iso = date.today().isoformat()
+        q["date"] = today_iso
+        applied_from = applied_to = today_iso
+        is_default_range = True
 
     journal_entries = await db.journal_entries.find(q, {"_id": 0}).sort("date", 1).to_list(5000)
     vouchers = await db.vouchers.find(q, {"_id": 0}).sort("date", 1).to_list(5000)
@@ -487,6 +511,9 @@ async def day_book(
         "journal_entries_count": len(journal_entries),
         "vouchers_count": len(vouchers),
         "total_records": len(rows),
+        "applied_from": applied_from,
+        "applied_to": applied_to,
+        "is_default_range": is_default_range,
         "entries": rows
     }
 
@@ -595,7 +622,7 @@ async def cash_flow_statement(
     
     # Calculate net cash flow before the period's start date
     pre_q = {"status": "POSTED", "date": {"$lt": effective_from}}
-    pre_entries = await db.journal_entries.find(pre_q).to_list(10000)
+    pre_entries = await db.journal_entries.find(pre_q).to_list(5000)
     for je in pre_entries:
         for line in je.get("lines", []):
             if line.get("account_code") in cash_codes:
@@ -611,7 +638,7 @@ async def cash_flow_statement(
     else:
         q["date"] = date.today().isoformat()
         
-    entries = await db.journal_entries.find(q).sort("date", 1).to_list(10000)
+    entries = await db.journal_entries.find(q).sort("date", 1).to_list(5000)
     
     transactions = []
     total_inflow = 0.0
@@ -683,8 +710,10 @@ async def interest_on_outstanding(
     total_interest = 0.0
 
     for inv in invoices:
-        inv_total = float(inv.get("total", 0))
-        paid = float(inv.get("payment_received", 0))
+        # `.get(k, 0)` only defaults when the key is ABSENT; a present-but-NULL
+        # column returns None (float(None) → TypeError). Coerce None → 0.
+        inv_total = float(inv.get("total") or 0)
+        paid = float(inv.get("payment_received") or 0)
         outstanding = round(inv_total - paid, 2)
         if outstanding <= 0:
             continue
@@ -764,7 +793,7 @@ async def interest_outstanding_endpoint(
         if td:
             q["created_at"]["$lte"] = f"{td}T23:59:59"
 
-    invoices = await db.invoices.find(q, {"_id": 0}).to_list(10000)
+    invoices = await db.invoices.find(q, {"_id": 0}).to_list(5000)
     
     results = []
     total_interest_due = 0.0
@@ -772,8 +801,10 @@ async def interest_outstanding_endpoint(
     unique_customers = set()
 
     for inv in invoices:
-        inv_total = float(inv.get("total", 0))
-        paid = float(inv.get("payment_received", 0))
+        # `.get(k, 0)` only defaults when the key is ABSENT; a present-but-NULL
+        # column returns None (float(None) → TypeError). Coerce None → 0.
+        inv_total = float(inv.get("total") or 0)
+        paid = float(inv.get("payment_received") or 0)
         outstanding = round(inv_total - paid, 2)
         if outstanding <= 0:
             continue

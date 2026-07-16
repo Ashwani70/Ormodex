@@ -4,13 +4,13 @@ Handles: Receipt, Payment, Contra, Journal, Debit Note, Credit Note, Expense vou
 Includes: auto-numbering, approval workflow, party linkage.
 """
 import uuid
-from datetime import datetime, date
+from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 
-from core.accounting_models import Voucher, VoucherUpdate, VoucherType
-from core.auth_utils import get_current_user, require_admin
+from core.accounting_models import Voucher, VoucherUpdate
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 from core.utils import log_audit, now_iso
 
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/vouchers", tags=["Vouchers"])
 
 
 def _require_voucher(user: dict):
-    if user.get("role") == "admin":
+    if is_admin_role(user.get("role")):
         return user
     perms = user.get("module_permissions", [])
     if "vouchers" not in perms and "accounting" not in perms:
@@ -91,7 +91,7 @@ async def create_voucher(data: Voucher, user=Depends(get_current_user)):
     doc["created_at"] = now_iso()
 
     # Auto-post for non-approval workflow (for admin)
-    if user.get("role") == "admin" and doc["status"] == "DRAFT":
+    if is_admin_role(user.get("role")) and doc["status"] == "DRAFT":
         doc["status"] = "APPROVED"
 
     await db.vouchers.insert_one(doc)

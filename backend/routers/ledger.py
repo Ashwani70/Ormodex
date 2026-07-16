@@ -17,14 +17,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from core.accounting_models import (
     BankAccount, BankEntry, BankStatementLine, ReconcileMatch,
 )
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 
 router = APIRouter(prefix="/ledger", tags=["Ledger"])
 
 
 def _require_ledger(user: dict):
-    if user.get("role") == "admin":
+    if is_admin_role(user.get("role")):
         return user
     perms = user.get("module_permissions", [])
     if not any(p in perms for p in ("ledger", "accounting", "cash_bank")):
@@ -183,7 +183,7 @@ async def unmatch_statement_line(statement_line_id: str, user=Depends(get_curren
 
 @router.get("/party-ledger")
 async def party_ledger(
-    party_type: str = Query(..., regex="^(CUSTOMER|SUPPLIER)$"),
+    party_type: str = Query(..., pattern="^(CUSTOMER|SUPPLIER)$"),
     party_id: Optional[str] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
@@ -219,7 +219,7 @@ async def party_ledger(
 
 @router.get("/party-outstanding")
 async def party_outstanding(
-    party_type: str = Query(..., regex="^(CUSTOMER|SUPPLIER)$"),
+    party_type: str = Query(..., pattern="^(CUSTOMER|SUPPLIER)$"),
     user=Depends(get_current_user)
 ):
     _require_ledger(user)
@@ -251,7 +251,7 @@ async def party_outstanding(
 
 @router.get("/ageing-report")
 async def ageing_report(
-    party_type: str = Query(..., regex="^(CUSTOMER|SUPPLIER)$"),
+    party_type: str = Query(..., pattern="^(CUSTOMER|SUPPLIER)$"),
     as_of_date: Optional[str] = None,
     user=Depends(get_current_user)
 ):

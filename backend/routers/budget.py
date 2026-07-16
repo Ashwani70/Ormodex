@@ -8,20 +8,20 @@ Features:
 - Budget alert endpoint (accounts exceeding budget)
 """
 import uuid
-from datetime import datetime, date, timezone
+from datetime import datetime, timezone
 from typing import Optional, List, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 
 router = APIRouter(prefix="/budget", tags=["Budget & Cost Centers"])
 
 
 def _require_budget(user: dict):
-    if user.get("role") in ("admin", "accountant"):
+    if (is_admin_role(user.get("role")) or user.get("role") == "accountant"):
         return user
     raise HTTPException(403, "Budget module access required")
 
@@ -212,7 +212,7 @@ async def budget_variance_report(
         if to_date:
             q_je["date"]["$lte"] = to_date
 
-    journal_entries = await db.journal_entries.find(q_je, {"_id": 0}).to_list(10000)
+    journal_entries = await db.journal_entries.find(q_je, {"_id": 0}).to_list(5000)
 
     # Compute actual per account code
     actuals: dict = {}
@@ -270,7 +270,7 @@ async def budget_alerts(fiscal_year: Optional[str] = None, user=Depends(get_curr
     budgets = await db.budgets.find(q, {"_id": 0}).to_list(100)
 
     # Get all journal entries
-    all_jes = await db.journal_entries.find({"status": "POSTED"}, {"_id": 0}).to_list(10000)
+    all_jes = await db.journal_entries.find({"status": "POSTED"}, {"_id": 0}).to_list(5000)
     actuals: dict = {}
     for je in all_jes:
         for line in je.get("lines", []):

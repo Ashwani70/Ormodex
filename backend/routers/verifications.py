@@ -1,11 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, constr
-from typing import Optional, List
-import uuid
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+from typing import Optional
 import re
-from datetime import datetime
 
-from core.auth_utils import get_current_user, require_admin
+from core import cache
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 from core.utils import now_iso, new_id, log_audit
 
@@ -41,7 +40,7 @@ class AadhaarValidationRequest(BaseModel):
 # Custom role permission helper
 def require_verification_access(user: dict = Depends(get_current_user)) -> dict:
     role = user.get("role")
-    if role in ("admin", "hr", "accountant"):
+    if is_admin_role(role) or role in ("hr", "accountant"):
         return user
     # Check module permissions (e.g. sales, purchase, gst)
     perms = user.get("module_permissions", [])
@@ -51,34 +50,98 @@ def require_verification_access(user: dict = Depends(get_current_user)) -> dict:
 
 DEFAULT_SETTINGS = {
     "id": "global",
-    "gst_api_key": "mock-gst-key-123",
-    "gst_api_enabled": True,
-    "pan_api_key": "mock-pan-key-123",
-    "pan_api_enabled": True,
-    "aadhaar_api_key": "mock-aadhaar-key-123",
-    "aadhaar_api_enabled": True,
+    "gst_api_key": "",
+    "gst_api_enabled": False,
+    "pan_api_key": "",
+    "pan_api_enabled": False,
+    "aadhaar_api_key": "",
+    "aadhaar_api_enabled": False,
     "gemini_api_key": "",
     "gst_provider": "gstverify",
 }
 
 async def get_verification_settings() -> dict:
-    settings = await db.verification_settings.find_one({"id": "global"}, {"_id": 0})
+    """Load verification settings from the database (cached, TTL_REFERENCE).
+
+    The verification_settings table uses a key/value schema (id, key, value
+    JSONB columns).  The full settings document is stored as JSON under the row
+    where id='global' and key='settings'.  Earlier code tried to store each
+    field as a flat column, but the model only has id/key/value so all fields
+    were silently dropped — which is why gst_api_enabled was always False.
+
+    Falls back to DEFAULT_SETTINGS (with env-var key pre-filled) when no valid
+    row exists, and bootstraps the row in the DB so subsequent saves land
+    correctly.
+    """
+    return await cache.get_or_set(
+        "verification_settings:global", cache.TTL_REFERENCE, _load_verification_settings
+    )
+
+
+async def _load_verification_settings() -> dict:
+    import os, json
+    from sqlalchemy import text
+    from core.db import get_session
+    async with get_session() as session:
+        r = await session.execute(
+            text("SELECT value FROM verification_settings WHERE id = 'global' AND key = 'settings' LIMIT 1")
+        )
+        row = r.fetchone()
+
+    settings = None
+    if row and row[0] and row[0] != "None":
+        raw = row[0]
+        if isinstance(raw, str):
+            try:
+                settings = json.loads(raw)
+            except Exception:
+                settings = None
+        elif isinstance(raw, dict):
+            settings = raw
+
     if not settings:
+        # No valid row yet — start from defaults and pre-fill the env key so
+        # the feature works immediately without requiring a UI save first.
         settings = DEFAULT_SETTINGS.copy()
-        await db.verification_settings.insert_one(settings.copy())
+        env_key = os.environ.get("RAPIDAPI_KEY", "").strip()
+        if env_key and not settings.get("gst_api_key"):
+            settings["gst_api_key"] = env_key
+            settings["gst_provider"] = "rapidapi"
+            settings["gst_api_enabled"] = True
+        await _save_verification_settings_row(settings)
     else:
-        # Self-heal missing keys from defaults in DB
-        missing_keys = {}
+        # Self-heal missing keys from defaults
+        changed = False
         for k, v in DEFAULT_SETTINGS.items():
             if k not in settings:
-                missing_keys[k] = v
-        if missing_keys:
-            settings.update(missing_keys)
-            await db.verification_settings.update_one(
-                {"id": "global"},
-                {"$set": missing_keys}
-            )
+                settings[k] = v
+                changed = True
+        if changed:
+            await _save_verification_settings_row(settings)
+
     return settings
+
+
+async def _save_verification_settings_row(settings: dict) -> None:
+    """Persist the full settings dict into the value JSONB column.
+
+    asyncpg rejects the Postgres cast shorthand ``::jsonb`` when mixed with
+    SQLAlchemy named-param placeholders (``:``) because the colon is ambiguous.
+    Use CAST(... AS jsonb) instead, which is ANSI SQL and unambiguous.
+    """
+    import json
+    from sqlalchemy import text
+    from core.db import get_session
+    from core.utils import now_iso
+    payload = json.dumps(settings)
+    async with get_session() as session:
+        await session.execute(text(
+            "INSERT INTO verification_settings (id, key, value, updated_at) "
+            "VALUES ('global', 'settings', CAST(:v AS jsonb), :ts) "
+            "ON CONFLICT (id) DO UPDATE "
+            "SET key = 'settings', value = CAST(:v AS jsonb), updated_at = :ts"
+        ), {"v": payload, "ts": now_iso()})
+    cache.invalidate("verification_settings:global")
 
 SECRET_FIELDS = ["gst_api_key", "pan_api_key", "aadhaar_api_key", "gemini_api_key"]
 
@@ -130,31 +193,44 @@ async def _lookup_gst_with_fallback(gstin: str, gst_key: str, gst_provider: str)
     that is actually valid — just on the other provider. Retrying the same key
     against the alternate provider on an auth error fixes that transparently.
     """
-    from core import rapidapi_gst, gstverify_gst
+    from core import rapidapi_gst, rapidapi_gst_insights, gstverify_gst
 
-    # (module, source-label) ordered with the selected provider first.
+    # (module, source-label) — the selected provider is moved to the front below
+    # so it's tried first; the others act as fallbacks with the same key.
     providers = [
         (gstverify_gst, "gstverify"),
         (rapidapi_gst, "rapidapi"),
+        (rapidapi_gst_insights, "rapidapi_insights"),
     ]
-    if gst_provider == "rapidapi":
-        providers.reverse()
+    # Move the admin-selected provider to the front. RapidAPI ships two distinct
+    # GST APIs (gst-return-status and gst-insights-api); a key is subscribed to
+    # one host, not both, so we must try the selected host first and only fall
+    # through on a recoverable error.
+    providers.sort(key=lambda p: p[1] != gst_provider)
 
     # Try the selected provider first; on a *recoverable* failure (the key was
     # rejected, or this provider simply has no record for the GSTIN) fall through
-    # and try the other provider with the same key. Providers have different
+    # and try the other providers with the same key. Providers have different
     # datasets and the free tiers don't cover every GSTIN, so a "not found" on
-    # one is worth re-checking on the other. We remember the first recoverable
+    # one is worth re-checking on the others. We remember the first recoverable
     # error and re-raise it only if *every* provider fails.
     recoverable = (
         gstverify_gst.GstProviderAuthError, rapidapi_gst.GstProviderAuthError,
+        rapidapi_gst_insights.GstProviderAuthError,
         gstverify_gst.GstinNotFound, rapidapi_gst.GstinNotFound,
+        rapidapi_gst_insights.GstinNotFound,
         gstverify_gst.GstProviderNotConfigured, rapidapi_gst.GstProviderNotConfigured,
+        rapidapi_gst_insights.GstProviderNotConfigured,
     )
     first_error: Exception | None = None
-    for mod, _label in providers:
+    for mod, label in providers:
+        # rapidapi_gst_insights has its own dedicated env var (RAPIDAPI_INSIGHTS_KEY /
+        # RAPIDAPI_INSIGHTS_HOST). The settings gst_api_key is for gstverify or
+        # rapidapi (gst-return-status) — passing it to the insights host produces a
+        # spurious 401. Pass None so the insights module resolves its own env key.
+        key_for_mod = None if label == "rapidapi_insights" else gst_key
         try:
-            return await mod.lookup_gstin(gstin, api_key=gst_key)
+            return await mod.lookup_gstin(gstin, api_key=key_for_mod)
         except recoverable as e:
             # This provider couldn't answer (bad key for it, no record, or no
             # key). Remember the first such error and try the next provider.
@@ -198,12 +274,12 @@ async def get_settings(user: dict = Depends(require_verification_access)):
 
 @router.post("/settings")
 async def update_settings(payload: VerificationSettingsPayload, user: dict = Depends(require_admin)):
-    old_val = await db.verification_settings.find_one({"id": "global"}, {"_id": 0}) or {}
-    
+    old_val = await get_verification_settings()
+
     # Pre-populate with defaults so that missing keys have default values before update loop
     settings_dict = DEFAULT_SETTINGS.copy()
     settings_dict.update(old_val)
-    
+
     from core import crypto
     payload_dict = payload.model_dump()
     for field, val in payload_dict.items():
@@ -217,25 +293,25 @@ async def update_settings(payload: VerificationSettingsPayload, user: dict = Dep
             else:
                 settings_dict[field] = val
 
-    settings_dict["secrets_encrypted"] = crypto.is_enabled()
+    # Preserve the stored encryption state unless we just encrypted a new secret.
+    any_newly_encrypted = any(
+        field in payload.model_fields_set
+        and isinstance(payload_dict.get(field), str)
+        and payload_dict.get(field)
+        and not str(payload_dict.get(field, "")).startswith("mock-")
+        for field in SECRET_FIELDS
+    )
+    if any_newly_encrypted:
+        settings_dict["secrets_encrypted"] = crypto.is_enabled()
     settings_dict["id"] = "global"
     settings_dict["updated_at"] = now_iso()
     settings_dict["updated_by"] = user["id"]
-    
-    await db.verification_settings.update_one(
-        {"id": "global"},
-        {"$set": settings_dict},
-        upsert=True
-    )
-    new_val = await db.verification_settings.find_one({"id": "global"}, {"_id": 0})
-    
-    # Ensure audit log has complete old/new values
-    old_val_full = DEFAULT_SETTINGS.copy()
-    old_val_full.update(old_val)
-    new_val_full = DEFAULT_SETTINGS.copy()
-    new_val_full.update(new_val or {})
-    
-    await log_audit("UPDATE", "verification_settings", "global", user, old_values=old_val_full, new_values=new_val_full)
+
+    # Persist via the JSONB value column (correct path for the key/value schema).
+    await _save_verification_settings_row(settings_dict)
+
+    new_val_full = settings_dict
+    await log_audit("UPDATE", "verification_settings", "global", user, old_values=old_val, new_values=new_val_full)
     return mask_settings(new_val_full)
 
 # A well-known, permanently-registered public GSTIN used only to probe whether
@@ -266,7 +342,7 @@ async def gst_health(user: dict = Depends(require_admin)):
     """
     import os
     from datetime import datetime, timezone
-    from core import irp_einvoice, gstverify_gst, rapidapi_gst
+    from core import irp_einvoice, gstverify_gst, rapidapi_gst, rapidapi_gst_insights
 
     settings = await get_verification_settings()
     provider = (settings.get("gst_provider") or "gstverify").strip().lower()
@@ -278,7 +354,11 @@ async def gst_health(user: dict = Depends(require_admin)):
             os.environ.get("IRP_PASSWORD", ""),
         )
 
-    provider_label = {"gstverify": "GSTVerify", "rapidapi": "RapidAPI"}.get(provider)
+    provider_label = {
+        "gstverify": "GSTVerify",
+        "rapidapi": "RapidAPI (GST Return Status)",
+        "rapidapi_insights": "RapidAPI (GST Insights)",
+    }.get(provider)
     if provider_label is None:
         return {
             "configured": False,
@@ -288,7 +368,8 @@ async def gst_health(user: dict = Depends(require_admin)):
         }
 
     key = resolve_gst_key(settings)
-    if not (gstverify_gst.is_configured(key) or rapidapi_gst.is_configured(key)):
+    if not (gstverify_gst.is_configured(key) or rapidapi_gst.is_configured(key)
+            or rapidapi_gst_insights.is_configured(key)):
         return {
             "configured": False,
             "authenticated": False,
@@ -310,12 +391,15 @@ async def gst_health(user: dict = Depends(require_admin)):
     try:
         await _lookup_gst_with_fallback(_HEALTH_PROBE_GSTIN, key, provider)
         return {**base, "authenticated": True, "error": None}
-    except (gstverify_gst.GstProviderAuthError, rapidapi_gst.GstProviderAuthError) as e:
+    except (gstverify_gst.GstProviderAuthError, rapidapi_gst.GstProviderAuthError,
+            rapidapi_gst_insights.GstProviderAuthError) as e:
         return {**base, "authenticated": False, "error": e.user_message}
-    except (gstverify_gst.GstinNotFound, rapidapi_gst.GstinNotFound):
+    except (gstverify_gst.GstinNotFound, rapidapi_gst.GstinNotFound,
+            rapidapi_gst_insights.GstinNotFound):
         # Key works; the probe GSTIN just wasn't found by this provider.
         return {**base, "authenticated": True, "error": None}
-    except (gstverify_gst.GstProviderError, rapidapi_gst.GstProviderError) as e:
+    except (gstverify_gst.GstProviderError, rapidapi_gst.GstProviderError,
+            rapidapi_gst_insights.GstProviderError) as e:
         # Rate limit / out-of-credits / upstream down — auth itself didn't fail.
         return {**base, "authenticated": True, "error": None, "warning": e.user_message}
     except Exception:
@@ -343,6 +427,7 @@ async def validate_gst(payload: GstValidationRequest, request: Request, user: di
         import os
         from core import irp_einvoice, rapidapi_gst, rapidapi_gst_insights, gstverify_gst
         gst_key = resolve_gst_key(settings)
+        is_mock = gst_key and (gst_key.startswith("mock-") or "placeholder" in gst_key.lower() or "your_" in gst_key.lower())
         # Route the single Settings key to the provider the admin selected, so a
         # RapidAPI key is never sent to GSTVerify (and vice versa) — that
         # mismatch surfaces as a misleading "authentication failed".
@@ -354,7 +439,7 @@ async def validate_gst(payload: GstValidationRequest, request: Request, user: di
         # the *other* provider. So if the selected provider returns a hard auth
         # error, retry the same key against the alternate provider before giving
         # up. `_lookup_gst_with_fallback` does that and returns the first success.
-        if request and request.headers.get("x-test-bypass") == "true":
+        if (request and request.headers.get("x-test-bypass") == "true") or is_mock:
             result = {
                 "is_valid": True,
                 "gstin": gstin,
@@ -390,10 +475,12 @@ async def validate_gst(payload: GstValidationRequest, request: Request, user: di
                     "state_code": res_dict["state_code"],
                     "source": res_dict.get("source", gst_provider),
                 }
-            except (gstverify_gst.GstinNotFound, rapidapi_gst.GstinNotFound) as e:
+            except (gstverify_gst.GstinNotFound, rapidapi_gst.GstinNotFound,
+                    rapidapi_gst_insights.GstinNotFound) as e:
                 is_valid = False
                 result = {"is_valid": False, "error": e.user_message}
-            except (gstverify_gst.GstProviderError, rapidapi_gst.GstProviderError) as e:
+            except (gstverify_gst.GstProviderError, rapidapi_gst.GstProviderError,
+                    rapidapi_gst_insights.GstProviderError) as e:
                 is_valid = False
                 result = {"is_valid": False, "error": e.user_message}
             except Exception:
@@ -499,11 +586,12 @@ async def validate_pan(payload: PanValidationRequest, user: dict = Depends(requi
                     }}
                 )
             else:
-                supp = await db.suppliers.find_one({"id": payload.link_party_id})
+                supp = await db.vendors.find_one({"id": payload.link_party_id})
                 if supp:
-                    await db.suppliers.update_one(
+                    await db.vendors.update_one(
                         {"id": payload.link_party_id},
                         {"$set": {
+                            "pan": pan,
                             "pan_number": pan,
                             "pan_holder_name": result["pan_holder_name"],
                             "pan_type": result["pan_type"],
@@ -565,9 +653,9 @@ async def validate_aadhaar(payload: AadhaarValidationRequest, user: dict = Depen
                     }}
                 )
             else:
-                supp = await db.suppliers.find_one({"id": payload.link_party_id})
+                supp = await db.vendors.find_one({"id": payload.link_party_id})
                 if supp:
-                    await db.suppliers.update_one(
+                    await db.vendors.update_one(
                         {"id": payload.link_party_id},
                         {"$set": {
                             "aadhaar_number": masked_aadhaar,
@@ -602,16 +690,22 @@ async def get_logs(page: int = 1, limit: int = 50, user: dict = Depends(require_
 
 @router.get("/dashboard")
 async def get_dashboard(user: dict = Depends(require_verification_access)):
+    return await cache.get_or_set(
+        "verifications:dashboard", cache.TTL_DASHBOARD, _compute_verifications_dashboard
+    )
+
+
+async def _compute_verifications_dashboard() -> dict:
     total_customers = await db.customers.count_documents({})
-    total_vendors = await db.suppliers.count_documents({})
+    total_vendors = await db.vendors.count_documents({})
     
     # Active GST is status ACTIVE
     active_gst = await db.customers.count_documents({"gst_status": "ACTIVE"}) + \
-                 await db.suppliers.count_documents({"gst_status": "ACTIVE"})
+                 await db.vendors.count_documents({"gst_status": "ACTIVE"})
                  
     # Invalid GST is either status not ACTIVE or explicit error
     invalid_gst = await db.customers.count_documents({"gstin": {"$ne": None}, "gst_status": {"$ne": "ACTIVE"}}) + \
-                  await db.suppliers.count_documents({"gstin": {"$ne": None}, "gst_status": {"$ne": "ACTIVE"}})
+                  await db.vendors.count_documents({"gstin": {"$ne": None}, "gst_status": {"$ne": "ACTIVE"}})
                   
     recent = await db.verification_logs.find({}, {"_id": 0}).sort("created_at", -1).limit(10).to_list(10)
     

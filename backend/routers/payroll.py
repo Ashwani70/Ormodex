@@ -20,21 +20,20 @@ Collections used:
   payslips, attendance, leave_balances, tds_declarations, fnf_settlements
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
-from typing import Optional, Literal
+from typing import Optional, Literal, Any
 from pydantic import BaseModel
-from datetime import date, datetime, timezone
+from datetime import date
 from calendar import monthrange
-import math
 
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
-from core.utils import now_iso, new_id, next_doc_number, crud_create, crud_list, crud_get, crud_update
+from core.utils import now_iso, new_id, crud_create, crud_list, crud_get, crud_update
 
 router = APIRouter(prefix="/payroll", tags=["Payroll"])
 
 
 def _require_hr(user: dict):
-    if user.get("role") in ("admin", "hr_manager", "accountant"):
+    if (is_admin_role(user.get("role")) or user.get("role") in ("hr_manager", "accountant")):
         return user
     if "payroll" in user.get("module_permissions", []):
         return user
@@ -610,7 +609,7 @@ async def create_payroll_run(
     user: dict = Depends(get_current_user),
 ):
     _require_hr(user)
-    mm, yyyy = _parse_period(payload.period)
+    _mm, _yyyy = _parse_period(payload.period)
     # Idempotency
     existing = await db.payroll_runs.find_one({"period": payload.period, "financial_year": payload.financial_year})
     if existing:
@@ -662,7 +661,7 @@ async def process_payroll_run(
             continue
         try:
             slip = await _compute_payslip(emp, structure, params, mm, yyyy, fy)
-            slip["run_id"] = run_id
+            slip["payroll_run_id"] = run_id
             payslips.append(slip)
         except Exception as e:
             errors.append({"employee_id": emp["id"], "error": str(e)})
@@ -674,7 +673,7 @@ async def process_payroll_run(
     if payslips:
         await db.payslips.insert_many([{**s, "_id_omit": None} for s in payslips])
         # Remove helper key
-        await db.payslips.update_many({"run_id": run_id}, {"$unset": {"_id_omit": ""}})
+        await db.payslips.update_many({"payroll_run_id": run_id}, {"$unset": {"_id_omit": ""}})
 
     # Update run status
     await crud_update("payroll_runs", run_id, {
@@ -712,7 +711,7 @@ async def post_payroll_run(run_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(400, "Run must be in PROCESSED status before posting")
 
     await db.payslips.update_many(
-        {"run_id": run_id},
+        {"payroll_run_id": run_id},
         {"$set": {"status": "POSTED", "posted_at": now_iso()}},
     )
     await crud_update("payroll_runs", run_id, {"status": "POSTED", "posted_at": now_iso()}, user)
@@ -749,7 +748,7 @@ async def list_payslips(
     if employee_id:
         filt["employee_id"] = employee_id
     if run_id:
-        filt["run_id"] = run_id
+        filt["payroll_run_id"] = run_id
     return await crud_list("payslips", filt=filt, sort_field="period")
 
 
@@ -784,11 +783,12 @@ async def get_form16(
         {"_id": 0},
     ).to_list(12)
 
+    total_tds_deposited: float = round(sum(float(p.get("tds", 0)) for p in payslips), 2)
     part_a = {
         "employee_id": employee_id,
         "employee_name": emp.get("name", ""),
         "financial_year": fy,
-        "total_tds_deposited": round(sum(float(p.get("tds", 0)) for p in payslips), 2),
+        "total_tds_deposited": total_tds_deposited,
         "quarters": _tds_quarter_breakup(payslips, fy),
     }
 
@@ -829,9 +829,9 @@ async def get_form16(
         "surcharge": 0.0,
         "cess": cess,
         "annual_tax_payable": annual_tax,
-        "tds_deposited": part_a["total_tds_deposited"],
-        "tax_refundable": max(0.0, part_a["total_tds_deposited"] - annual_tax),
-        "tax_balance_payable": max(0.0, annual_tax - part_a["total_tds_deposited"]),
+        "tds_deposited": total_tds_deposited,
+        "tax_refundable": max(0.0, total_tds_deposited - annual_tax),
+        "tax_balance_payable": max(0.0, annual_tax - total_tds_deposited),
     }
 
     return {"part_a": part_a, "part_b": part_b}
@@ -842,7 +842,6 @@ def _tds_quarter_breakup(payslips: list, fy: str) -> list:
         "Q1 (Apr-Jun)": 0.0, "Q2 (Jul-Sep)": 0.0,
         "Q3 (Oct-Dec)": 0.0, "Q4 (Jan-Mar)": 0.0,
     }
-    fy_start_year = int(fy.split("-")[0])
     for p in payslips:
         mm = int(p.get("period", "0101")[:2])
         tds = float(p.get("tds", 0))
@@ -879,7 +878,7 @@ async def compute_fnf(
     years_of_service = max(0.0, (lwd - joining).days / 365.25)
 
     # Last active salary structure
-    structure = await db.salary_structures.find_one(
+    structure: Any = await db.salary_structures.find_one(
         {"employee_id": employee_id, "effective_from": {"$lte": str(lwd)}},
         {"_id": 0},
         sort=[("effective_from", -1)],
@@ -908,13 +907,13 @@ async def compute_fnf(
     salary_for_lwd_month = round(gross_monthly * days_worked / total_days_in_month, 2)
 
     # Leave encashment (basic / 30 * days)
-    leave_encashment = round(basic_monthly / 30 * float(payload.leave_encashment_days), 2)
+    leave_encashment = round(basic_monthly / 30 * payload.leave_encashment_days, 2)
 
     # Gratuity
     gratuity = _compute_gratuity(basic_monthly, years_of_service)
 
     total_payable = salary_for_lwd_month + leave_encashment + gratuity
-    total_recoveries = float(payload.notice_recovery) + float(payload.other_recoveries)
+    total_recoveries = payload.notice_recovery + payload.other_recoveries
     net_payable = round(total_payable - total_recoveries, 2)
 
     fnf = {
@@ -930,8 +929,8 @@ async def compute_fnf(
         "gratuity_eligible": years_of_service >= 5.0,
         "gratuity": gratuity,
         "total_payable": round(total_payable, 2),
-        "notice_recovery": float(payload.notice_recovery),
-        "other_recoveries": float(payload.other_recoveries),
+        "notice_recovery": payload.notice_recovery,
+        "other_recoveries": payload.other_recoveries,
         "total_recoveries": round(total_recoveries, 2),
         "net_payable": net_payable,
         "notes": payload.notes,
@@ -980,9 +979,18 @@ async def pf_ecr_report(
     """
     _require_hr(user)
     payslips = await db.payslips.find({"period": period, "status": "POSTED"}, {"_id": 0}).to_list(5000)
+    # Batch-load every referenced employee in one query (was an N+1: one
+    # find_one per payslip — up to 5000 round-trips against a remote pooler).
+    emp_ids = list({p["employee_id"] for p in payslips})
+    emp_map = {
+        e["id"]: e
+        for e in await db.employees.find(
+            {"id": {"$in": emp_ids}}, {"_id": 0, "id": 1, "uan": 1, "name": 1}
+        ).to_list(5000)
+    } if emp_ids else {}
     rows = []
     for p in payslips:
-        emp = await db.employees.find_one({"id": p["employee_id"]}, {"_id": 0, "uan": 1, "name": 1}) or {}
+        emp = emp_map.get(p["employee_id"], {})
         pf = p.get("statutory", {}).get("pf", {})
         rows.append({
             "employee_id": p["employee_id"],
@@ -1011,12 +1019,20 @@ async def esi_return_report(
     """ESI monthly return — employee + employer contribution per insured person."""
     _require_hr(user)
     payslips = await db.payslips.find({"period": period, "status": "POSTED"}, {"_id": 0}).to_list(5000)
+    # Batch-load employees in one query (was an N+1: one find_one per payslip).
+    emp_ids = list({p["employee_id"] for p in payslips})
+    emp_map = {
+        e["id"]: e
+        for e in await db.employees.find(
+            {"id": {"$in": emp_ids}}, {"_id": 0, "id": 1, "esi_ip_number": 1, "name": 1}
+        ).to_list(5000)
+    } if emp_ids else {}
     rows = []
     for p in payslips:
         esi = p.get("statutory", {}).get("esi", {})
         if not esi.get("esi_applicable"):
             continue
-        emp = await db.employees.find_one({"id": p["employee_id"]}, {"_id": 0, "esi_ip_number": 1, "name": 1}) or {}
+        emp = emp_map.get(p["employee_id"], {})
         rows.append({
             "employee_id": p["employee_id"],
             "employee_name": p.get("employee_name", ""),

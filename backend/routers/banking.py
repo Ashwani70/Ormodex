@@ -9,19 +9,21 @@ Features:
 """
 import uuid
 from datetime import datetime, date, timezone
-from typing import Optional, List, Literal
+from typing import Optional, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 
-from core.auth_utils import get_current_user, require_admin
+from core import cache
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
+from core.pdf import build_bank_statement_pdf
 
 router = APIRouter(prefix="/banking", tags=["Banking"])
 
 
 def _require_banking(user: dict):
-    if user.get("role") in ("admin", "accountant"):
+    if (is_admin_role(user.get("role")) or user.get("role") == "accountant"):
         return user
     perms = user.get("module_permissions", [])
     if "accounting" not in perms and "banking" not in perms:
@@ -99,6 +101,52 @@ async def list_bank_statements(
     skip = (page - 1) * limit
     items = await db.bank_statements.find(q, {"_id": 0}).sort("transaction_date", -1).skip(skip).limit(limit).to_list(limit)
     return {"total": total, "page": page, "items": items}
+
+
+@router.get("/statements/pdf")
+async def bank_statement_pdf(
+    bank_account_code: str = Query(...),
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """Render a bank statement (passbook) PDF for one account over a date range,
+    with a running balance carried from transactions before ``from_date``."""
+    _require_banking(user)
+
+    acc = await db.chart_of_accounts.find_one({"code": bank_account_code}, {"_id": 0, "name": 1})
+    account_name = acc["name"] if acc else bank_account_code
+
+    # Opening balance = net of all transactions strictly before the window.
+    opening_balance = 0.0
+    if from_date:
+        prior = await db.bank_statements.find(
+            {"bank_account_code": bank_account_code, "transaction_date": {"$lt": from_date}},
+            {"_id": 0, "debit": 1, "credit": 1},
+        ).to_list(50000)
+        opening_balance = round(
+            sum(float(p.get("credit") or 0) - float(p.get("debit") or 0) for p in prior), 2
+        )
+
+    q: dict = {"bank_account_code": bank_account_code}
+    if from_date or to_date:
+        q["transaction_date"] = {}
+        if from_date:
+            q["transaction_date"]["$gte"] = from_date
+        if to_date:
+            q["transaction_date"]["$lte"] = to_date
+    lines = await db.bank_statements.find(q, {"_id": 0}).sort("transaction_date", 1).to_list(50000)
+
+    pdf_bytes = build_bank_statement_pdf(
+        account_name, lines, from_date=from_date or "", to_date=to_date or "",
+        opening_balance=opening_balance,
+    )
+    fname = f"statement-{bank_account_code}"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{fname}.pdf"'},
+    )
 
 
 @router.post("/statements")
@@ -182,26 +230,30 @@ async def auto_reconcile(
                     je_by_amount[key] = []
                 je_by_amount[key].append({"je_id": je["id"], "net": net, "date": je["date"], "narration": je.get("narration", "")})
 
-    matched_count = 0
+    # Matching is pure in-memory work (no DB call per iteration); collect
+    # each matched statement line's own $set doc, then write them all in ONE
+    # bulk_update_by_id call instead of an update_one per match inside the
+    # loop — was up to 1000 individual round trips on a large reconciliation.
+    now_iso_val = datetime.now(timezone.utc).isoformat()
+    updates_by_id: dict = {}
     for stmt in stmt_lines:
         # Net from bank statement perspective (credit = inflow, debit = outflow)
         stmt_net = round(stmt.get("credit", 0) - stmt.get("debit", 0), 2)
         lookup_key = abs(stmt_net)
         candidates = je_by_amount.get(lookup_key, [])
         if candidates:
-            best = candidates[0]  # Take first match
-            await db.bank_statements.update_one(
-                {"id": stmt["id"]},
-                {"$set": {
-                    "is_reconciled": True,
-                    "matched_entry_id": best["je_id"],
-                    "matched_narration": best["narration"],
-                    "reconciled_at": datetime.now(timezone.utc).isoformat(),
-                    "reconciled_by": user["id"],
-                }}
-            )
-            je_by_amount[lookup_key].pop(0)  # Remove used entry
-            matched_count += 1
+            best = candidates.pop(0)  # Take first match, remove so it isn't reused
+            updates_by_id[stmt["id"]] = {"$set": {
+                "is_reconciled": True,
+                "matched_entry_id": best["je_id"],
+                "matched_narration": best["narration"],
+                "reconciled_at": now_iso_val,
+                "reconciled_by": user["id"],
+            }}
+
+    if updates_by_id:
+        await db.bank_statements.bulk_update_by_id(updates_by_id)
+    matched_count = len(updates_by_id)
 
     total_unreconciled = await db.bank_statements.count_documents(
         {"bank_account_code": bank_account_code, "is_reconciled": False}
@@ -319,6 +371,12 @@ async def delete_cheque(cheque_id: str, user=Depends(require_admin)):
 @router.get("/dashboard")
 async def banking_dashboard(user=Depends(get_current_user)):
     _require_banking(user)
+    return await cache.get_or_set(
+        "banking:dashboard", cache.TTL_DASHBOARD, _compute_banking_dashboard
+    )
+
+
+async def _compute_banking_dashboard() -> dict:
     # Cheque stats
     pending_cheques = await db.cheques.count_documents({"status": "PENDING"})
     bounced_cheques = await db.cheques.count_documents({"status": "BOUNCED"})

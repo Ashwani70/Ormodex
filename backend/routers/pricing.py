@@ -22,7 +22,7 @@ from typing import Optional, Literal
 from pydantic import BaseModel
 from datetime import date
 
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 from core.utils import now_iso, crud_create, crud_list, crud_get, crud_update
 
@@ -30,7 +30,7 @@ router = APIRouter(prefix="/pricing", tags=["Pricing & Schemes"])
 
 
 def _require_pricing(user: dict):
-    if user.get("role") in ("admin", "accountant"):
+    if (is_admin_role(user.get("role")) or user.get("role") == "accountant"):
         return user
     if any(p in user.get("module_permissions", []) for p in ("pricing", "sales", "inventory")):
         return user

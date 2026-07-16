@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from core.auth_utils import get_current_user
+from core.auth_utils import get_current_user, is_admin_role
 from core.db import db
 from core.tenant import stamp_tenant, tenant_ctx, tenant_filter
 from core.utils import log_audit, new_id, now_iso
@@ -29,7 +29,7 @@ COLL = "vouchers_v2"
 
 
 def _require_voucher(user: dict) -> dict:
-    if user.get("role") in ("admin", "accountant"):
+    if (is_admin_role(user.get("role")) or user.get("role") == "accountant"):
         return user
     perms = user.get("module_permissions") or []
     if any(p in perms for p in ("vouchers", "accounting", "inventory")):
@@ -39,7 +39,7 @@ def _require_voucher(user: dict) -> dict:
 
 def _require_approver(user: dict) -> dict:
     # Maker-checker: approval is a distinct privilege from creation.
-    if user.get("role") == "admin":
+    if is_admin_role(user.get("role")):
         return user
     perms = user.get("module_permissions") or []
     if "approve_vouchers" in perms or "approver" in perms:
@@ -92,6 +92,31 @@ async def list_vouchers(
     skip = (page - 1) * limit
     items = await db[COLL].find(filt, {"_id": 0}).sort("date", -1).skip(skip).limit(limit).to_list(limit)
     return {"total": total, "page": page, "items": items}
+
+
+# Literal sub-routes MUST be registered before /{voucher_id} so FastAPI does not
+# treat segments like "orders", "job-work" as a voucher_id param.
+
+@router.get("/orders/{order_id}/fulfilment")
+async def order_fulfilment_status_early(order_id: str, tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+    """Fulfilled vs pending qty for an order, computed from the links chain."""
+    _require_voucher(user)
+    return await order_fulfilment(order_id, tenant)
+
+
+@router.get("/job-work/reconciliation")
+async def job_work_recon_early(as_of: Optional[str] = None, tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+    """Out-challan vs material-inward reconciliation with §143 return-window alerts."""
+    _require_voucher(user)
+    return await job_work_reconciliation(tenant, as_of)
+
+
+@router.get("/job-work/itc-04")
+async def job_work_itc04_early(from_date: str = Query(...), to_date: str = Query(...),
+                         tenant: str = Depends(tenant_ctx), user: dict = Depends(get_current_user)):
+    """ITC-04 dataset (goods sent / received back) for a period."""
+    _require_voucher(user)
+    return await itc04_data(tenant, from_date, to_date)
 
 
 @router.get("/{voucher_id}")

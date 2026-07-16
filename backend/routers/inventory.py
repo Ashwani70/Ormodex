@@ -10,7 +10,8 @@ from core import cache
 from core.auth_utils import get_current_user, require_admin
 from core.db import db
 from core.models import Product, Warehouse
-from core.product_stock_bridge import enrich_products_with_live_stock
+from core.product_stock_bridge import enrich_products_with_live_stock, resolve_godown_id, resolve_stock_item_id_for_product
+from core.stock_ledger import on_hand, post_entry
 from core.storage import APP_NAME, get_object, put_object
 from core.utils import (
     crud_create,
@@ -58,18 +59,24 @@ def _sniff_ok(content_type: str, data: bytes) -> bool:
 # ---------- Warehouses ----------
 @router.get("/warehouses")
 async def list_warehouses(q: Optional[str] = None, _: dict = Depends(get_current_user)):
-    
-    return await crud_list("warehouses", q, ["name", "location", "manager"], sort_field="name")
+    rows = await crud_list("warehouses", q, ["name", "location", "manager"], sort_field="name")
+    logger.info("GET /warehouses q=%r → %d rows", q, len(rows))
+    return rows
 
 
 @router.post("/warehouses")
 async def create_warehouse(payload: Warehouse, user: dict = Depends(get_current_user)):
-    return await crud_create("warehouses", payload.model_dump(), user=user)
+    result = await crud_create("warehouses", payload.model_dump(), user=user)
+    logger.info("POST /warehouses created id=%s name=%r by user=%s",
+                result.get("id"), result.get("name"), user.get("id"))
+    return result
 
 
 @router.put("/warehouses/{item_id}")
 async def update_warehouse(item_id: str, payload: Warehouse, user: dict = Depends(get_current_user)):
-    return await crud_update("warehouses", item_id, payload.model_dump(), user=user)
+    result = await crud_update("warehouses", item_id, payload.model_dump(), user=user)
+    logger.info("PUT /warehouses/%s updated by user=%s", item_id, user.get("id"))
+    return result
 
 
 @router.delete("/warehouses/{item_id}")
@@ -92,7 +99,9 @@ async def delete_warehouse(
         await db["stock_transactions"].delete_many({"godown_id": item_id})
         await db["stock_transactions"].delete_many({"warehouse_id": item_id})
 
-    return await crud_delete("warehouses", item_id, user=user)
+    result = await crud_delete("warehouses", item_id, user=user)
+    logger.info("DELETE /warehouses/%s force=%s by user=%s", item_id, force, user.get("id"))
+    return result
 
 
 # ---------- Products ----------
@@ -173,28 +182,20 @@ async def create_product(payload: Product, user: dict = Depends(get_current_user
 
     # A product created with an opening quantity must have a movement to
     # explain it — otherwise Stock Log shows 0 opening/inward/closing for it
-    # forever (its balance math is SUM(delta), not products.quantity) and the
-    # negative-stock count can misfire once any later outward move is posted
-    # against a product that never had an inward leg on record.
+    # forever, and (since the opening_stock migration to post_entry) it also
+    # never gets an initial FIFO/LIFO/WA cost layer, which would make every
+    # later outward movement mis-valued.
     qty = float(data.get("quantity") or 0)
     if qty > 0:
-        await db.stock_transactions.insert_one({
-            "id": new_id(),
-            "product_id": product["id"],
-            "product_name": product.get("name"),
-            "godown_id": data.get("warehouse_id"),
-            "delta": qty,
-            "balance": qty,
-            "rate": float(data.get("cost_price") or 0) or None,
-            "reason": f"Opening Stock — {product.get('name')}",
-            "doc_type": "OPENING_STOCK",
-            "voucher_no": None,
-            "source_doc_id": product["id"],
-            "user_id": user["id"],
-            "user_name": user.get("name", ""),
-            "created_at": now_iso(),
-        })
-        logger.info("product %s: opening stock movement posted qty=%s", product["id"], qty)
+        stock_item_id = await resolve_stock_item_id_for_product(product["id"], user)
+        godown_id = await resolve_godown_id(data.get("warehouse_id"))
+        entry = await post_entry(
+            stock_item_id=stock_item_id, godown_id=godown_id,
+            qty=qty, movement_type="OPENING", rate=float(data.get("cost_price") or 0),
+            source_doc_type="product_opening_stock", source_doc_id=product["id"],
+            user=user,
+        )
+        logger.info("product %s: opening stock movement posted qty=%s entry=%s", product["id"], qty, entry["id"])
     return product
 
 
@@ -216,28 +217,44 @@ async def adjust_stock(
     item_id: str,
     delta: float = Query(...),
     reason: str = Query("manual"),
+    godown_id: Optional[str] = Query(None),
+    rate: Optional[float] = Query(None),
     user: dict = Depends(get_current_user),
 ):
+    """Manual stock adjustment, routed through the valuation-aware stock
+    ledger (post_entry) rather than a flat products.quantity write — see
+    core/stock_ledger.py. Every adjustment now gets a real FIFO/LIFO/WA/
+    Standard-Cost priced ledger entry, not just a Stock Log display row.
+
+    godown_id: falls back to the item's only/first godown when the caller
+    doesn't specify one (this endpoint predates warehouse selection and has
+    no frontend caller today — see product_stock_bridge for the product ->
+    stock_item link). Ambiguous when a product has stock in more than one
+    godown; callers that care about a specific location should pass it.
+    """
+    if delta == 0:
+        raise HTTPException(status_code=400, detail="delta must be non-zero")
     product = await crud_get("products", item_id)
-    new_qty = float(product.get("quantity", 0)) + delta
-    if new_qty < 0:
-        raise HTTPException(status_code=400, detail="Insufficient stock")
-    await db.products.update_one({"id": item_id}, {"$set": {"quantity": new_qty, "updated_at": now_iso()}})
-    await db.stock_transactions.insert_one({
-        "id": new_id(),
-        "product_id": item_id,
-        "product_name": product.get("name"),
-        "delta": delta,
-        "balance": new_qty,
-        "reason": reason,
-        "doc_type": "ADJUSTMENT",
-        "voucher_no": None,
-        "source_doc_id": item_id,
-        "user_id": user["id"],
-        "user_name": user.get("name", ""),
-        "created_at": now_iso(),
-    })
-    return {"ok": True, "new_quantity": new_qty}
+    stock_item_id = await resolve_stock_item_id_for_product(item_id, user)
+
+    resolved_godown_id = await resolve_godown_id(godown_id)
+
+    if delta < 0:
+        current = await on_hand(stock_item_id, resolved_godown_id)
+        if float(current["qty"]) + delta < 0:
+            raise HTTPException(status_code=400, detail="Insufficient stock")
+    elif rate is None:
+        rate = float(product.get("cost_price") or 0)
+
+    entry = await post_entry(
+        stock_item_id=stock_item_id, godown_id=resolved_godown_id,
+        qty=delta, movement_type="ADJUSTMENT", rate=rate,
+        source_doc_type="product_adjust", source_doc_id=item_id,
+        user=user,
+    )
+    logger.info("product %s: manual adjustment posted delta=%s reason=%r entry=%s", item_id, delta, reason, entry["id"])
+    new_qty = float((await on_hand(stock_item_id, resolved_godown_id))["qty"])
+    return {"ok": True, "new_quantity": new_qty, "entry_id": entry["id"]}
 
 
 # ---------- Stock log ----------

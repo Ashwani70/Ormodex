@@ -20,8 +20,7 @@ Key statutory rules encoded:
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, Literal
 from pydantic import BaseModel
-from datetime import date, datetime, timezone
-from decimal import Decimal
+from datetime import date
 
 from core.auth_utils import get_current_user, require_admin
 from core.db import db
@@ -158,7 +157,6 @@ def _companies_act_wdv(opening_wdv: float, residual: float, life_years: float,
     annual = opening_wdv * rate
     charged = annual * days_held / total_days
     # Do not depreciate below residual value
-    floor = max(opening_wdv - (opening_wdv - residual), 0.0)
     return round(min(charged, opening_wdv - residual), 2)
 
 
@@ -282,6 +280,7 @@ async def list_assets(
         filt["branch_id"] = branch_id
     if status:
         filt["status"] = status
+    
     return await crud_list("fixed_assets", q, ["description", "code", "location"], filt=filt)
 
 
@@ -360,6 +359,14 @@ async def run_depreciation(
     assets = await db.fixed_assets.find(asset_filter, {"_id": 0}).to_list(5000)
 
     results = []
+    # Collected across the per-asset/per-block loops below and written in ONE
+    # chunked insert_many + ONE bulk_update_by_id at the end of each section,
+    # instead of an insert_one + update_one pair per asset/block inside the
+    # loop — was up to 2x(assets processed) individual round trips on a full
+    # depreciation run. The per-asset READS inside these loops (category,
+    # prior-run lookups) are unrelated to this batching pass and unchanged.
+    new_run_docs: list = []
+    asset_updates_by_id: dict = {}
 
     # ── Companies Act ─────────────────────────────────────────────────────────
     if payload.basis == "companies_act":
@@ -426,12 +433,9 @@ async def run_depreciation(
             if not payload.preview:
                 run_doc["id"] = new_id()
                 run_doc["created_at"] = now_iso()
-                await db.asset_depreciation_runs.insert_one(run_doc)
+                new_run_docs.append(run_doc)
                 # Update asset's Companies Act WDV
-                await db.fixed_assets.update_one(
-                    {"id": asset["id"]},
-                    {"$set": {"ca_opening_wdv": closing_wdv, "updated_at": now_iso()}},
-                )
+                asset_updates_by_id[asset["id"]] = {"$set": {"ca_opening_wdv": closing_wdv, "updated_at": now_iso()}}
 
     # ── Income Tax Act ────────────────────────────────────────────────────────
     else:  # income_tax
@@ -511,17 +515,22 @@ async def run_depreciation(
 
             if not payload.preview:
                 run_doc = {**calc, "id": new_id(), "created_at": now_iso()}
-                await db.asset_depreciation_runs.insert_one(run_doc)
+                new_run_docs.append(run_doc)
                 # Update each asset's IT WDV proportionally
                 total_block_cost = additions + half_rate_additions + block_opening_wdv
                 if total_block_cost > 0:
                     ratio = calc["closing_wdv"] / total_block_cost
                     for asset in block_assets:
                         asset_cost = float(asset.get("it_cost_for_block") or asset.get("gross_value", 0))
-                        await db.fixed_assets.update_one(
-                            {"id": asset["id"]},
-                            {"$set": {"it_opening_wdv": round(asset_cost * ratio, 2), "updated_at": now_iso()}},
-                        )
+                        asset_updates_by_id[asset["id"]] = {
+                            "$set": {"it_opening_wdv": round(asset_cost * ratio, 2), "updated_at": now_iso()}
+                        }
+
+    if new_run_docs:
+        for i in range(0, len(new_run_docs), 500):
+            await db.asset_depreciation_runs.insert_many(new_run_docs[i:i + 500])
+    if asset_updates_by_id:
+        await db.fixed_assets.bulk_update_by_id(asset_updates_by_id)
 
     return {
         "financial_year": fy,
@@ -557,7 +566,7 @@ async def dispose_asset(
 
     gross = float(asset.get("gross_value", 0))
     ca_wdv = float(asset.get("ca_opening_wdv") or gross)
-    sale = float(payload.sale_consideration)
+    sale = payload.sale_consideration
 
     # Companies Act gain/loss
     ca_gain_loss = round(sale - ca_wdv, 2)
@@ -672,9 +681,8 @@ async def revalue_asset(
         raise HTTPException(400, "Asset category not found")
 
     old_gross = float(asset.get("gross_value", 0))
-    new_gross = float(payload.new_gross_value)
+    new_gross = payload.new_gross_value
     ca_wdv = float(asset.get("ca_opening_wdv") or old_gross)
-    residual = float(asset.get("salvage_value", 0))
     revaluation_surplus = round(new_gross - old_gross, 2)
 
     # Estimate remaining life

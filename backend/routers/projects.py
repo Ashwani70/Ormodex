@@ -12,20 +12,19 @@ actual burn comes from the same aggregation.
 
 Collections: projects, tasks, timesheet_entries, project_costs
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional, Literal
 from pydantic import BaseModel
-from datetime import date
 
-from core.auth_utils import get_current_user
+from core.auth_utils import get_current_user, is_admin_role
 from core.db import db
-from core.utils import now_iso, new_id, next_doc_number, crud_create, crud_list, crud_get, crud_update
+from core.utils import now_iso, next_doc_number, crud_create, crud_list, crud_get, crud_update
 
 router = APIRouter(prefix="/projects", tags=["Project & Job Costing"])
 
 
 def _require_projects(user: dict):
-    if user.get("role") in ("admin", "accountant"):
+    if (is_admin_role(user.get("role")) or user.get("role") == "accountant"):
         return user
     if any(p in user.get("module_permissions", []) for p in ("projects", "accounting", "sales")):
         return user
@@ -80,6 +79,10 @@ class ProjectCostLink(BaseModel):
 # ══════════════════════════════════════════════════════════════
 # Projects & tasks CRUD
 # ══════════════════════════════════════════════════════════════
+# IMPORTANT: specific literal routes (/timesheets, /tasks, /costs) MUST be
+# declared before parameterised routes (/{project_id}) so FastAPI's router
+# matches them first. A parameterised route would otherwise eat the literal
+# segment (e.g. GET /timesheets → matched as project_id="timesheets" → 404).
 
 @router.get("")
 async def list_projects(status: Optional[str] = None, user: dict = Depends(get_current_user)):
@@ -94,33 +97,7 @@ async def create_project(payload: Project, user: dict = Depends(get_current_user
     return await crud_create("projects", payload.model_dump(), user)
 
 
-@router.get("/{project_id}")
-async def get_project(project_id: str, user: dict = Depends(get_current_user)):
-    _require_projects(user)
-    return await crud_get("projects", project_id)
-
-
-@router.put("/{project_id}")
-async def update_project(project_id: str, payload: Project, user: dict = Depends(get_current_user)):
-    _require_projects(user)
-    return await crud_update("projects", project_id, payload.model_dump(), user)
-
-
-@router.get("/{project_id}/tasks")
-async def list_tasks(project_id: str, user: dict = Depends(get_current_user)):
-    _require_projects(user)
-    return await crud_list("tasks", filt={"project_id": project_id})
-
-
-@router.post("/tasks")
-async def create_task(payload: Task, user: dict = Depends(get_current_user)):
-    _require_projects(user)
-    return await crud_create("tasks", payload.model_dump(), user)
-
-
-# ══════════════════════════════════════════════════════════════
-# Timesheets
-# ══════════════════════════════════════════════════════════════
+# ── Timesheets (must come before /{project_id}) ──────────────────────────────
 
 @router.post("/timesheets")
 async def create_timesheet(payload: TimesheetEntry, user: dict = Depends(get_current_user)):
@@ -151,14 +128,40 @@ async def list_timesheets(
     return await crud_list("timesheet_entries", filt=filt, sort_field="date")
 
 
-# ══════════════════════════════════════════════════════════════
-# Project costs (explicit voucher→project links)
-# ══════════════════════════════════════════════════════════════
+# ── Tasks (must come before /{project_id}) ───────────────────────────────────
+
+@router.post("/tasks")
+async def create_task(payload: Task, user: dict = Depends(get_current_user)):
+    _require_projects(user)
+    return await crud_create("tasks", payload.model_dump(), user)
+
+
+# ── Project costs (must come before /{project_id}) ───────────────────────────
 
 @router.post("/costs")
 async def link_cost(payload: ProjectCostLink, user: dict = Depends(get_current_user)):
     _require_projects(user)
     return await crud_create("project_costs", payload.model_dump(), user)
+
+
+# ── Parameterised project routes (after all literals) ────────────────────────
+
+@router.get("/{project_id}")
+async def get_project(project_id: str, user: dict = Depends(get_current_user)):
+    _require_projects(user)
+    return await crud_get("projects", project_id)
+
+
+@router.put("/{project_id}")
+async def update_project(project_id: str, payload: Project, user: dict = Depends(get_current_user)):
+    _require_projects(user)
+    return await crud_update("projects", project_id, payload.model_dump(), user)
+
+
+@router.get("/{project_id}/tasks")
+async def list_tasks(project_id: str, user: dict = Depends(get_current_user)):
+    _require_projects(user)
+    return await crud_list("tasks", filt={"project_id": project_id})
 
 
 @router.get("/{project_id}/costs")
@@ -186,6 +189,32 @@ def _billable_value(entries: list[dict], only_uninvoiced: bool = False) -> float
             continue
         total += e.get("hours", 0) * e.get("rate", 0)
     return round(total, 2)
+
+
+def _bill_time_lines(entries: list[dict], project_id: str) -> list[dict]:
+    """Roll uninvoiced billable entries into SalesItem-shaped invoice lines,
+    one per rate band. Treats missing/None hours or rate as 0 so the grouping
+    (which sorts on the rate key) never trips over a None and only real billable
+    value rolls up. Returns lines shaped like every other invoice so the PDF and
+    GST reports work unchanged."""
+    by_rate: dict[float, dict] = {}
+    for e in entries:
+        rate = e.get("rate") or 0
+        hours = e.get("hours") or 0
+        if hours * rate <= 0:
+            continue
+        band = by_rate.setdefault(rate, {"hours": 0.0, "rate": rate})
+        band["hours"] += hours
+
+    return [{
+        "product_id": "TIME",
+        "product_name": f"Billable hours @ {rate}/hr",
+        "sku": "TIME-BILLING",
+        "quantity": round(band["hours"], 2),
+        "unit_price": rate,
+        "gst_rate": 18.0,
+        "project_id": project_id,
+    } for rate, band in sorted(by_rate.items())]
 
 
 def _compute_pnl(tagged_revenue: float, tagged_direct_cost: float,
@@ -316,51 +345,36 @@ async def bill_time(project_id: str, user: dict = Depends(get_current_user)):
     project = await crud_get("projects", project_id)
     if project.get("billing") != "time_and_materials":
         raise HTTPException(400, "bill-time only applies to time_and_materials projects")
+    if not project.get("customer_id"):
+        raise HTTPException(400, "Project has no customer to invoice; set a customer first")
 
     entries = await db.timesheet_entries.find(
         {"project_id": project_id, "billable": True, "invoiced": {"$ne": True}}, {"_id": 0}
     ).to_list(5000)
-    billable = [e for e in entries if e.get("hours", 0) * e.get("rate", 0) > 0]
+    billable = [e for e in entries
+                if (e.get("hours") or 0) * (e.get("rate") or 0) > 0]
     if not billable:
         raise HTTPException(400, "No uninvoiced billable hours to bill")
 
-    # Group billable hours into invoice lines (one line per rate band)
-    by_rate: dict[float, dict] = {}
-    for e in billable:
-        rate = e.get("rate", 0)
-        band = by_rate.setdefault(rate, {"hours": 0.0, "rate": rate})
-        band["hours"] += e.get("hours", 0)
-
-    items = []
-    total = 0.0
-    for rate, band in sorted(by_rate.items()):
-        line_total = round(band["hours"] * rate, 2)
-        total += line_total
-        items.append({
-            "description": f"Billable hours @ ₹{rate}/hr",
-            "quantity": round(band["hours"], 2),
-            "unit_price": rate,
-            "amount": line_total,
-            "project_id": project_id,
-        })
+    items = _bill_time_lines(billable, project_id)
 
     invoice = {
-        "id": new_id(),
         "invoice_number": await next_doc_number("INV", "invoices"),
         "invoice_type": "TAX_INVOICE",
         "customer_id": project.get("customer_id"),
         "customer_name": project.get("customer_name"),
         "project_id": project_id,
         "items": items,
-        "total": round(total, 2),
-        "taxable_value": round(total, 2),
         "status": "UNPAID",
         "payment_received": 0,
         "source": "project_time_billing",
         "approval_state": "draft",
-        "created_at": now_iso(),
     }
-    await db.invoices.insert_one(invoice)
+    # Compute GST/totals so the draft invoice matches manually-created ones,
+    # then persist through crud_create so the create is audited.
+    from routers.sales import calculate_gst_for_invoice
+    await calculate_gst_for_invoice(invoice)
+    invoice = await crud_create("invoices", invoice, user)
 
     entry_ids = [e["id"] for e in billable]
     await db.timesheet_entries.update_many(
@@ -368,7 +382,6 @@ async def bill_time(project_id: str, user: dict = Depends(get_current_user)):
         {"$set": {"invoiced": True, "invoice_id": invoice["id"], "updated_at": now_iso()}},
     )
 
-    invoice.pop("_id", None)
     return {
         "invoice_id": invoice["id"],
         "invoice_number": invoice["invoice_number"],

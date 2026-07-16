@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.auth_utils import get_current_user
+from core.auth_utils import get_current_user, is_admin_role
 from core.db import db
 from core.masters_crud import (
     masters_create, masters_list, masters_list_paginated, masters_soft_delete,
@@ -59,7 +59,7 @@ SINGLETON_COLL = {
 
 
 def _require_masters(user: dict) -> dict:
-    if user.get("role") in ("admin", "accountant"):
+    if (is_admin_role(user.get("role")) or user.get("role") == "accountant"):
         return user
     perms = user.get("module_permissions") or []
     if any(p in perms for p in ("masters", "accounting", "inventory")):

@@ -9,6 +9,7 @@ from core.auth_utils import (
     require_admin,
     require_hr_or_admin,
 )
+from core.password_policy import password_errors
 from core.db import db
 from core.hr_models import Employee, SalaryStructure
 from core.utils import crud_create, crud_get, crud_list, crud_update, new_id, now_iso
@@ -75,6 +76,11 @@ async def create_employee(payload: Employee, _: dict = Depends(require_hr_or_adm
             raise HTTPException(status_code=400, detail="Email is required to create login")
         if not login_password:
             raise HTTPException(status_code=400, detail="Initial password required for login")
+        # This path creates a login user directly (not via UserCreate), so the
+        # password policy must be enforced here too.
+        pw_errors = password_errors(login_password)
+        if pw_errors:
+            raise HTTPException(status_code=400, detail=" ".join(pw_errors))
         user_id = new_id()
         await db.users.insert_one({
             "id": user_id,
@@ -124,6 +130,19 @@ async def delete_employee(item_id: str, _: dict = Depends(require_admin)):
     emp = await db.employees.find_one({"id": item_id}, {"_id": 0})
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Cascade delete all employee dependencies to prevent Foreign Key violations in Postgres
+    await db.attendance.delete_many({"employee_id": item_id})
+    await db.attendance_logs.delete_many({"employee_id": item_id})
+    await db.leaves.delete_many({"employee_id": item_id})
+    await db.payslips.delete_many({"employee_id": item_id})
+    await db.fnf_settlements.delete_many({"employee_id": item_id})
+    await db.tds_declarations.delete_many({"employee_id": item_id})
+    await db.timesheet_entries.delete_many({"employee_id": item_id})
+    await db.overtime_entries.delete_many({"employee_id": item_id})
+    await db.salary_payments.delete_many({"employee_id": item_id})
+    await db.salary_structures.delete_many({"employee_id": item_id})
+
     if emp.get("user_id"):
         await db.users.delete_one({"id": emp["user_id"]})
     await db.employees.delete_one({"id": item_id})

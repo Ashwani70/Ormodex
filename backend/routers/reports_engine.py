@@ -26,9 +26,9 @@ Sign convention (matches accounting.py):
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
-from datetime import date, datetime, timezone
+from datetime import date
 
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 from core.utils import now_iso, new_id
 
@@ -36,7 +36,7 @@ router = APIRouter(prefix="/reports", tags=["Reports — deeper"])
 
 
 def _require_reports(user: dict):
-    if user.get("role") in ("admin", "accountant"):
+    if (is_admin_role(user.get("role")) or user.get("role") == "accountant"):
         return user
     if any(p in user.get("module_permissions", []) for p in ("reports", "accounting", "mis")):
         return user
@@ -156,7 +156,7 @@ async def _grouped_balances(
         if existing:
             existing["debit"] = round(existing["debit"] + rowdoc["debit"], 2)
             existing["credit"] = round(existing["credit"] + rowdoc["credit"], 2)
-            existing["entry_ids"] = list(set(existing["entry_ids"]) | set(rowdoc["entry_ids"]))
+            existing["entry_ids"] = list(set(existing.get("entry_ids") or []) | set(rowdoc.get("entry_ids") or []))
         else:
             out[key] = rowdoc
     return out
@@ -215,7 +215,7 @@ def _sum_tag(rows: list[dict], tag: str) -> float:
 def _compute_ratios(bs: dict, pnl: dict) -> dict:
     """Standard ratios from tagged groupings. Tags expected on COA:
     current_asset, quick_asset, inventory, current_liability, debtor."""
-    assets, liabs, equity = bs["assets"], bs["liabilities"], bs["equity"]
+    assets, liabs = bs["assets"], bs["liabilities"]
 
     current_assets = _sum_tag(assets, "current_asset") or bs["total_assets"]
     current_liabs = _sum_tag(liabs, "current_liability") or bs["total_liabilities"]
@@ -273,8 +273,9 @@ async def _build_fund_flow(from_date: str, to_date: str, branches, cost_centers)
         delta = round(ca - oa, 2)
         if abs(delta) < 0.01:
             continue
-        name = c.get(code, o.get(code, {})).get("account_name", code)
-        atype = c.get(code, o.get(code, {})).get("account_type")
+        ref = c.get(code) or o.get(code)
+        name = ref.get("account_name", code) if isinstance(ref, dict) else code
+        atype = ref.get("account_type") if isinstance(ref, dict) else None
         # increase in liability/equity or decrease in asset = source of funds
         if atype in ("LIABILITY", "EQUITY"):
             (sources if delta > 0 else applications).append({"account_code": code, "name": name, "amount": abs(delta)})
@@ -404,10 +405,12 @@ async def drill_cell(
     match: dict = {"status": "POSTED", "date": {"$gte": d_from, "$lte": d_to}}
     if account_code:
         match["lines.account_code"] = account_code
-    if branch:
-        match["$expr"] = {"$eq": [{"$ifNull": ["$branch", "HO"]}, branch]}
 
     entries = await db.journal_entries.find(match, {"_id": 0}).sort("date", 1).to_list(2000)
+    # Branch filter (branch defaults to "HO" when unset). Applied in Python because
+    # the $ifNull/$eq comparison can't be pushed down to the data layer.
+    if branch:
+        entries = [e for e in entries if (e.get("branch") or "HO") == branch]
 
     composing = []
     running = 0.0

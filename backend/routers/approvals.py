@@ -30,9 +30,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional, Literal, Any
 from pydantic import BaseModel
 
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
-from core.utils import now_iso, new_id, crud_create, crud_list, crud_get, crud_update, log_audit
+from core.utils import now_iso, crud_create, crud_list, crud_update, log_audit
 
 router = APIRouter(prefix="/approvals", tags=["Approvals & Workflow"])
 
@@ -357,7 +357,7 @@ def _user_can_act_on_step(user: dict, step: dict) -> bool:
     if step.get("approver_role") and step["approver_role"] == user.get("role"):
         return True
     # Admins can always act as a fallback approver
-    return user.get("role") == "admin"
+    return is_admin_role(user.get("role"))
 
 
 def _step_satisfied(step: dict) -> bool:

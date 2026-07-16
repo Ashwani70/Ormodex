@@ -8,20 +8,20 @@ Features:
 - Expense analytics
 """
 import uuid
-from datetime import datetime, date, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 
 from core.accounting_models import ExpenseCategory, ExpenseEntry, ExpenseUpdate
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 
 router = APIRouter(prefix="/expenses", tags=["Expenses"])
 
 
 def _require_expense(user: dict):
-    if user.get("role") == "admin":
+    if (is_admin_role(user.get("role")) or user.get("role") in ("hr", "accountant")):
         return user
     perms = user.get("module_permissions", [])
     if "expenses" not in perms and "accounting" not in perms:
@@ -113,14 +113,14 @@ async def create_expense(data: ExpenseEntry, user=Depends(get_current_user)):
     doc["created_at"] = datetime.now(timezone.utc).isoformat()
 
     # Admin expenses are auto-approved
-    if user.get("role") == "admin":
+    if is_admin_role(user.get("role")):
         doc["status"] = "APPROVED"
         doc["approved_by"] = user["id"]
         doc["approved_at"] = datetime.now(timezone.utc).isoformat()
 
     await db.expense_entries.insert_one(doc)
 
-    if user.get("role") == "admin":
+    if is_admin_role(user.get("role")):
         await _create_expense_journal(doc, user)
 
     doc.pop("_id", None)
@@ -218,7 +218,7 @@ async def update_expense(expense_id: str, data: ExpenseUpdate, user=Depends(get_
 
     # Only admin/manager can approve/reject
     if data.status in ("APPROVED", "REJECTED"):
-        if user.get("role") not in ("admin", "hr"):
+        if not is_admin_role(user.get("role")) and user.get("role") != "hr":
             raise HTTPException(403, "Only admin or HR can approve/reject expenses")
 
     upd = {k: v for k, v in data.model_dump().items() if v is not None}
@@ -247,7 +247,6 @@ async def delete_expense(expense_id: str, user=Depends(require_admin)):
 
 async def _create_expense_journal(expense: dict, user: dict):
     """Create an auto journal entry for an approved expense."""
-    from core.accounting_models import JournalLine
     import uuid as _uuid
     from datetime import date as _date
 

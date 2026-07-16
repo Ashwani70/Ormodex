@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.auth_utils import get_current_user, require_admin
 from core.db import db
 from core.models import PurchaseOrder, Supplier
+from core.product_stock_bridge import resolve_godown_id, resolve_stock_item_id_for_product
+from core.stock_ledger import post_entry
 from core.utils import (
     calc_totals,
     crud_create,
@@ -23,6 +25,7 @@ router = APIRouter(tags=["purchase"])
 
 
 import re
+
 
 async def check_gstin_before_save(gstin: Optional[str], data: dict):
     if not gstin:
@@ -42,7 +45,7 @@ async def check_gstin_before_save(gstin: Optional[str], data: dict):
 # ---------- Suppliers ----------
 @router.get("/suppliers")
 async def list_suppliers(q: Optional[str] = None, _: dict = Depends(get_current_user)):
-    return await crud_list("suppliers", q, ["name", "company", "email", "phone"], sort_field="name")
+    return await crud_list("vendors", q, ["name", "company", "email", "phone"], sort_field="name")
 
 
 @router.post("/suppliers")
@@ -50,20 +53,20 @@ async def create_supplier(payload: Supplier, user: dict = Depends(get_current_us
     data = payload.model_dump()
     await check_gstin_before_save(data.get("gstin"), data)
     if not data.get("vendor_code"):
-        data["vendor_code"] = await next_doc_number("VND", "suppliers")
-    return await crud_create("suppliers", data, user=user)
+        data["vendor_code"] = await next_doc_number("VND", "vendors")
+    return await crud_create("vendors", data, user=user)
 
 
 @router.put("/suppliers/{item_id}")
 async def update_supplier(item_id: str, payload: Supplier, user: dict = Depends(get_current_user)):
     data = payload.model_dump()
     await check_gstin_before_save(data.get("gstin"), data)
-    return await crud_update("suppliers", item_id, data, user=user)
+    return await crud_update("vendors", item_id, data, user=user)
 
 
 @router.delete("/suppliers/{item_id}")
 async def delete_supplier(item_id: str, user: dict = Depends(require_admin)):
-    return await crud_delete("suppliers", item_id, user=user)
+    return await crud_delete("vendors", item_id, user=user)
 
 
 # ---------- Purchase Orders ----------
@@ -78,7 +81,7 @@ async def create_po(payload: PurchaseOrder, user: dict = Depends(get_current_use
     if not data.get("po_number"):
         data["po_number"] = await next_doc_number("PO", "purchase_orders")
     if data.get("supplier_id") and not data.get("supplier_name"):
-        sup = await db.suppliers.find_one({"id": data["supplier_id"]}, {"_id": 0, "name": 1})
+        sup = await db.vendors.find_one({"id": data["supplier_id"]}, {"_id": 0, "name": 1})
         if sup:
             data["supplier_name"] = sup["name"]
     data.update(calc_totals(data["items"]))
@@ -100,25 +103,26 @@ async def receive_po(item_id: str, user: dict = Depends(get_current_user)):
     
     old_values = await db.purchase_orders.find_one({"id": item_id}, {"_id": 0})
 
-    for item in po.get("items", []):
-        prod = await db.products.find_one({"id": item["product_id"]}, {"_id": 0})
-        if prod:
-            new_qty = float(prod.get("quantity", 0)) + float(item["quantity"])
-            await db.products.update_one(
-                {"id": item["product_id"]},
-                {"$set": {"quantity": new_qty, "updated_at": now_iso()}},
-            )
-            await db.stock_transactions.insert_one({
-                "id": new_id(),
-                "product_id": item["product_id"],
-                "product_name": item["product_name"],
-                "delta": float(item["quantity"]),
-                "balance": new_qty,
-                "reason": f"Purchase {po.get('po_number')}",
-                "user_id": user["id"],
-                "user_name": user.get("name", "Unknown"),
-                "created_at": now_iso(),
-            })
+    items = po.get("items", [])
+    # Each line posts its own valuation-priced ledger entry via post_entry —
+    # no batch products read needed here anymore (post_entry resolves the
+    # item's stock_item_id/rate itself); writes stay sequential regardless,
+    # since this app binds one shared AsyncSession per HTTP request and
+    # concurrent db.* calls against it raise SQLAlchemy's
+    # IllegalStateChangeError (see the same note in mis_reports.py's
+    # profitability_report).
+    godown_id = await resolve_godown_id(None)
+    for item in items:
+        if not item.get("product_id"):
+            continue
+        stock_item_id = await resolve_stock_item_id_for_product(item["product_id"], user)
+        await post_entry(
+            stock_item_id=stock_item_id, godown_id=godown_id,
+            qty=float(item["quantity"]), movement_type="PURCHASE",
+            rate=float(item.get("unit_price") or 0),
+            source_doc_type="purchase_order", source_doc_id=item_id,
+            user=user,
+        )
     await db.purchase_orders.update_one(
         {"id": item_id},
         {"$set": {"status": "RECEIVED", "received_at": now_iso(), "updated_at": now_iso()}},
@@ -165,6 +169,7 @@ class GoodsReceiptNote(BaseModel):
 
 @router.get("/grn")
 async def list_grns(q: Optional[str] = None, _: dict = Depends(get_current_user)):
+    # pyrefly: ignore [bad-argument-type]
     return await crud_list("goods_receipt_notes", q, ["grn_number", "purchase_order_number", "supplier_name"])
 
 
@@ -178,28 +183,29 @@ async def create_grn(payload: GoodsReceiptNote, user: dict = Depends(get_current
     data = payload.model_dump()
     if not data.get("grn_number"):
         data["grn_number"] = await next_doc_number("GRN", "goods_receipt_notes")
+    # Pre-generate the id so the stock-transaction rows below can carry a real
+    # source_doc_id link (crud_create() would otherwise assign it only after
+    # the stock-posting loop has already run).
+    data.setdefault("id", new_id())
     
-    # Auto-adjust system stock for each item received
-    for item in data.get("items", []):
-        prod = await db.products.find_one({"id": item["product_id"]}, {"_id": 0})
-        if prod:
-            new_qty = float(prod.get("quantity", 0)) + float(item["quantity_received"])
-            await db.products.update_one(
-                {"id": item["product_id"]},
-                {"$set": {"quantity": new_qty, "updated_at": now_iso()}},
-            )
-            # Log stock transaction
-            await db.stock_transactions.insert_one({
-                "id": new_id(),
-                "product_id": item["product_id"],
-                "product_name": item["product_name"],
-                "delta": float(item["quantity_received"]),
-                "balance": new_qty,
-                "reason": f"Goods Receipt {data.get('grn_number')} (PO-{data.get('purchase_order_number')})",
-                "user_id": user["id"],
-                "user_name": user.get("name", "Unknown"),
-                "created_at": now_iso(),
-            })
+    # Auto-adjust system stock for each item received. Each line posts its own
+    # valuation-priced ledger entry via post_entry; writes stay sequential —
+    # this app binds one shared AsyncSession per HTTP request, so concurrent
+    # db.* calls against it raise SQLAlchemy's IllegalStateChangeError (see
+    # the note in receive_po() above / mis_reports.py's profitability_report).
+    grn_items = data.get("items", [])
+    godown_id = await resolve_godown_id(None)
+    for item in grn_items:
+        if not item.get("product_id"):
+            continue
+        stock_item_id = await resolve_stock_item_id_for_product(item["product_id"], user)
+        await post_entry(
+            stock_item_id=stock_item_id, godown_id=godown_id,
+            qty=float(item["quantity_received"]), movement_type="PURCHASE",
+            rate=float(item.get("unit_cost") or 0),
+            source_doc_type="grn_v1", source_doc_id=data["id"],
+            user=user,
+        )
 
     # Update PO status to RECEIVED
     po_id = data["purchase_order_id"]

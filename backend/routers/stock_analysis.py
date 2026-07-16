@@ -11,17 +11,30 @@ import uuid
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional, List, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
+from core.product_stock_bridge import resolve_godown_id, resolve_stock_item_ids_for_products
+from core.stock_ledger import post_entry
 
 router = APIRouter(prefix="/stock", tags=["Stock Analysis"])
 
 
+async def _fetch_products_by_ids_dict(product_ids: list[str]) -> dict[str, dict]:
+    """Batch-read many products in ONE query instead of a find_one-per-id
+    loop. Mirrors the identically-purposed helper already used in
+    job_work.py/manufacturing.py."""
+    ids = list({pid for pid in product_ids if pid})
+    if not ids:
+        return {}
+    prods = await db.products.find({"id": {"$in": ids}}, {"_id": 0}).to_list(len(ids))
+    return {p["id"]: p for p in prods}
+
+
 def _require_inventory(user: dict):
-    if user.get("role") in ("admin", "accountant"):
+    if (is_admin_role(user.get("role")) or user.get("role") == "accountant"):
         return user
     perms = user.get("module_permissions", [])
     if "inventory" not in perms:
@@ -71,7 +84,7 @@ async def inventory_aging(
 ):
     """Products not involved in any sale/dispatch in the last N days (slow-moving/dead stock)."""
     _require_inventory(user)
-    cutoff = (date.today() - timedelta(days=days_threshold)).isoformat()
+    _cutoff = (date.today() - timedelta(days=days_threshold)).isoformat()
 
     q: dict = {"quantity": {"$gt": 0}}
     if warehouse_id:
@@ -79,15 +92,26 @@ async def inventory_aging(
 
     products = await db.products.find(q, {"_id": 0}).to_list(5000)
 
+    # Batch-read every product's outbound movements in ONE query instead of a
+    # find_one per product (was an N+1 — 1+N round-trips). Reduced to the
+    # latest one per product_id in Python (rows arrive sorted desc, so the
+    # first one seen per product is the most recent).
+    product_ids = [p["id"] for p in products]
+    last_tx_by_product: dict[str, dict] = {}
+    if product_ids:
+        outbound_tx = await db.stock_transactions.find(
+            {"product_id": {"$in": product_ids}, "delta": {"$lt": 0}},
+            {"_id": 0, "product_id": 1, "created_at": 1},
+        ).sort("created_at", -1).to_list(200000)
+        for tx in outbound_tx:
+            pid = tx.get("product_id")
+            if pid and pid not in last_tx_by_product:
+                last_tx_by_product[pid] = tx
+
     result = []
     for prod in products:
         pid = prod["id"]
-        # Find last outbound stock transaction
-        last_tx = await db.stock_transactions.find_one(
-            {"product_id": pid, "delta": {"$lt": 0}},
-            {"_id": 0, "created_at": 1},
-            sort=[("created_at", -1)]
-        )
+        last_tx = last_tx_by_product.get(pid)
         last_movement = last_tx["created_at"][:10] if last_tx else prod.get("created_at", "")[:10]
         days_since = (date.today() - date.fromisoformat(last_movement[:10])).days if last_movement else 9999
 
@@ -157,6 +181,24 @@ async def stock_valuation(
 
     products = await db.products.find(q, {"_id": 0}).to_list(5000)
 
+    # FIFO needs every product's inbound layers oldest-first. Batch-read them
+    # ALL in one query instead of a find per product inside the loop below
+    # (was an N+1 — 1+N round-trips, only when method=FIFO). Grouped by
+    # product_id in Python, preserving the ascending order the FIFO
+    # consumption loop needs (rows arrive sorted asc from the query).
+    inbound_by_product: dict[str, list[dict]] = {}
+    if method == "FIFO":
+        product_ids = [p["id"] for p in products]
+        if product_ids:
+            all_inbound = await db.stock_transactions.find(
+                {"product_id": {"$in": product_ids}, "delta": {"$gt": 0}},
+                {"_id": 0},
+            ).sort("created_at", 1).to_list(500000)
+            for tx in all_inbound:
+                pid = tx.get("product_id")
+                if pid:
+                    inbound_by_product.setdefault(pid, []).append(tx)
+
     rows = []
     total_value = 0.0
 
@@ -170,10 +212,7 @@ async def stock_valuation(
             value = round(current_qty * unit_cost, 2)
         else:
             # FIFO: use earliest purchase price from purchase transactions
-            inbound_txs = await db.stock_transactions.find(
-                {"product_id": pid, "delta": {"$gt": 0}},
-                {"_id": 0}
-            ).sort("created_at", 1).to_list(500)
+            inbound_txs = inbound_by_product.get(pid, [])[:500]
 
             remaining_qty = current_qty
             value = 0.0
@@ -181,7 +220,10 @@ async def stock_valuation(
                 if remaining_qty <= 0:
                     break
                 tx_qty = min(float(tx.get("delta", 0)), remaining_qty)
-                tx_cost = float(tx.get("unit_cost", prod.get("cost_price", 0)))
+                raw_cost = tx.get("unit_cost")
+                if raw_cost is None:
+                    raw_cost = prod.get("cost_price", 0)
+                tx_cost = float(raw_cost or 0)
                 value += tx_qty * tx_cost
                 remaining_qty -= tx_qty
 
@@ -228,10 +270,14 @@ async def stock_valuation(
 async def reorder_suggestions(user=Depends(get_current_user)):
     """Products at or below reorder level (low_stock_threshold)."""
     _require_inventory(user)
-    products = await db.products.find(
-        {"$expr": {"$lte": ["$quantity", "$low_stock_threshold"]}},
-        {"_id": 0}
-    ).sort("quantity", 1).to_list(500)
+    # quantity vs low_stock_threshold is a column-vs-column compare, which the
+    # data layer can't push down as a filter — fetch, filter + sort in Python.
+    _all = await db.products.find({}, {"_id": 0}).to_list(10000)
+    products = sorted(
+        (p for p in _all
+         if float(p.get("quantity") or 0) <= float(p.get("low_stock_threshold") or 0)),
+        key=lambda p: float(p.get("quantity") or 0),
+    )[:500]
 
     result = []
     for prod in products:
@@ -239,12 +285,17 @@ async def reorder_suggestions(user=Depends(get_current_user)):
         threshold = float(prod.get("low_stock_threshold", 10))
         suggested_qty = max(threshold * 2, threshold - qty)  # Order 2x threshold or enough to fill up
 
-        # Find preferred supplier from recent POs
-        last_po_item = await db.purchase_orders.find_one(
-            {"items.product_id": prod["id"]},
-            {"_id": 0, "supplier_name": 1, "supplier_id": 1},
-            sort=[("created_at", -1)]
-        )
+        # NOTE: a "preferred supplier from recent POs" lookup used to run
+        # here (find_one({"items.product_id": prod["id"]}) per product — an
+        # N+1). It never actually matched anything: purchase_orders.items is
+        # a real JSONB column, and core._mongo_compat's dict-filter translator
+        # has no support for a dotted "items.product_id" path into it, so the
+        # filter always fell through to a no-op (see _to_filter's fallback to
+        # sqlalchemy.false()) and preferred_supplier was always None. Removed
+        # rather than batched — there was no query worth batching, just N
+        # wasted round-trips for a result this endpoint already always
+        # returned. Output is unchanged (still always None).
+        last_po_item = None
         result.append({
             "product_id": prod["id"],
             "name": prod["name"],
@@ -318,6 +369,45 @@ async def create_physical_verification(data: PhysicalVerification, user=Depends(
     return doc
 
 
+@router.put("/physical-verifications/{pv_id}")
+async def update_physical_verification(pv_id: str, data: PhysicalVerification, user=Depends(get_current_user)):
+    _require_inventory(user)
+    existing = await db.physical_verifications.find_one({"id": pv_id})
+    if not existing:
+        raise HTTPException(404, "Physical verification not found")
+    if existing.get("status") == "APPROVED":
+        raise HTTPException(400, "Cannot edit an approved verification")
+
+    doc = data.model_dump()
+
+    total_discrepancy = 0.0
+    for item in doc["items"]:
+        disc = item["physical_quantity"] - item["system_quantity"]
+        item["discrepancy"] = round(disc, 3)
+        total_discrepancy += abs(disc)
+
+    doc["total_discrepancy"] = round(total_discrepancy, 3)
+    doc["items_checked"] = len(doc["items"])
+    doc["updated_by"] = user["id"]
+    doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    await db.physical_verifications.update_one({"id": pv_id}, {"$set": doc})
+    updated = await db.physical_verifications.find_one({"id": pv_id}, {"_id": 0})
+    return updated
+
+
+@router.delete("/physical-verifications/{pv_id}")
+async def delete_physical_verification(pv_id: str, user=Depends(get_current_user)):
+    _require_inventory(user)
+    existing = await db.physical_verifications.find_one({"id": pv_id})
+    if not existing:
+        raise HTTPException(404, "Physical verification not found")
+    if existing.get("status") == "APPROVED":
+        raise HTTPException(400, "Cannot delete an approved verification — stock adjustments were already posted")
+    await db.physical_verifications.delete_one({"id": pv_id})
+    return {"ok": True}
+
+
 @router.post("/physical-verifications/{pv_id}/approve")
 async def approve_and_adjust_stock(pv_id: str, user=Depends(require_admin)):
     """Approve verification and adjust system stock to match physical count."""
@@ -327,31 +417,37 @@ async def approve_and_adjust_stock(pv_id: str, user=Depends(require_admin)):
     if pv.get("status") == "APPROVED":
         raise HTTPException(400, "Already approved")
 
+    # Routed through the valuation-aware ledger (post_entry) so a physical-
+    # count correction gets a real FIFO/LIFO/WA/Standard-Cost priced entry,
+    # not just a flat quantity overwrite. No godown is recorded on a physical
+    # verification line today, so this resolves the tenant's default the same
+    # way manual adjustment and opening stock do (core.product_stock_bridge).
+    # Products + stock_item_ids for every discrepant line are batched in TWO
+    # queries total up front (was an N+1 — up to 6 queries per discrepant
+    # item: a products find_one, resolve_stock_item_id_for_product's own up
+    # to 3 queries, and resolve_godown_id's query, all repeated per item).
+    discrepant_items = [
+        item for item in pv.get("items", [])
+        if abs(item.get("discrepancy", 0)) > 0.001
+    ]
+    product_ids = [item["product_id"] for item in discrepant_items]
+    products_by_id = await _fetch_products_by_ids_dict(product_ids)
+    stock_item_by_product = await resolve_stock_item_ids_for_products(product_ids, user)
+    godown_id = await resolve_godown_id(None)
+
     adjustments = []
-    for item in pv.get("items", []):
+    for item in discrepant_items:
         disc = item.get("discrepancy", 0)
-        if abs(disc) > 0.001:
-            prod = await db.products.find_one({"id": item["product_id"]})
-            if prod:
-                new_qty = float(item["physical_quantity"])
-                await db.products.update_one(
-                    {"id": item["product_id"]},
-                    {"$set": {"quantity": new_qty, "updated_at": datetime.now(timezone.utc).isoformat()}}
-                )
-                # Log stock adjustment
-                tx_id = str(uuid.uuid4())
-                await db.stock_transactions.insert_one({
-                    "id": tx_id,
-                    "product_id": item["product_id"],
-                    "product_name": item["product_name"],
-                    "delta": disc,
-                    "balance": new_qty,
-                    "reason": f"Physical Stock Verification Adjustment (PV-{pv_id[:8]})",
-                    "user_id": user["id"],
-                    "user_name": user.get("name", "Admin"),
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                })
-                adjustments.append({"product_id": item["product_id"], "adjustment": disc})
+        prod = products_by_id.get(item["product_id"])
+        if prod:
+            rate = float(prod.get("cost_price") or 0) if disc > 0 else None
+            await post_entry(
+                stock_item_id=stock_item_by_product[item["product_id"]], godown_id=godown_id,
+                qty=disc, movement_type="ADJUSTMENT", rate=rate,
+                source_doc_type="physical_verification", source_doc_id=pv_id,
+                user=user,
+            )
+            adjustments.append({"product_id": item["product_id"], "adjustment": disc})
 
     await db.physical_verifications.update_one(
         {"id": pv_id},

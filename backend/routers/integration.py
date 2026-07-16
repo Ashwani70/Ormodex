@@ -16,7 +16,7 @@ import io
 import secrets
 import hashlib
 
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 from core.utils import now_iso, new_id, next_doc_number
 from core.tally_parser import parse_tally_xml, build_preview
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/integration", tags=["Data & Integration"])
 
 
 def _require_integration(user: dict):
-    if user.get("role") in ("admin", "accountant"):
+    if (is_admin_role(user.get("role")) or user.get("role") == "accountant"):
         return user
     if "integration" in user.get("module_permissions", []):
         return user
@@ -233,7 +233,7 @@ async def export_entity(entity: str, format: Literal["json", "csv"] = "json",
 # ══════════════════════════════════════════════════════════════
 
 _BACKUP_COLLECTIONS = ["chart_of_accounts", "journal_entries", "invoices", "vouchers",
-                       "products", "customers", "suppliers", "projects"]
+                       "products", "customers", "vendors", "projects"]
 
 
 class BackupRequest(BaseModel):

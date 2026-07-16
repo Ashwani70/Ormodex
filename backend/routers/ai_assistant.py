@@ -1,4 +1,4 @@
-"""AI Assistant Router — Gravity ERP Copilot.
+﻿"""AI Assistant Router — Gravity ERP Copilot.
 
 Features:
 - Multi-provider AI routing: OpenAI → Gemini → Claude → Groq (graceful fallback)
@@ -7,7 +7,6 @@ Features:
 - POST /ai/action       — AI executes ERP actions (create/update/report)
 - GET  /ai/suggestions  — context-aware quick prompts per ERP module
 - GET  /ai/history      — list all user sessions
-- POST /ai/voice-command— parse voice to navigation/chat intent
 - POST /ai/parse-document— OCR document parsing
 - POST /ai/categorize-expense
 - GET  /ai/cash-flow-forecast
@@ -19,9 +18,8 @@ Features:
 """
 import os
 import re
+import time
 import uuid
-import base64
-import json
 import logging
 from datetime import datetime, date, timedelta, timezone
 from typing import Any, Optional, List
@@ -30,7 +28,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form, Q
 from pydantic import BaseModel
 
 from core.accounting_models import VendorCompareRequest
-from core.auth_utils import get_current_user
+from core.auth_utils import get_current_user, is_admin_role
 from core.db import db
 from core.utils import new_id, now_iso, next_doc_number
 
@@ -49,8 +47,6 @@ _STATE_CODES = {
 
 router = APIRouter(prefix="/ai", tags=["AI Assistant"])
 logger = logging.getLogger(__name__)
-print("DEBUG RELOAD: OPENAI_API_KEY is", "SET" if os.environ.get("OPENAI_API_KEY") else "NOT SET")
-print("DEBUG RELOAD: GEMINI_API_KEY is", "SET" if os.environ.get("GEMINI_API_KEY") else "NOT SET")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pydantic models
@@ -62,16 +58,11 @@ class ActionRequest(BaseModel):
     session_id: Optional[str] = None
     confirm: bool = False  # destructive actions require confirm=True
 
-class VoiceCommandRequest(BaseModel):
-    transcript: str
-    language: str = "en-IN"  # or "hi-IN"
-    current_module: Optional[str] = None
-
 class ChatRequestExtended(BaseModel):
     message: str
     session_id: Optional[str] = None
     context: Optional[str] = None
-    provider: Optional[str] = None  # "openai", "gemini", "claude", "groq", "auto"
+    provider: Optional[str] = None  # "gemini", "claude", "groq", "auto"
     language: Optional[str] = "en"
 
 
@@ -80,7 +71,9 @@ class ChatRequestExtended(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _require_ai(user: dict):
-    if user.get("role") == "admin":
+    # Both admin and super_admin get full access — use the canonical helper, not
+    # a literal role == "admin" check, so super_admin isn't wrongly denied.
+    if is_admin_role(user.get("role")):
         return user
     perms = user.get("module_permissions", [])
     if "ai_tools" not in perms and "accounting" not in perms:
@@ -92,42 +85,36 @@ def _require_ai(user: dict):
 # AI Provider clients
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _get_openai_client():
+async def _get_gemini_api_key() -> str:
+    from core import crypto
+    from routers.verifications import get_verification_settings
     api_key = ""
     try:
-        settings = await db.verification_settings.find_one({"id": "global"})
-        if settings:
-            api_key = settings.get("openai_api_key", "")
-    except Exception as e:
-        logger.warning(f"Failed to fetch OpenAI API key from DB: {e}")
-    if not api_key:
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key or api_key in ("your-key-here", ""):
-        return None
-    try:
-        from openai import AsyncOpenAI
-        return AsyncOpenAI(api_key=api_key)
-    except ImportError:
-        return None
-
-
-async def _get_gemini_client():
-    api_key = ""
-    try:
-        settings = await db.verification_settings.find_one({"id": "global"})
-        if settings:
-            api_key = settings.get("gemini_api_key", "")
+        settings = await get_verification_settings()
+        raw = settings.get("gemini_api_key", "")
+        # Decrypt if secrets are encrypted at rest
+        if raw and settings.get("secrets_encrypted"):
+            raw = crypto.decrypt_secret(raw)
+        api_key = raw
     except Exception as e:
         logger.warning(f"Failed to fetch Gemini API key from DB: {e}")
     if not api_key:
         api_key = os.environ.get("GEMINI_API_KEY", "")
-    if not api_key or api_key in ("your-key-here", ""):
+    if not api_key or api_key in ("your-key-here", "") or api_key.startswith("••••"):
+        return ""
+    return api_key
+
+
+async def _get_gemini_client():
+    """Return a google-genai Client, or None if the SDK is missing / no key."""
+    api_key = await _get_gemini_api_key()
+    if not api_key:
         return None
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        return genai
+        from google.genai import Client
+        return Client(api_key=api_key)
     except ImportError:
+        logger.warning("google-genai SDK not installed — pip install google-genai")
         return None
 
 
@@ -155,8 +142,6 @@ async def _get_groq_client():
 
 async def _list_available_providers() -> List[str]:
     available = []
-    if await _get_openai_client():
-        available.append("openai")
     if await _get_gemini_client():
         available.append("gemini")
     if await _get_claude_client():
@@ -214,6 +199,7 @@ async def _build_erp_context(user: dict) -> str:
         )
 
         # Monthly revenue
+        
         sales_agg = await db.invoices.aggregate([
             {"$match": {"created_at": {"$gte": month_start}}},
             {"$group": {"_id": None, "total": {"$sum": "$total"}, "count": {"$sum": 1}}},
@@ -249,43 +235,54 @@ async def _call_ai(
     """
     preferred = provider or "auto"
 
-    async def try_openai():
-        client = await _get_openai_client()
+    async def try_gemini():
+        client = await _get_gemini_client()
         if not client:
             return None
-        try:
-            msgs: List[Any] = [{"role": "system", "content": system_prompt}] + messages
-            r = await client.chat.completions.create(
-                model="gpt-4o",
-                messages=msgs,
-                max_tokens=max_tokens,
-                temperature=0.3,
-            )
-            return r.choices[0].message.content
-        except Exception as e:
-            logger.warning(f"OpenAI failed: {e}")
-            return None
+        from google.genai import types
+        # Try current flash models in order; some may be quota-exhausted.
+        model_candidates = [
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+        ]
+        # Flatten the conversation into Gemini "contents" turns. The first turn
+        # must be a "user" turn, so drop any leading assistant/model messages.
+        contents = []
+        for m in messages:
+            role = "user" if m["role"] == "user" else "model"
+            if not contents and role != "user":
+                continue
+            contents.append({"role": role, "parts": [{"text": m["content"]}]})
 
-    async def try_gemini():
-        genai = await _get_gemini_client()
-        if not genai:
-            return None
-        try:
-            model = genai.GenerativeModel(
-                model_name="gemini-2.0-flash",
-                system_instruction=system_prompt,
-            )
-            # Build history for Gemini
-            history = []
-            for m in messages[:-1]:
-                role = "user" if m["role"] == "user" else "model"
-                history.append({"role": role, "parts": [m["content"]]})
-            chat = model.start_chat(history=history)
-            r = await chat.send_message_async(messages[-1]["content"])
-            return r.text
-        except Exception as e:
-            logger.warning(f"Gemini failed: {e}")
-            return None
+        last_err = None
+        for model_name in model_candidates:
+            try:
+                r = await client.aio.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        max_output_tokens=max_tokens,
+                        temperature=0.3,
+                    ),
+                )
+                text = getattr(r, "text", None)
+                if text:
+                    return text
+                raise RuntimeError(f"empty response (feedback={getattr(r, 'prompt_feedback', None)})")
+            except Exception as e:
+                last_err = e
+                msg = str(e).lower()
+                # A 404/not-found, 429/quota, or 503/unavailable means this model is unavailable
+                # or exhausted — try the next candidate.
+                if any(x in msg for x in ["404", "not found", "not supported", "429", "quota", "resource", "exhausted", "503", "unavailable"]):
+                    logger.info(f"Gemini model {model_name} unavailable/exhausted, trying next: {e}")
+                    continue
+                logger.warning(f"Gemini failed ({model_name}): {e}")
+                return None
+        logger.warning(f"Gemini failed — no usable model: {last_err}")
+        return None
 
     async def try_claude():
         client = await _get_claude_client()
@@ -299,7 +296,8 @@ async def _call_ai(
                 messages=messages,
             )
             block = r.content[0]
-            return block.text if hasattr(block, "text") else str(block)
+            text = getattr(block, "text", None)
+            return text if text is not None else str(block)
         except Exception as e:
             logger.warning(f"Claude failed: {e}")
             return None
@@ -322,11 +320,10 @@ async def _call_ai(
             return None
 
     provider_order = {
-        "openai": [try_openai],
         "gemini": [try_gemini],
         "claude": [try_claude],
         "groq": [try_groq],
-        "auto": [try_openai, try_gemini, try_claude, try_groq],
+        "auto": [try_gemini, try_claude, try_groq],
     }
 
     funcs = provider_order.get(preferred, provider_order["auto"])
@@ -335,7 +332,18 @@ async def _call_ai(
         if result:
             return result, fn.__name__.replace("try_", "")
 
-    # Final fallback
+    # If the user explicitly picked a provider (not "auto") and it failed,
+    # tell them so instead of silently returning canned rule-based text —
+    # otherwise a bad/missing key looks like "the AI just gives generic replies".
+    if preferred != "auto" and preferred in provider_order:
+        return (
+            f"⚠️ The selected AI provider **{preferred}** is not responding. "
+            "This usually means the API key is missing, invalid, or out of quota. "
+            "Check the key in **API Settings**, or switch the provider to **Auto**.\n\n"
+            + _fallback_chat(messages[-1]["content"] if messages else "")
+        ), f"{preferred}-error"
+
+    # Final fallback (auto mode, nothing configured)
     return _fallback_chat(messages[-1]["content"] if messages else ""), "fallback"
 
 
@@ -363,107 +371,9 @@ def _fallback_chat(message: str) -> str:
     return (
         "I am **Gravity ERP AI Copilot**. I can help with: accounting, GST, invoices, expenses, "
         "inventory, HR, payroll, and business analytics.\n\n"
-        "💡 **Tip**: Set `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `GROQ_API_KEY` "
+        "💡 **Tip**: Set `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `GROQ_API_KEY` "
         "in `backend/.env` to enable AI-powered responses."
     )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Voice command parser
-# ─────────────────────────────────────────────────────────────────────────────
-
-VOICE_NAV_MAP = {
-    # English
-    "dashboard": "/",
-    "home": "/",
-    "inventory": "/products",
-    "products": "/products",
-    "warehouses": "/warehouses",
-    "stock": "/stock-log",
-    "suppliers": "/suppliers",
-    "purchase": "/purchase-orders",
-    "customers": "/customers",
-    "leads": "/leads",
-    "crm": "/leads",
-    "quotations": "/quotations",
-    "sales orders": "/sales-orders",
-    "invoices": "/invoices",
-    "gst invoices": "/invoices",
-    "dispatches": "/dispatches",
-    "accounting": "/accounting",
-    "gst": "/gst",
-    "expenses": "/expenses",
-    "ledger": "/ledger",
-    "vouchers": "/vouchers",
-    "reports": "/reports",
-    "mis reports": "/mis-reports",
-    "hr": "/hr",
-    "employees": "/hr/employees",
-    "attendance": "/hr/attendance",
-    "leaves": "/hr/leaves",
-    "payroll": "/hr/payroll",
-    "ai assistant": "/ai-assistant",
-    "ai": "/ai-assistant",
-    # Hindi transliterations
-    "डैशबोर्ड": "/",
-    "इन्वेंटरी": "/products",
-    "उत्पाद": "/products",
-    "खरीद": "/purchase-orders",
-    "ग्राहक": "/customers",
-    "बिक्री": "/sales-orders",
-    "चालान": "/invoices",
-    "जीएसटी": "/gst",
-    "खर्च": "/expenses",
-    "कर्मचारी": "/hr/employees",
-    "उपस्थिति": "/hr/attendance",
-    "वेतन": "/hr/payroll",
-    "रिपोर्ट": "/reports",
-}
-
-
-def _parse_voice_to_intent(transcript: str, current_module: Optional[str] = None) -> dict:
-    """Parse voice transcript to navigation or chat intent."""
-    t = transcript.lower().strip()
-
-    # Check navigation triggers
-    nav_triggers = ["open", "go to", "show", "navigate", "take me to", "खोलो", "दिखाओ", "जाओ"]
-    is_nav = any(t.startswith(tr) or tr in t for tr in nav_triggers)
-
-    # Find matching route
-    matched_route = None
-    for keyword, route in VOICE_NAV_MAP.items():
-        if keyword in t:
-            matched_route = route
-            break
-
-    if matched_route and is_nav:
-        return {
-            "intent": "navigate",
-            "route": matched_route,
-            "display": transcript,
-        }
-
-    # Action intents
-    action_keywords = {
-        "create invoice": {"intent": "action", "action": "create_invoice"},
-        "new invoice": {"intent": "action", "action": "create_invoice"},
-        "create customer": {"intent": "action", "action": "create_customer"},
-        "generate payroll": {"intent": "action", "action": "generate_payroll"},
-        "generate gst": {"intent": "action", "action": "generate_gst_report"},
-        "gst report": {"intent": "action", "action": "generate_gst_report"},
-        "low stock": {"intent": "navigate", "route": "/products"},
-        "pending invoices": {"intent": "chat", "message": "Show me all pending/unpaid invoices"},
-        "today's sales": {"intent": "chat", "message": "Show today's sales summary"},
-        "आज की बिक्री": {"intent": "chat", "message": "आज की बिक्री दिखाओ"},
-        "वेतन गणना": {"intent": "action", "action": "generate_payroll"},
-    }
-
-    for kw, result in action_keywords.items():
-        if kw in t:
-            return {**result, "display": transcript}
-
-    # Default: send to chat
-    return {"intent": "chat", "message": transcript, "display": transcript}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -653,6 +563,7 @@ async def _action_payroll_summary(params: dict, user: dict, confirm: bool) -> di
 async def _action_today_sales(params: dict, user: dict, confirm: bool) -> dict:
     try:
         today = date.today().isoformat()
+        
         agg = await db.invoices.aggregate([
             {"$match": {"created_at": {"$gte": today}}},
             {"$group": {"_id": None, "total": {"$sum": "$total"}, "count": {"$sum": 1}}},
@@ -693,15 +604,14 @@ async def _action_attendance_today(params: dict, user: dict, confirm: bool) -> d
 @router.get("/providers")
 async def get_providers(user=Depends(get_current_user)):
     """List all configured and available AI providers."""
+    from routers.verifications import get_verification_settings
     available = await _list_available_providers()
-    db_settings = await db.verification_settings.find_one({"id": "global"}) or {}
-    openai_configured = bool(os.environ.get("OPENAI_API_KEY", "")) or bool(db_settings.get("openai_api_key", ""))
+    db_settings = await get_verification_settings()
     gemini_configured = bool(os.environ.get("GEMINI_API_KEY", "")) or bool(db_settings.get("gemini_api_key", ""))
     return {
         "available": available,
         "default": "auto",
         "configured": {
-            "openai": openai_configured,
             "gemini": gemini_configured,
             "claude": bool(os.environ.get("ANTHROPIC_API_KEY", "")),
             "groq": bool(os.environ.get("GROQ_API_KEY", "")),
@@ -713,10 +623,31 @@ async def get_providers(user=Depends(get_current_user)):
 async def ai_chat(data: ChatRequestExtended, user=Depends(get_current_user)):
     """Main AI chat endpoint with multi-provider support and session history."""
     _require_ai(user)
+    t0 = time.perf_counter()
+    logger.info(
+        "AI chat request: user=%s provider=%s prompt=%r",
+        user.get("id"), data.provider or "auto", data.message[:200],
+    )
 
     # ── AI ASSISTANT INTERCEPTOR FOR VERIFICATION & PARTY SEARCH ──
+    # This whole block is a shortcut for a handful of recognized intents
+    # (create/find customer by GSTIN, vendor lookup) that answer directly from
+    # the DB instead of calling the AI provider. It's convenience, not a
+    # required step — if any DB call in here throws (e.g. a transient
+    # connection blip), fall through to the normal AI-answered path below
+    # rather than surfacing a 500 for a query the AI could have handled anyway.
     msg = data.message.strip()
-    
+    try:
+        intercepted = await _try_intercept(data, msg, user)
+        if intercepted is not None:
+            return intercepted
+    except Exception as e:
+        logger.warning("AI chat interceptor failed, falling through to AI: %s", e)
+
+    return await _ai_chat_continue(data, user, t0)
+
+
+async def _try_intercept(data: "ChatRequestExtended", msg: str, user: dict) -> Optional[dict]:
     # 1. "Create customer from GST number <GSTIN>"
     # Regex matching "create customer from gst <gstin>" or "create customer gst <gstin>"
     create_match = re.search(
@@ -747,8 +678,8 @@ async def ai_chat(data: ChatRequestExtended, user=Depends(get_current_user)):
             }
             
         # Get mock details
-        trade_name = "GravityOne Partner Industry Ltd"
-        legal_name = "GravityOne partner"
+        trade_name = "Ormodex Partner Industry Ltd"
+        legal_name = "Ormodex partner"
         address = "Plot 101, Industrial Area Phase 1, Pune, Maharashtra"
         state = _STATE_CODES.get(gstin[:2], "Maharashtra")
         pincode = "411018"
@@ -859,8 +790,8 @@ async def ai_chat(data: ChatRequestExtended, user=Depends(get_current_user)):
                 "context": data.context
             }
             
-        trade_name = "GravityOne Partner Industry Ltd"
-        legal_name = "GravityOne partner"
+        trade_name = "Ormodex Partner Industry Ltd"
+        legal_name = "Ormodex partner"
         address = "Plot 101, Industrial Area Phase 1, Pune, Maharashtra"
         state = _STATE_CODES.get(gstin[:2], "Maharashtra")
         pincode = "411018"
@@ -911,7 +842,7 @@ async def ai_chat(data: ChatRequestExtended, user=Depends(get_current_user)):
         query = vendor_match.group(1).strip()
         query = re.sub(r"[?.!]$", "", query).strip()
         
-        vendor = await db.suppliers.find_one({
+        vendor = await db.vendors.find_one({
             "$or": [
                 {"name": {"$regex": query, "$options": "i"}},
                 {"company": {"$regex": query, "$options": "i"}},
@@ -933,6 +864,10 @@ async def ai_chat(data: ChatRequestExtended, user=Depends(get_current_user)):
                 "context": data.context
             }
 
+    return None
+
+
+async def _ai_chat_continue(data: "ChatRequestExtended", user: dict, t0: float) -> dict:
     erp_context = await _build_erp_context(user)
     system_prompt = GRAVITY_SYSTEM_PROMPT + erp_context
 
@@ -943,11 +878,17 @@ async def ai_chat(data: ChatRequestExtended, user=Depends(get_current_user)):
     session_id = data.session_id or str(uuid.uuid4())
     history = []
     if data.session_id:
-        session = await db.ai_chat_history.find_one(
-            {"session_id": data.session_id, "user_id": user["id"]}
-        )
-        if session:
-            history = session.get("messages", [])[-20:]
+        # History lookup is a convenience (conversation continuity), not a
+        # prerequisite for answering — a transient DB hiccup here must not
+        # turn a working chat into a 500. Worst case: this turn loses context.
+        try:
+            session = await db.ai_chat_history.find_one(
+                {"session_id": data.session_id, "user_id": user["id"]}
+            )
+            if session:
+                history = session.get("messages", [])[-20:]
+        except Exception as e:
+            logger.warning("AI chat history lookup failed (session=%s): %s", data.session_id, e)
 
     messages = []
     for h in history:
@@ -955,23 +896,37 @@ async def ai_chat(data: ChatRequestExtended, user=Depends(get_current_user)):
     messages.append({"role": "user", "content": data.message})
 
     provider = data.provider or os.environ.get("AI_PROVIDER", "auto")
+    ai_t0 = time.perf_counter()
     reply, provider_used = await _call_ai(messages, system_prompt, provider)
+    ai_ms = round((time.perf_counter() - ai_t0) * 1000)
 
     new_messages = history + [
         {"role": "user", "content": data.message},
         {"role": "assistant", "content": reply},
     ]
-    await db.ai_chat_history.update_one(
-        {"session_id": session_id, "user_id": user["id"]},
-        {"$set": {
-            "session_id": session_id,
-            "user_id": user["id"],
-            "messages": new_messages[-40:],
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "provider": provider_used,
-            "title": data.message[:60],
-        }},
-        upsert=True,
+    # Persisting history is best-effort: the user already has their reply by
+    # this point, so a save failure must not turn a successful answer into an
+    # error response — it would only cost this turn's history, not the reply.
+    try:
+        await db.ai_chat_history.update_one(
+            {"session_id": session_id, "user_id": user["id"]},
+            {"$set": {
+                "session_id": session_id,
+                "user_id": user["id"],
+                "messages": new_messages[-40:],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "provider": provider_used,
+                "title": data.message[:60],
+            }},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning("AI chat history save failed (session=%s): %s", session_id, e)
+
+    total_ms = round((time.perf_counter() - t0) * 1000)
+    logger.info(
+        "AI chat response: user=%s provider=%s ai_ms=%d total_ms=%d reply_len=%d",
+        user.get("id"), provider_used, ai_ms, total_ms, len(reply or ""),
     )
 
     return {
@@ -1034,26 +989,6 @@ async def get_history(user=Depends(get_current_user)):
     return {"sessions": sessions}
 
 
-@router.post("/voice-command")
-async def voice_command(data: VoiceCommandRequest, user=Depends(get_current_user)):
-    """Parse voice transcript to ERP navigation or chat intent."""
-    _require_ai(user)
-    intent = _parse_voice_to_intent(data.transcript, data.current_module)
-
-    # Log voice command
-    await db.ai_conversations.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": user["id"],
-        "type": "voice",
-        "transcript": data.transcript,
-        "language": data.language,
-        "intent": intent,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-
-    return intent
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # OCR Document Parsing
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1069,8 +1004,8 @@ async def parse_document(
     if not mime.startswith(("image/", "application/pdf")):
         raise HTTPException(400, "Only image files (JPG, PNG) or PDFs are supported")
 
-    file_bytes = await file.read()
-    file_b64 = base64.b64encode(file_bytes).decode("utf-8")
+    # Drain the upload stream (bytes are not persisted by the mock OCR path).
+    await file.read()
 
     doc_id = str(uuid.uuid4())
     doc_record = {
@@ -1083,58 +1018,10 @@ async def parse_document(
     }
     await db.ocr_documents.insert_one(doc_record)
 
-    client = await _get_openai_client()
-    if client and not mime.startswith("application/pdf"):
-        try:
-            prompt = """Extract all fields from this invoice/document and return a JSON object with:
-{
-  "invoice_number": "",
-  "invoice_date": "",
-  "due_date": "",
-  "vendor_name": "",
-  "vendor_address": "",
-  "vendor_gstin": "",
-  "buyer_name": "",
-  "buyer_gstin": "",
-  "items": [{"description": "", "hsn_sac": "", "quantity": 0, "unit_price": 0, "gst_rate": 0, "amount": 0}],
-  "taxable_amount": 0,
-  "cgst": 0,
-  "sgst": 0,
-  "igst": 0,
-  "total_amount": 0,
-  "payment_terms": "",
-  "bank_details": "",
-  "currency": "INR",
-  "confidence": 0.0
-}
-Return ONLY the JSON object, no explanation."""
-            response = await client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{file_b64}"}}
-                    ]
-                }],
-                max_tokens=1500,
-            )
-            raw = (response.choices[0].message.content or "").strip()
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            extracted = json.loads(raw)
-            status = "PROCESSED"
-        except Exception as e:
-            logger.error(f"OCR parse error: {e}")
-            extracted = _mock_extraction(file.filename or "unknown")
-            status = "PROCESSED"
-    else:
-        extracted = _mock_extraction(file.filename or "unknown")
-        status = "PROCESSED"
-        if mime.startswith("application/pdf"):
-            extracted["note"] = "PDF OCR requires image conversion. Set OPENAI_API_KEY for Vision API."
+    extracted = _mock_extraction(file.filename or "unknown")
+    status = "PROCESSED"
+    if mime.startswith("application/pdf"):
+        extracted["note"] = "PDF OCR requires image conversion."
 
     await db.ocr_documents.update_one(
         {"id": doc_id},
@@ -1150,7 +1037,7 @@ def _mock_extraction(filename: str) -> dict:
         "invoice_date": date.today().isoformat(),
         "vendor_name": "Sample Vendor Pvt Ltd",
         "vendor_gstin": "27AABCS1429B1Z2",
-        "buyer_name": "GravityOne ERP",
+        "buyer_name": "Ormodex ERP",
         "taxable_amount": 10000.0,
         "cgst": 900.0,
         "sgst": 900.0,
@@ -1158,7 +1045,7 @@ def _mock_extraction(filename: str) -> dict:
         "total_amount": 11800.0,
         "currency": "INR",
         "confidence": 0.0,
-        "note": "Mock extraction — set OPENAI_API_KEY for real OCR parsing",
+        "note": "Mock extraction — AI OCR is not configured",
         "source_file": filename,
     }
 
@@ -1213,6 +1100,7 @@ async def cash_flow_forecast(months: int = 3, user=Depends(get_current_user)):
         {"$sort": {"_id": 1}},
     ]).to_list(12)
 
+    
     monthly_expenses = await db.expense_entries.aggregate([
         {"$match": {"date": {"$gte": from_date}, "status": "APPROVED"}},
         {"$group": {"_id": {"$substr": ["$date", 0, 7]}, "total": {"$sum": "$amount"}}},
@@ -1251,6 +1139,7 @@ async def fraud_alerts(user=Depends(get_current_user)):
     _require_ai(user)
     alerts = []
 
+    
     dups = await db.invoices.aggregate([
         {"$group": {"_id": "$invoice_number", "count": {"$sum": 1}, "ids": {"$push": "$id"}}},
         {"$match": {"count": {"$gt": 1}}},
@@ -1298,10 +1187,13 @@ async def business_insights(user=Depends(get_current_user)):
 
     insights = []
 
+   
+    
     sales_this_month = await db.invoices.aggregate([
         {"$match": {"created_at": {"$gte": month_start}}},
         {"$group": {"_id": None, "total": {"$sum": "$total"}, "count": {"$sum": 1}}},
     ]).to_list(1)
+   
     sales_last_month = await db.invoices.aggregate([
         {"$match": {"created_at": {"$gte": prev_month_start, "$lt": month_start}}},
         {"$group": {"_id": None, "total": {"$sum": "$total"}}},
@@ -1345,6 +1237,7 @@ async def business_insights(user=Depends(get_current_user)):
 
     unpaid_count = await db.invoices.count_documents({"status": "UNPAID"})
     if unpaid_count > 0:
+      
         unpaid_agg = await db.invoices.aggregate([
             {"$match": {"status": "UNPAID"}},
             {"$group": {"_id": None, "total": {"$sum": "$total"}}},
@@ -1399,6 +1292,7 @@ async def vendor_compare(data: VendorCompareRequest, user=Depends(get_current_us
         }},
         {"$sort": {"avg_price": 1}},
     ]
+   
     results = await db.purchase_orders.aggregate(pipeline).to_list(20)
     return {
         "product": data.product_name,

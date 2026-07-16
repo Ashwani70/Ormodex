@@ -14,8 +14,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional, Literal
 from pydantic import BaseModel
 
-from core.auth_utils import get_current_user
+from core import cache
+from core.auth_utils import get_current_user, is_admin_role
 from core.db import db
+from core.product_stock_bridge import (
+    resolve_godown_id, resolve_stock_item_id_for_product, resolve_stock_item_ids_for_products,
+)
+from core.stock_ledger import post_entry
 from core.utils import (
     now_iso, new_id, next_doc_number,
     crud_create, crud_list, crud_get, crud_update, crud_delete,
@@ -25,7 +30,7 @@ router = APIRouter(prefix="/manufacturing", tags=["Manufacturing"])
 
 
 def _require_mfg(user: dict):
-    if user.get("role") in ("admin", "accountant"):
+    if (is_admin_role(user.get("role")) or user.get("role") == "accountant"):
         return user
     perms = user.get("module_permissions", [])
     if "manufacturing" not in perms:
@@ -227,8 +232,17 @@ class QCReport(BaseModel):
 # BOM helpers
 # ══════════════════════════════════════════════════════════════
 
-async def _resolve_bom_for_item(item_id: str) -> Optional[dict]:
-    """Return the ACTIVE or latest BOM for a finished good, or None."""
+async def _resolve_bom_for_item(item_id: str, bom_index: Optional[dict[str, dict]] = None) -> Optional[dict]:
+    """Return the ACTIVE or latest BOM for a finished good, or None.
+
+    Pass a pre-built `bom_index` (see `_load_bom_index`) to resolve from an
+    in-memory dict instead of issuing a query — used by every caller that
+    resolves BOMs in a loop or in BOM-explosion recursion (was an N+1: up to
+    2 queries per component, compounding at every recursion level). Falls
+    back to a live per-item lookup when no index is supplied.
+    """
+    if bom_index is not None:
+        return bom_index.get(item_id)
     bom = await db.boms.find_one(
         {"finished_product_id": item_id, "status": "ACTIVE"},
         {"_id": 0},
@@ -246,6 +260,32 @@ async def _resolve_bom_for_item(item_id: str) -> Optional[dict]:
     return bom
 
 
+async def _load_bom_index() -> dict[str, dict]:
+    """Load every BOM once and index by finished_product_id, replicating
+    _resolve_bom_for_item's own precedence (ACTIVE + highest version wins;
+    otherwise highest version of any status). The BOM table is small and
+    bounded (one row per finished-good version, not per transaction), so one
+    full read here is far cheaper than the up-to-2-queries-per-lookup this
+    replaces across an entire BOM explosion (which can call it once per
+    component per recursion level).
+    """
+    boms = await db.boms.find({}, {"_id": 0}).sort("version", -1).to_list(20000)
+    index: dict[str, dict] = {}
+    for bom in boms:
+        fg_id = bom.get("finished_product_id") or bom.get("finished_good_item_id")
+        if not fg_id:
+            continue
+        existing = index.get(fg_id)
+        if existing is None:
+            index[fg_id] = bom
+        elif bom.get("status") == "ACTIVE" and existing.get("status") != "ACTIVE":
+            # Sorted by version desc, so the first ACTIVE one seen is the
+            # highest-version ACTIVE BOM — matches _resolve_bom_for_item's
+            # "ACTIVE preferred" rule even though we're scanning all statuses.
+            index[fg_id] = bom
+    return index
+
+
 def _bom_components(bom: dict) -> list:
     """Return normalized component list from a BOM doc (handles both old and new shape)."""
     comps = bom.get("components") or []
@@ -254,16 +294,39 @@ def _bom_components(bom: dict) -> list:
     return comps
 
 
+async def _fetch_products_by_ids(product_ids: list[str]) -> dict[str, dict]:
+    """Batch-read every product in ONE query instead of a find_one per BOM
+    component/consumption/output line — work-order completion and
+    production-journal posting used to re-query the same product once per
+    validation pass and once per write pass (2-3x the line count in
+    round-trips). Callers loop sequentially over the returned dict for
+    writes — this app binds one shared AsyncSession per request, so the
+    writes themselves can't be asyncio.gather'd (see the shared-session
+    note in purchase.py / job_work.py)."""
+    ids = list({pid for pid in product_ids if pid})
+    if not ids:
+        return {}
+    prods = await db.products.find({"id": {"$in": ids}}).to_list(len(ids))
+    return {p["id"]: p for p in prods}
+
+
 async def _explode_bom(
     bom: dict,
     target_qty: float,
     ancestor_ids: set,
     depth: int = 0,
+    bom_index: Optional[dict[str, dict]] = None,
 ) -> dict:
     """
     Recursively explode a BOM to raw requirements.
     Returns {item_id: {item_name, uom, required_qty, depth}} plus a list of
     sub-assembly BOMs found.  Raises 400 on a cycle.
+
+    Pass `bom_index` (see `_load_bom_index`) to resolve every component's
+    possible sub-BOM from one pre-loaded in-memory dict instead of a query
+    per component per recursion level (was an N+1 that compounds with BOM
+    depth). Top-level callers should load the index once and pass it through;
+    it's optional only so a single ad-hoc resolution still works standalone.
     """
     if depth > 10:
         raise HTTPException(400, "BOM recursion depth exceeded 10 levels")
@@ -292,7 +355,7 @@ async def _explode_bom(
                 f"Cyclic BOM detected: item '{c_name}' ({c_id}) appears in its own ancestry",
             )
 
-        sub_bom = await _resolve_bom_for_item(c_id)
+        sub_bom = await _resolve_bom_for_item(c_id, bom_index)
         if sub_bom:
             # Recurse — component is itself a manufactured FG
             sub_raw = await _explode_bom(
@@ -300,6 +363,7 @@ async def _explode_bom(
                 target_qty=needed,
                 ancestor_ids=ancestor_ids | {fg_id},
                 depth=depth + 1,
+                bom_index=bom_index,
             )
             for sid, sv in sub_raw.items():
                 if sid in raw:
@@ -333,6 +397,7 @@ async def _weighted_avg_cost(item_id: str) -> float:
 # BOM Endpoints
 # ══════════════════════════════════════════════════════════════
 
+@router.get("/boms")
 @router.get("/bom")
 async def list_boms(q: Optional[str] = None, user: dict = Depends(get_current_user)):
     _require_mfg(user)
@@ -349,16 +414,21 @@ async def get_bom(bom_id: str, user: dict = Depends(get_current_user)):
 async def create_bom(payload: BOMModel, user: dict = Depends(get_current_user)):
     _require_mfg(user)
 
-    # Cycle detection: make sure this FG's components don't lead back to itself
+    # Cycle detection: make sure this FG's components don't lead back to
+    # itself. bom_index is loaded ONCE (all BOMs, small/bounded table) and
+    # reused for every component's sub-BOM lookup + the recursive explosion
+    # below — was an N+1 (up to 2 queries per component, compounding with
+    # BOM depth inside _explode_bom's recursion).
+    bom_index = await _load_bom_index()
     ancestors: set = {payload.finished_product_id}
     for comp in payload.resolved_components():
         cid = comp.effective_item_id()
         if cid == payload.finished_product_id:
             raise HTTPException(400, "Component cannot be the same as the finished good (cycle)")
-        sub_bom = await _resolve_bom_for_item(cid)
+        sub_bom = await _resolve_bom_for_item(cid, bom_index)
         if sub_bom:
             try:
-                await _explode_bom(sub_bom, 1.0, ancestors)
+                await _explode_bom(sub_bom, 1.0, ancestors, bom_index=bom_index)
             except HTTPException:
                 raise HTTPException(400, f"Adding this component creates a cyclic BOM via '{comp.effective_item_name()}'")
 
@@ -378,10 +448,14 @@ async def create_bom(payload: BOMModel, user: dict = Depends(get_current_user)):
             for it in (doc["items"] or [])
         ]
 
-    # Estimate cost
+    # Estimate cost — batch-read every component's product ONCE instead of
+    # _weighted_avg_cost's find_one per component (was an N+1).
+    components_by_id = await _fetch_products_by_ids(
+        [comp.effective_item_id() for comp in payload.resolved_components()]
+    )
     total_cost = 0.0
     for comp in payload.resolved_components():
-        unit_cost = await _weighted_avg_cost(comp.effective_item_id())
+        unit_cost = float((components_by_id.get(comp.effective_item_id()) or {}).get("cost_price", 0))
         total_cost += unit_cost * comp.gross_qty()
     for step in (payload.routing_steps or []):
         total_cost += (step.labor_time_mins + step.machine_time_mins) * step.cost_per_min
@@ -409,9 +483,14 @@ async def update_bom(bom_id: str, payload: BOMModel, user: dict = Depends(get_cu
             for it in (doc["items"] or [])
         ]
 
+    # Batch-read every component's product ONCE instead of _weighted_avg_cost's
+    # find_one per component (was an N+1).
+    components_by_id = await _fetch_products_by_ids(
+        [comp.effective_item_id() for comp in payload.resolved_components()]
+    )
     total_cost = 0.0
     for comp in payload.resolved_components():
-        unit_cost = await _weighted_avg_cost(comp.effective_item_id())
+        unit_cost = float((components_by_id.get(comp.effective_item_id()) or {}).get("cost_price", 0))
         total_cost += unit_cost * comp.gross_qty()
     for step in (payload.routing_steps or []):
         total_cost += (step.labor_time_mins + step.machine_time_mins) * step.cost_per_min
@@ -442,12 +521,22 @@ async def explode_bom(
     bom = await crud_get("boms", bom_id)
 
     fg_id = bom.get("finished_product_id") or bom.get("finished_good_item_id", "")
-    raw_map = await _explode_bom(bom, target_qty=qty, ancestor_ids={fg_id})
+    bom_index = await _load_bom_index()
+    raw_map = await _explode_bom(bom, target_qty=qty, ancestor_ids={fg_id}, bom_index=bom_index)
 
     # Enrich with current stock levels
     result = []
+    item_ids = list(raw_map.keys())
+    products_by_id = {}
+    if item_ids:
+        prods = await db.products.find(
+            {"id": {"$in": item_ids}},
+            {"_id": 0, "id": 1, "quantity": 1, "cost_price": 1}
+        ).to_list(len(item_ids))
+        products_by_id = {p["id"]: p for p in prods}
+
     for item_id, req in raw_map.items():
-        prod = await db.products.find_one({"id": item_id}, {"_id": 0, "quantity": 1, "cost_price": 1})
+        prod = products_by_id.get(item_id)
         on_hand = float(prod.get("quantity", 0)) if prod else 0.0
         unit_cost = float(prod.get("cost_price", 0)) if prod else 0.0
         result.append({
@@ -555,6 +644,15 @@ async def complete_work_order(wo_id: str, user: dict = Depends(get_current_user)
     components = _bom_components(bom)
     qty_factor = float(wo["quantity_planned"])
 
+    # Batch-read every component product ONCE — the validate pass and the
+    # deduct pass used to each re-query per component (2x round-trips per
+    # component). Neither pass writes before both have read, so one shared
+    # snapshot is correct; the deduct pass below tracks a running quantity
+    # per product_id so two components referencing the same product (rare
+    # but not disallowed by the BOM shape) still stack their deductions.
+    component_ids = [comp.get("component_item_id") or comp.get("product_id") or "" for comp in components]
+    products_by_id = await _fetch_products_by_ids(component_ids)
+
     # 1. Pre-validate stock for all components
     for comp in components:
         c_id = comp.get("component_item_id") or comp.get("product_id") or ""
@@ -563,7 +661,7 @@ async def complete_work_order(wo_id: str, user: dict = Depends(get_current_user)
         scrap_pct = float(comp.get("scrap_pct", 0.0))
         needed = qty_per * (1.0 + scrap_pct / 100.0) * qty_factor
 
-        prod = await db.products.find_one({"id": c_id})
+        prod = products_by_id.get(c_id)
         if not prod:
             raise HTTPException(400, f"Component '{c_name}' not found in inventory")
         available = float(prod.get("quantity", 0))
@@ -573,51 +671,42 @@ async def complete_work_order(wo_id: str, user: dict = Depends(get_current_user)
                 f"Insufficient stock for '{c_name}'. Need {needed:.4f}, available {available:.4f}",
             )
 
-    # 2. Deduct component stock
+    # 2. Deduct component stock — each posts its own valuation-priced ledger
+    # entry via post_entry rather than a flat products.quantity write, so raw
+    # material consumption now gets real FIFO/LIFO/WA/Standard-Cost costing.
+    # No godown is captured on a BOM component today, so this resolves the
+    # tenant's default the same way the other migrated v1 flows do (see
+    # core.product_stock_bridge.resolve_godown_id). stock_item_id resolution
+    # for every component + the FG is batched in ONE call rather than resolved
+    # per-line inside the loop (was an N+1 — up to 3 queries per component).
+    godown_id = await resolve_godown_id(None)
+    all_ids = [comp.get("component_item_id") or comp.get("product_id") or "" for comp in components]
+    all_ids.append(wo["product_id"])
+    stock_item_by_product = await resolve_stock_item_ids_for_products(all_ids, user)
+
     for comp in components:
         c_id = comp.get("component_item_id") or comp.get("product_id") or ""
-        c_name = comp.get("component_item_name") or comp.get("product_name") or ""
         qty_per = float(comp.get("qty_per") or comp.get("quantity") or 1.0)
         scrap_pct = float(comp.get("scrap_pct", 0.0))
         needed = qty_per * (1.0 + scrap_pct / 100.0) * qty_factor
 
-        prod = await db.products.find_one({"id": c_id}) or {}
-        new_qty = float(prod.get("quantity", 0)) - needed
-        await db.products.update_one(
-            {"id": c_id},
-            {"$set": {"quantity": round(new_qty, 6), "updated_at": now_iso()}},
+        await post_entry(
+            stock_item_id=stock_item_by_product[c_id], godown_id=godown_id,
+            qty=-needed, movement_type="MANUFACTURING",
+            source_doc_type="work_order_consumption", source_doc_id=wo["id"],
+            user=user,
         )
-        await db.stock_transactions.insert_one({
-            "id": new_id(),
-            "product_id": c_id,
-            "product_name": c_name,
-            "delta": -needed,
-            "balance": round(new_qty, 6),
-            "reason": f"Mfg WO Consumption {wo['wo_number']}",
-            "user_id": user["id"],
-            "user_name": user.get("name", ""),
-            "created_at": now_iso(),
-        })
 
     # 3. Add FG stock
     fg = await db.products.find_one({"id": wo["product_id"]})
     if fg:
-        new_fg_qty = float(fg.get("quantity", 0)) + float(wo["quantity_planned"])
-        await db.products.update_one(
-            {"id": wo["product_id"]},
-            {"$set": {"quantity": round(new_fg_qty, 6), "updated_at": now_iso()}},
+        await post_entry(
+            stock_item_id=stock_item_by_product[wo["product_id"]], godown_id=godown_id,
+            qty=float(wo["quantity_planned"]), movement_type="MANUFACTURING",
+            rate=float(fg.get("cost_price") or 0),
+            source_doc_type="work_order_output", source_doc_id=wo["id"],
+            user=user,
         )
-        await db.stock_transactions.insert_one({
-            "id": new_id(),
-            "product_id": wo["product_id"],
-            "product_name": wo["product_name"],
-            "delta": float(wo["quantity_planned"]),
-            "balance": round(new_fg_qty, 6),
-            "reason": f"Mfg WO Output {wo['wo_number']}",
-            "user_id": user["id"],
-            "user_name": user.get("name", ""),
-            "created_at": now_iso(),
-        })
 
     return await crud_update(
         "work_orders", wo_id,
@@ -683,9 +772,17 @@ async def create_production_journal(
     if wo["status"] not in ("RELEASED", "IN_PROGRESS"):
         raise HTTPException(400, f"Cannot post journal against WO in status '{wo['status']}'")
 
+    # Batch-read every consumption-line product ONCE — the validate, cost-
+    # resolution, and deduct passes below used to each re-query per line (up
+    # to 3x round-trips per line). None of the first two passes write, so one
+    # shared snapshot is correct for all three; the deduct pass tracks a
+    # running quantity per product_id so duplicate item_ids across lines
+    # still stack their deductions instead of racing on a stale snapshot.
+    consumption_products = await _fetch_products_by_ids([line.item_id for line in payload.consumption])
+
     # ── 1. Pre-validate consumption stock ──────────────────────────────────
     for line in payload.consumption:
-        prod = await db.products.find_one({"id": line.item_id})
+        prod = consumption_products.get(line.item_id)
         if not prod:
             raise HTTPException(400, f"Item '{line.item_name}' ({line.item_id}) not found")
         if float(prod.get("quantity", 0)) < line.qty - 1e-6:
@@ -696,34 +793,39 @@ async def create_production_journal(
 
     doc = payload.model_dump()
     doc["journal_number"] = await next_doc_number("PJ", "production_journals")
+    # Pre-generate the id so the stock-transaction rows below can carry a real
+    # source_doc_id link (crud_create() assigns it only after both posting
+    # loops have already run).
+    doc.setdefault("id", new_id())
 
     # ── 2. Cost resolution per consumption line ────────────────────────────
     total_material_cost = 0.0
     for line in doc["consumption"]:
         if not line.get("unit_cost"):
-            prod = await db.products.find_one({"id": line["item_id"]})
+            prod = consumption_products.get(line["item_id"])
             line["unit_cost"] = float(prod.get("cost_price", 0)) if prod else 0.0
         total_material_cost += line["unit_cost"] * line["qty"]
 
-    # ── 3. Deduct consumption from stock ──────────────────────────────────
+    # ── 3. Deduct consumption from stock — each posts its own valuation-
+    # priced ledger entry via post_entry rather than a flat quantity write.
+    # No godown is captured on a Production Journal line today, so this
+    # resolves the tenant's default the same way the other migrated v1 flows
+    # do (see core.product_stock_bridge.resolve_godown_id). stock_item_id
+    # resolution for every consumption + output line is batched in ONE call
+    # up front rather than resolved per-line inside each loop (was an N+1 —
+    # up to 3 queries per line, across two separate loops).
+    godown_id = await resolve_godown_id(None)
+    all_ids = [line["item_id"] for line in doc["consumption"]] + [o["item_id"] for o in doc["output"]]
+    stock_item_by_product = await resolve_stock_item_ids_for_products(all_ids, user)
+
     for line in doc["consumption"]:
-        prod = await db.products.find_one({"id": line["item_id"]}) or {}
-        new_qty = float(prod.get("quantity", 0)) - line["qty"]
-        await db.products.update_one(
-            {"id": line["item_id"]},
-            {"$set": {"quantity": round(new_qty, 6), "updated_at": now_iso()}},
+        item_id = line["item_id"]
+        await post_entry(
+            stock_item_id=stock_item_by_product[item_id], godown_id=godown_id,
+            qty=-line["qty"], movement_type="PRODUCTION",
+            source_doc_type="production_journal_consumption", source_doc_id=doc["id"],
+            user=user,
         )
-        await db.stock_transactions.insert_one({
-            "id": new_id(),
-            "product_id": line["item_id"],
-            "product_name": line["item_name"],
-            "delta": -line["qty"],
-            "balance": round(new_qty, 6),
-            "reason": f"Prod Journal {doc['journal_number']} — Consumption",
-            "user_id": user["id"],
-            "user_name": user.get("name", ""),
-            "created_at": now_iso(),
-        })
 
     # ── 4. Add output to stock ─────────────────────────────────────────────
     fg_qty_total = sum(
@@ -731,29 +833,21 @@ async def create_production_journal(
         if not o.get("is_by_product")
     )
     by_product_credit = 0.0
+    output_products = await _fetch_products_by_ids([o["item_id"] for o in doc["output"]])
     for out_line in doc["output"]:
-        prod = await db.products.find_one({"id": out_line["item_id"]})
+        item_id = out_line["item_id"]
+        prod = output_products.get(item_id)
         if not prod:
             continue
-        new_qty = float(prod.get("quantity", 0)) + out_line["qty"]
-        await db.products.update_one(
-            {"id": out_line["item_id"]},
-            {"$set": {"quantity": round(new_qty, 6), "updated_at": now_iso()}},
+        rate = float(out_line.get("unit_cost") or prod.get("cost_price") or 0)
+        await post_entry(
+            stock_item_id=stock_item_by_product[item_id], godown_id=godown_id,
+            qty=out_line["qty"], movement_type="PRODUCTION", rate=rate,
+            source_doc_type="production_journal_output", source_doc_id=doc["id"],
+            user=user,
         )
-        tag = "Co-Product" if out_line.get("is_co_product") else ("By-Product" if out_line.get("is_by_product") else "Output")
-        await db.stock_transactions.insert_one({
-            "id": new_id(),
-            "product_id": out_line["item_id"],
-            "product_name": out_line["item_name"],
-            "delta": out_line["qty"],
-            "balance": round(new_qty, 6),
-            "reason": f"Prod Journal {doc['journal_number']} — {tag}",
-            "user_id": user["id"],
-            "user_name": user.get("name", ""),
-            "created_at": now_iso(),
-        })
         if out_line.get("is_by_product"):
-            by_product_credit += float(out_line.get("unit_cost") or prod.get("cost_price") or 0) * out_line["qty"]
+            by_product_credit += rate * out_line["qty"]
 
     # ── 5. Record net material cost on journal ─────────────────────────────
     doc["total_material_cost"] = round(total_material_cost - by_product_credit, 2)
@@ -835,22 +929,15 @@ async def create_qc_report(payload: QCReport, user: dict = Depends(get_current_u
     if wo["status"] == "QC_PENDING":
         prod = await db.products.find_one({"id": payload.product_id})
         if prod:
-            new_qty = float(prod.get("quantity", 0)) + payload.quantity_passed
-            await db.products.update_one(
-                {"id": payload.product_id},
-                {"$set": {"quantity": new_qty, "updated_at": now_iso()}},
+            stock_item_id = await resolve_stock_item_id_for_product(payload.product_id, user)
+            godown_id = await resolve_godown_id(None)
+            await post_entry(
+                stock_item_id=stock_item_id, godown_id=godown_id,
+                qty=payload.quantity_passed, movement_type="MANUFACTURING",
+                rate=float(prod.get("cost_price") or 0),
+                source_doc_type="qc_report", source_doc_id=wo["id"],
+                user=user,
             )
-            await db.stock_transactions.insert_one({
-                "id": new_id(),
-                "product_id": payload.product_id,
-                "product_name": payload.product_name,
-                "delta": payload.quantity_passed,
-                "balance": new_qty,
-                "reason": f"Mfg QC Passed {wo['wo_number']}",
-                "user_id": user["id"],
-                "user_name": user.get("name", ""),
-                "created_at": now_iso(),
-            })
 
         wo_status = "COMPLETED" if payload.status == "PASSED" else "IN_PROGRESS"
         await db.work_orders.update_one(
@@ -869,14 +956,37 @@ async def create_qc_report(payload: QCReport, user: dict = Depends(get_current_u
 async def calculate_mrp(user: dict = Depends(get_current_user)):
     """MRP: aggregate raw material needs for all active WOs vs current stock."""
     _require_mfg(user)
+    return await cache.get_or_set(
+        "manufacturing:mrp", cache.TTL_DASHBOARD, _compute_mrp
+    )
+
+
+async def _compute_mrp() -> list:
     active_wos = await db.work_orders.find(
         {"status": {"$in": ["RELEASED", "IN_PROGRESS", "PENDING"]}},
         {"_id": 0},
     ).to_list(1000)
 
+    # Load every BOM ONCE (bom_index, keyed by finished_product_id) instead
+    # of a find_one per active work order AND per sub-assembly component
+    # inside _explode_bom's recursion — this whole function is
+    # cache.get_or_set'd (TTL_DASHBOARD), so it only pays this cost on a
+    # cache miss, but a multi-level BOM explosion across many active WOs
+    # used to cost 1 round-trip per top-level WO PLUS up to 2 more per
+    # sub-assembly component at every recursion level.
+    bom_index = await _load_bom_index()
+    boms_by_id = {wo["bom_id"]: bom_index.get(wo["bom_id"]) for wo in active_wos if wo.get("bom_id")}
+    # bom_index is keyed by finished_product_id, not bom id, so a WO's
+    # bom_id needs its own direct lookup when it isn't the winning version
+    # for that finished good — fall back to a batched-by-id fetch for those.
+    missing_bom_ids = [bid for bid, b in boms_by_id.items() if b is None]
+    if missing_bom_ids:
+        found = await db.boms.find({"id": {"$in": missing_bom_ids}}, {"_id": 0}).to_list(len(missing_bom_ids))
+        boms_by_id.update({b["id"]: b for b in found})
+
     requirements: dict = {}
     for wo in active_wos:
-        bom = await db.boms.find_one({"id": wo["bom_id"]})
+        bom = boms_by_id.get(wo.get("bom_id"))
         if not bom:
             continue
         qty_factor = float(wo["quantity_planned"]) - float(wo.get("quantity_produced", 0))
@@ -884,7 +994,7 @@ async def calculate_mrp(user: dict = Depends(get_current_user)):
             continue
         fg_id = bom.get("finished_product_id") or bom.get("finished_good_item_id", "")
         try:
-            raw = await _explode_bom(bom, target_qty=qty_factor, ancestor_ids={fg_id})
+            raw = await _explode_bom(bom, target_qty=qty_factor, ancestor_ids={fg_id}, bom_index=bom_index)
         except HTTPException:
             continue
         for item_id, req in raw.items():
@@ -899,8 +1009,17 @@ async def calculate_mrp(user: dict = Depends(get_current_user)):
                 }
 
     mrp_list = []
+    product_ids = list(requirements.keys())
+    products_by_id = {}
+    if product_ids:
+        prods = await db.products.find(
+            {"id": {"$in": product_ids}},
+            {"_id": 0, "id": 1, "sku": 1, "quantity": 1}
+        ).to_list(len(product_ids))
+        products_by_id = {p["id"]: p for p in prods}
+
     for pid, req in requirements.items():
-        prod = await db.products.find_one({"id": pid}, {"_id": 0})
+        prod = products_by_id.get(pid)
         stock = float(prod.get("quantity", 0)) if prod else 0.0
         shortage = req["needed"] - stock
         mrp_list.append({
@@ -923,7 +1042,12 @@ async def calculate_mrp(user: dict = Depends(get_current_user)):
 @router.get("/dashboard")
 async def get_dashboard_summary(user: dict = Depends(get_current_user)):
     _require_mfg(user)
+    return await cache.get_or_set(
+        "manufacturing:dashboard", cache.TTL_DASHBOARD, _compute_manufacturing_dashboard
+    )
 
+
+async def _compute_manufacturing_dashboard() -> dict:
     active_count = await db.work_orders.count_documents(
         {"status": {"$in": ["RELEASED", "IN_PROGRESS", "PENDING"]}}
     )

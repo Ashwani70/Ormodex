@@ -12,11 +12,11 @@ linked vouchers (out at from_branch, in at to_branch), both tagged
 
 Collections: branches, inter_branch_transfers
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 from pydantic import BaseModel
 
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 from core.utils import now_iso, new_id, next_doc_number, crud_create, crud_list, crud_get
 
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/branches", tags=["Branch / Multi-location"])
 
 
 def _require_branch_admin(user: dict):
-    if user.get("role") == "admin":
+    if is_admin_role(user.get("role")):
         return user
     if "branch_admin" in user.get("module_permissions", []):
         return user
@@ -38,7 +38,7 @@ def user_branch_scope(user: dict) -> Optional[list[str]]:
 
     A user doc may carry `branch_ids: [...]` to restrict them.
     """
-    if user.get("role") == "admin":
+    if is_admin_role(user.get("role")):
         return None
     scope = user.get("branch_ids")
     return scope if scope else None
@@ -138,14 +138,8 @@ async def create_branch(payload: Branch, user: dict = Depends(require_admin)):
     return await crud_create("branches", payload.model_dump(), user)
 
 
-@router.get("/{branch_id}")
-async def get_branch(branch_id: str, user: dict = Depends(get_current_user)):
-    assert_branch_allowed(branch_id, user)
-    return await crud_get("branches", branch_id)
-
-
 # ══════════════════════════════════════════════════════════════
-# Inter-branch transfers
+# Inter-branch transfers (literal routes BEFORE /{branch_id})
 # ══════════════════════════════════════════════════════════════
 
 @router.post("/inter-branch-transfers")
@@ -237,6 +231,12 @@ async def get_transfer(transfer_id: str, user: dict = Depends(get_current_user))
 # ══════════════════════════════════════════════════════════════
 # Consolidation tie-out helper (reconciles to reports-engine consolidation)
 # ══════════════════════════════════════════════════════════════
+
+@router.get("/{branch_id}")
+async def get_branch(branch_id: str, user: dict = Depends(get_current_user)):
+    assert_branch_allowed(branch_id, user)
+    return await crud_get("branches", branch_id)
+
 
 @router.get("/consolidation/elimination-summary")
 async def elimination_summary(fy: Optional[str] = None, user: dict = Depends(get_current_user)):

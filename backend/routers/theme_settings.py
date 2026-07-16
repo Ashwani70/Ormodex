@@ -7,8 +7,10 @@ from core.auth_utils import (
     get_current_user,
     _read_token,
     jwt_secret,
-    JWT_ALGORITHM
+    JWT_ALGORITHM,
+    is_admin_role,
 )
+from core import cache
 from core.db import db
 from core.utils import now_iso
 
@@ -37,20 +39,19 @@ async def get_optional_user(request: Request) -> Optional[dict]:
         payload = jwt.decode(token, jwt_secret(), algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "access":
             return None
-        user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
-        return user
+        # Reuse the cached user loader (same key as get_current_user) so the
+        # Sidebar's per-page theme fetch doesn't add its own user round-trip.
+        from core.auth_utils import _load_user
+        return await cache.get_or_set(
+            f"user:{payload['sub']}", cache.TTL_USER,
+            lambda: _load_user(payload["sub"]), cache_none=False,
+        )
     except Exception:
         return None
 
 
-@router.get("/active")
-async def get_active_theme(request: Request):
-    """Retrieve the current active theme.
-    If authenticated, returns the user's preference; otherwise the global company
-    theme, defaulting to the Gravity brand.
-    """
-    user = await get_optional_user(request)
-
+async def _resolve_active_theme(user: Optional[dict]) -> dict:
+    """Resolve the effective theme: user preference → global → default."""
     if user:
         user_theme = await db.theme_settings.find_one({"user_id": user["id"]}, {"_id": 0})
         if user_theme:
@@ -61,6 +62,22 @@ async def get_active_theme(request: Request):
         return _theme_doc(global_theme.get("theme_id", DEFAULT_THEME_ID))
 
     return _theme_doc(DEFAULT_THEME_ID)
+
+
+@router.get("/active")
+async def get_active_theme(request: Request):
+    """Retrieve the current active theme.
+    If authenticated, returns the user's preference; otherwise the global company
+    theme, defaulting to the Gravity brand.
+
+    Loads on every page via the Sidebar, so it's cached per-user (or globally for
+    anonymous) for a short TTL; saving a theme invalidates the "theme:" prefix.
+    """
+    user = await get_optional_user(request)
+    cache_key = f"theme:active:{user['id'] if user else 'anon'}"
+    return await cache.get_or_set(
+        cache_key, cache.TTL_REFERENCE, lambda: _resolve_active_theme(user)
+    )
 
 
 @router.get("")
@@ -91,7 +108,7 @@ async def save_theme(payload: ThemeSettingsPayload, user: dict = Depends(get_cur
         upsert=True
     )
 
-    if user.get("role") == "admin":
+    if is_admin_role(user.get("role")):
         await db.theme_settings.update_one(
             {"id": "global_active"},
             {"$set": {**doc, "id": "global_active"}},
@@ -105,6 +122,6 @@ async def save_theme(payload: ThemeSettingsPayload, user: dict = Depends(get_cur
 async def reset_theme(user: dict = Depends(get_current_user)):
     """Reset to the default Gravity brand theme."""
     await db.theme_settings.delete_one({"user_id": user["id"]})
-    if user.get("role") == "admin":
+    if is_admin_role(user.get("role")):
         await db.theme_settings.delete_one({"id": "global_active"})
     return _theme_doc(DEFAULT_THEME_ID)

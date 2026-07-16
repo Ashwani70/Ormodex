@@ -8,13 +8,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from core import cache
 from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 from core.inventory_models import (
     Batch, Godown, SerialNumber, StockAdjustmentIn, StockItem, StockItemUpdate,
     StockTransfer, UnitOfMeasure,
 )
-from core.product_stock_bridge import product_flags, resolve_line_stock_item, stock_item_flags
+from core.product_stock_bridge import product_flags, resolve_godown_id, resolve_line_stock_item, stock_item_flags
 from core.stock_ledger import (
     LEDGER, item_valuation_configs, on_hand, on_hand_bulk, post_entry,
 )
@@ -264,8 +265,25 @@ async def _warehouse_stock_index() -> dict:
 
 @router.get("/warehouses/dashboard")
 async def warehouse_dashboard(user: dict = Depends(get_current_user)):
-    """KPI + chart data for the Warehouse dashboard header."""
+    """KPI + chart data for the Warehouse dashboard header.
+
+    Cached (TTL_DASHBOARD, keyed by the "stock" cache generation): this does
+    5 DB round-trips including two full stock_ledger_entries scans, and every
+    round-trip costs ~260ms cross-region (see core/cache.py's WHY note) — an
+    uncached load was measured taking long enough to trip the frontend's 30s
+    axios timeout and surface as a generic "Something went wrong" failure.
+    The generation bumps on every stock_ledger_entries/stock_items/products
+    write (core/_mongo_compat.py _STOCK_GEN_COLLECTIONS), so a fresh post_entry
+    invalidates this immediately rather than serving stale KPIs.
+    """
     _require_inventory(user)
+    return await cache.get_or_set(
+        f"warehouse_dashboard:{cache.generation('stock')}",
+        cache.TTL_DASHBOARD, _compute_warehouse_dashboard,
+    )
+
+
+async def _compute_warehouse_dashboard() -> dict:
     warehouses = await db.godowns.find({}, {"_id": 0}).to_list(5000)
     idx = await _warehouse_stock_index()
     by_wh = idx["by_wh"]
@@ -480,9 +498,7 @@ async def create_item(payload: StockItem, user: dict = Depends(get_current_user)
         qty = float(data["opening_stock_qty"])
         val = float(data.get("opening_stock_value") or 0.0)
         rate = (val / qty) if qty else 0.0
-        # Opening stock needs a godown; use the first one if any exists.
-        first_godown = await db.godowns.find_one({}, {"_id": 0, "id": 1})
-        godown_id = first_godown["id"] if first_godown else "default"
+        godown_id = await resolve_godown_id(None)
         await post_entry(
             stock_item_id=item["id"], godown_id=godown_id, qty=qty,
             movement_type="OPENING", rate=rate,
@@ -668,13 +684,27 @@ async def stock_summary(
     _require_inventory(user)
     items = await db.stock_items.find({}, {"_id": 0}).to_list(5000)
     cfg_by_id = await item_valuation_configs([it["id"] for it in items])
+
+    # Batch-read every item's ledger history in ONE query instead of a
+    # find_one-per-item loop (was a genuine N+1 — 1 + N round-trips, each
+    # ~260ms cross-region, see core/cache.py's WHY note — timing out the
+    # frontend's 30s axios timeout with even a modest item count). Mirrors
+    # the batched pattern stock_aging already uses below.
+    item_ids = [it["id"] for it in items if it.get("id")]
+    all_ledger_entries = await db[LEDGER].find(
+        {"stock_item_id": {"$in": item_ids}}, {"_id": 0}
+    ).sort([("entry_date", 1), ("created_at", 1)]).to_list(1000000) if item_ids else []
+    entries_by_item: dict[str, list[dict]] = {sid: [] for sid in item_ids}
+    for e in all_ledger_entries:
+        sid = e.get("stock_item_id")
+        if sid in entries_by_item:
+            entries_by_item[sid].append(e)
+
     out = []
     for it in items:
         cfg = cfg_by_id.get(it["id"])
         method = (cfg or (DEFAULT_METHOD, 0.0))[0]
-        all_entries = await db[LEDGER].find(
-            {"stock_item_id": it["id"]}, {"_id": 0}
-        ).sort([("entry_date", 1), ("created_at", 1)]).to_list(50000)
+        all_entries = entries_by_item.get(it["id"], [])
 
         def _safe_date(e: dict) -> str:
             return e.get("entry_date") or "9999-12-31"

@@ -17,21 +17,21 @@ the banking module.
 
 Collections: pos_sessions, pos_sales
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import Optional, Literal
+from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
 from pydantic import BaseModel
 from datetime import date
 
-from core.auth_utils import get_current_user
+from core.auth_utils import get_current_user, is_admin_role
 from core.db import db
-from core.utils import now_iso, new_id, next_doc_number, crud_get
+from core.utils import now_iso, new_id, next_doc_number
 from routers.banking_pdc import amount_in_words
 
 router = APIRouter(prefix="/pos", tags=["POS"])
 
 
 def _require_pos(user: dict):
-    if user.get("role") in ("admin", "accountant", "cashier"):
+    if (is_admin_role(user.get("role")) or user.get("role") in ("accountant", "cashier")):
         return user
     if "pos" in user.get("module_permissions", []):
         return user
@@ -332,9 +332,11 @@ async def sync_sales(payload: list[POSSale], user: dict = Depends(get_current_us
     for sale in payload:
         try:
             r = await create_sale(sale, user)  # reuses idempotent path
+            sale_data = r.get("sale")
+            sale_id = sale_data.get("id") if isinstance(sale_data, dict) else ""
             results.append({"client_uuid": sale.client_uuid,
                             "status": "duplicate" if r.get("duplicate") else "posted",
-                            "sale_id": r["sale"]["id"]})
+                            "sale_id": sale_id})
         except HTTPException as e:
             results.append({"client_uuid": sale.client_uuid, "status": "error", "detail": e.detail})
     posted = sum(1 for r in results if r["status"] == "posted")

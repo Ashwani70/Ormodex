@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Optional, Literal, Dict
 from pydantic import BaseModel
 
-from core.auth_utils import get_current_user
+from core import cache
+from core.auth_utils import get_current_user, is_admin_role
 from core.db import db
 from core.utils import (
     now_iso, new_id, next_doc_number,
@@ -12,7 +13,7 @@ from core.utils import (
 router = APIRouter(prefix="/garment", tags=["Garment Manufacturing"])
 
 def _require_garment(user: dict):
-    if user.get("role") in ("admin", "accountant"):
+    if (is_admin_role(user.get("role")) or user.get("role") == "accountant"):
         return user
     perms = user.get("module_permissions", [])
     if "inventory" not in perms and "sales" not in perms:
@@ -284,7 +285,12 @@ async def delete_export_doc(doc_id: str, user: dict = Depends(get_current_user))
 @router.get("/dashboard")
 async def get_garment_dashboard(user: dict = Depends(get_current_user)):
     _require_garment(user)
-    
+    return await cache.get_or_set(
+        "garment:dashboard", cache.TTL_DASHBOARD, _compute_garment_dashboard
+    )
+
+
+async def _compute_garment_dashboard() -> dict:
     total_orders = await db.buyer_orders.count_documents({})
     completed_orders = await db.buyer_orders.count_documents({"status": "COMPLETED"})
     active_orders = await db.buyer_orders.count_documents({"status": {"$ne": "COMPLETED"}})

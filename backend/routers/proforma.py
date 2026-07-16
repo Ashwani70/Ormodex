@@ -2,8 +2,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Response
 
-from core.auth_utils import get_current_user, require_admin
-from core.db import db
+from core.auth_utils import require_admin
 from core.models import ProformaInvoice
 from core.pi_pdf import build_pi_pdf
 from core.utils import (
@@ -12,6 +11,7 @@ from core.utils import (
     crud_get,
     crud_list,
     crud_update,
+    get_active_company,
     next_doc_number,
 )
 
@@ -37,12 +37,12 @@ def _compute_totals(items):
 
 
 @router.get("/proforma-invoices")
-async def list_pis(q: Optional[str] = None, _: dict = Depends(get_current_user)):
+async def list_pis(q: Optional[str] = None, _: dict = Depends(require_admin)):
     return await crud_list("proforma_invoices", q, ["pi_number", "buyer_name", "status", "buyer_country"])
 
 
 @router.post("/proforma-invoices")
-async def create_pi(payload: ProformaInvoice, _: dict = Depends(get_current_user)):
+async def create_pi(payload: ProformaInvoice, _: dict = Depends(require_admin)):
     data = payload.model_dump()
     if not data.get("pi_number"):
         data["pi_number"] = await next_doc_number("PI", "proforma_invoices")
@@ -51,14 +51,14 @@ async def create_pi(payload: ProformaInvoice, _: dict = Depends(get_current_user
 
 
 @router.put("/proforma-invoices/{item_id}")
-async def update_pi(item_id: str, payload: ProformaInvoice, _: dict = Depends(get_current_user)):
+async def update_pi(item_id: str, payload: ProformaInvoice, _: dict = Depends(require_admin)):
     data = payload.model_dump()
     data.update(_compute_totals(data["items"]))
     return await crud_update("proforma_invoices", item_id, data)
 
 
 @router.get("/proforma-invoices/{item_id}")
-async def get_pi(item_id: str, _: dict = Depends(get_current_user)):
+async def get_pi(item_id: str, _: dict = Depends(require_admin)):
     return await crud_get("proforma_invoices", item_id)
 
 
@@ -68,9 +68,9 @@ async def delete_pi(item_id: str, _: dict = Depends(require_admin)):
 
 
 @router.get("/proforma-invoices/{item_id}/pdf")
-async def pi_pdf(item_id: str, _: dict = Depends(get_current_user)):
+async def pi_pdf(item_id: str, _: dict = Depends(require_admin)):
     pi = await crud_get("proforma_invoices", item_id)
-    pdf_bytes = build_pi_pdf(pi)
+    pdf_bytes = build_pi_pdf(pi, company=await get_active_company())
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

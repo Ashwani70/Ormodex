@@ -20,6 +20,8 @@ from core.models import (
     SalesOrder,
 )
 from core.ledger_posting import post_credit_note_journal
+from core.product_stock_bridge import resolve_godown_id, resolve_stock_item_id_for_product
+from core.stock_ledger import on_hand, post_entry
 from core.utils import (
     calc_totals,
     crud_create,
@@ -364,31 +366,23 @@ async def confirm_so(item_id: str, user: dict = Depends(get_current_user)):
     so = await crud_get("sales_orders", item_id)
     if so.get("status") not in ["PENDING"]:
         raise HTTPException(status_code=400, detail="Order is not pending")
+    godown_id = await resolve_godown_id(None)
     for item in so.get("items", []):
+        if not item.get("product_id"):
+            continue
         prod = await db.products.find_one({"id": item["product_id"]}, {"_id": 0})
         if not prod:
             continue
-        new_qty = float(prod.get("quantity", 0)) - float(item["quantity"])
-        if new_qty < 0:
+        stock_item_id = await resolve_stock_item_id_for_product(item["product_id"], user)
+        current = await on_hand(stock_item_id, godown_id)
+        if float(current["qty"]) - float(item["quantity"]) < 0:
             raise HTTPException(status_code=400, detail=f"Insufficient stock for {item['product_name']}")
-        await db.products.update_one(
-            {"id": item["product_id"]},
-            {"$set": {"quantity": new_qty, "updated_at": now_iso()}},
+        await post_entry(
+            stock_item_id=stock_item_id, godown_id=godown_id,
+            qty=-float(item["quantity"]), movement_type="SALE",
+            source_doc_type="sales_order", source_doc_id=item_id,
+            user=user,
         )
-        await db.stock_transactions.insert_one({
-            "id": new_id(),
-            "product_id": item["product_id"],
-            "product_name": item["product_name"],
-            "delta": -float(item["quantity"]),
-            "balance": new_qty,
-            "reason": f"Sales {so.get('order_number')}",
-            "doc_type": "SALES",
-            "voucher_no": so.get("order_number"),
-            "source_doc_id": item_id,
-            "user_id": user["id"],
-            "user_name": user.get("name", "Unknown"),
-            "created_at": now_iso(),
-        })
     await db.sales_orders.update_one({"id": item_id}, {"$set": {"status": "CONFIRMED", "updated_at": now_iso()}})
     return {"ok": True}
 
@@ -581,6 +575,7 @@ async def _post_credit_note_stock_return(note: dict, user: dict) -> None:
     nothing to restock). Idempotency is the caller's responsibility (see the
     `stock_posted` guard at both call sites) — this always posts when called.
     """
+    godown_id = await resolve_godown_id(None)
     for item in note.get("items", []):
         product_id = item.get("product_id")
         if not product_id:
@@ -591,26 +586,13 @@ async def _post_credit_note_stock_return(note: dict, user: dict) -> None:
         qty = float(item.get("quantity") or 0)
         if qty <= 0:
             continue
-        new_qty = float(prod.get("quantity", 0)) + qty
-        await db.products.update_one(
-            {"id": product_id},
-            {"$set": {"quantity": new_qty, "updated_at": now_iso()}},
+        stock_item_id = await resolve_stock_item_id_for_product(product_id, user)
+        await post_entry(
+            stock_item_id=stock_item_id, godown_id=godown_id,
+            qty=qty, movement_type="SALE_RETURN", rate=float(item.get("unit_price") or 0),
+            source_doc_type="credit_note", source_doc_id=note["id"],
+            user=user,
         )
-        await db.stock_transactions.insert_one({
-            "id": new_id(),
-            "product_id": product_id,
-            "product_name": item.get("product_name") or prod.get("name", ""),
-            "delta": qty,
-            "balance": new_qty,
-            "rate": float(item.get("unit_price") or 0) or None,
-            "reason": f"Sales Return {note.get('credit_note_number')}",
-            "doc_type": "SALES_RETURN",
-            "voucher_no": note.get("credit_note_number"),
-            "source_doc_id": note["id"],
-            "user_id": user["id"],
-            "user_name": user.get("name", "Unknown"),
-            "created_at": now_iso(),
-        })
     logger.info(
         "credit_note %s: stock returned for %d line(s)",
         note.get("credit_note_number"), len(note.get("items", [])),

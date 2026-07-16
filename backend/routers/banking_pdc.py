@@ -11,12 +11,12 @@ Adds on top of the existing banking.py:
 Collections:
   pdcs, cheque_formats, bank_feed_imports, bank_statement_lines, interest_rules
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, Literal
 from pydantic import BaseModel
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 from core.utils import now_iso, new_id, next_doc_number, crud_create, crud_list, crud_get, crud_update
 
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/banking-pdc", tags=["Banking PDC"])
 
 
 def _require_banking(user: dict):
-    if user.get("role") in ("admin", "accountant"):
+    if (is_admin_role(user.get("role")) or user.get("role") == "accountant"):
         return user
     if "banking" in user.get("module_permissions", []):
         return user
@@ -315,22 +315,18 @@ async def create_cheque_format(payload: ChequePrintFormat, user: dict = Depends(
     return await crud_create("cheque_formats", payload.model_dump(), user)
 
 
-@router.post("/cheques/print")
-async def print_cheque(payload: ChequePrintRequest, user: dict = Depends(get_current_user)):
-    """
-    Render cheque print data.
-    Returns field coordinates + values (including Indian amount-in-words).
-    Actual PDF/image generation is a frontend concern using these coordinates.
-    """
-    _require_banking(user)
+async def _render_cheque(payload: ChequePrintRequest) -> dict:
+    """Resolve a cheque format + field values for a print request.
 
+    Shared by the JSON preview endpoint and the PDF endpoint so on-screen
+    preview, browser print, and archived PDF all render identically.
+    """
     fmt = await db.cheque_formats.find_one({"id": payload.format_id}, {"_id": 0})
     if not fmt:
         raise HTTPException(404, f"Cheque format '{payload.format_id}' not found")
 
     words = amount_in_words(payload.amount)
 
-    # Build field map
     field_values = {
         "payee": payload.payee_name,
         "amount_numeric": f"{payload.amount:,.2f}",
@@ -338,20 +334,17 @@ async def print_cheque(payload: ChequePrintRequest, user: dict = Depends(get_cur
         "date": payload.amount_date,
     }
 
-    # If linked to a PDC, also fetch additional context
+    # If linked to a PDC, also fetch additional context.
     pdc_context = None
     if payload.pdc_id:
         pdc = await db.pdcs.find_one({"id": payload.pdc_id}, {"_id": 0})
         if pdc:
             pdc_context = {"cheque_no": pdc.get("cheque_no"), "party_id": pdc.get("party_id")}
 
-    rendered_fields = []
-    for field_def in fmt.get("fields", []):
-        field_name = field_def.get("field", "")
-        rendered_fields.append({
-            **field_def,
-            "value": field_values.get(field_name, ""),
-        })
+    rendered_fields = [
+        {**field_def, "value": field_values.get(field_def.get("field", ""), "")}
+        for field_def in fmt.get("fields", [])
+    ]
 
     return {
         "format": fmt.get("name"),
@@ -361,6 +354,38 @@ async def print_cheque(payload: ChequePrintRequest, user: dict = Depends(get_cur
         "micr_line": fmt.get("micr_line"),
         "pdc_context": pdc_context,
     }
+
+
+@router.post("/cheques/print")
+async def print_cheque(payload: ChequePrintRequest, user: dict = Depends(get_current_user)):
+    """
+    Render cheque print data.
+    Returns field coordinates + values (including Indian amount-in-words).
+    The frontend uses these coordinates for the on-screen preview and browser
+    print; /cheques/pdf renders the same data to an archivable PDF.
+    """
+    _require_banking(user)
+    return await _render_cheque(payload)
+
+
+@router.post("/cheques/pdf")
+async def cheque_pdf(payload: ChequePrintRequest, user: dict = Depends(get_current_user)):
+    """Render the cheque to a print-ready PDF sized to a real cheque leaf.
+
+    The fields are positioned from the same format coordinates the preview uses,
+    so the archived PDF matches what prints on the physical cheque."""
+    _require_banking(user)
+    from fastapi import Response
+    from core.cheque_pdf import build_cheque_pdf
+
+    rendered = await _render_cheque(payload)
+    pdf_bytes = build_cheque_pdf(rendered)
+    safe_payee = "".join(c for c in (payload.payee_name or "cheque") if c.isalnum() or c in " -_").strip() or "cheque"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="cheque-{safe_payee}.pdf"'},
+    )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -435,6 +460,7 @@ async def auto_match_bank_recon(
     matched = []
     unmatched_stmt = []
     pdc_matched_ids = set()
+    updates_by_id: dict = {}
 
     for line in stmt_lines:
         line_amount = line.get("credit", 0) or line.get("debit", 0)
@@ -445,7 +471,8 @@ async def auto_match_bank_recon(
             if pdc["id"] in pdc_matched_ids:
                 continue
             if abs(pdc["amount"] - line_amount) < 0.01:
-                pdc_date = date.fromisoformat(pdc.get("cleared_at", pdc.get("instrument_date", "2000-01-01"))[:10])
+                pdc_date_raw = pdc.get("cleared_at") or pdc.get("instrument_date") or "2000-01-01"
+                pdc_date = date.fromisoformat(pdc_date_raw[:10])
                 if abs((line_date - pdc_date).days) <= 3:
                     best_match = pdc
                     break
@@ -453,12 +480,15 @@ async def auto_match_bank_recon(
         if best_match:
             matched.append({"statement_line": line, "matched_pdc": best_match})
             pdc_matched_ids.add(best_match["id"])
-            await db.bank_statement_lines.update_one(
-                {"id": line["id"]},
-                {"$set": {"match_status": "MATCHED", "matched_pdc_id": best_match["id"]}},
-            )
+            updates_by_id[line["id"]] = {"$set": {"match_status": "MATCHED", "matched_pdc_id": best_match["id"]}}
         else:
             unmatched_stmt.append(line)
+
+    # Matching above is pure in-memory work; the writes it decided on are
+    # applied in ONE bulk_update_by_id call instead of an update_one per
+    # match inside the loop — was up to 5000 individual round trips.
+    if updates_by_id:
+        await db.bank_statement_lines.bulk_update_by_id(updates_by_id)
 
     unmatched_pdcs = [p for p in cleared_pdcs if p["id"] not in pdc_matched_ids]
 

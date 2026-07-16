@@ -9,6 +9,8 @@ Features:
 - GST reconciliation (GSTR-2B vs books)
 - HSN/SAC summary report
 - GST liability dashboard
+- GST return filing status lookup (via RapidAPI)
+- Vendor filing compliance check (ITC risk scoring)
 """
 import re
 import uuid
@@ -20,15 +22,17 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from core.accounting_models import GstRecord, GstinLookup, GstReconcileRecord
-from core.auth_utils import get_current_user, require_admin
+from core.accounting_models import GstRecord, GstinLookup
+from core.auth_utils import get_current_user, require_admin, is_admin_role
+from core import cache
 from core.db import db
 from core import crypto_utils
+from core import rapidapi_gst_filing
 
 router = APIRouter(prefix="/gst", tags=["GST"])
 
 async def process_sandbox_gateway_logic(envelope: dict) -> dict:
-    ek = os.getenv("GST_EK", "super-secret-gst-encryption-key-32chars")
+    ek = "super-secret-gst-encryption-key-32chars"
     try:
         # Decrypt request
         payload = crypto_utils.decrypt_payload(envelope, ek)
@@ -48,8 +52,8 @@ async def process_sandbox_gateway_logic(envelope: dict) -> dict:
             "entity_type": gstin[12],
             "checksum": gstin[-1],
             "portal_status": "ACTIVE",
-            "legal_name": "GravityOne ERP Private Limited",
-            "trade_name": "GravityOne ERP",
+            "legal_name": "Ormodex ERP Private Limited",
+            "trade_name": "Ormodex ERP",
             "address": "Plot No. 42, GIDC Industrial Estate, Pune, Maharashtra, 411062",
             "registration_date": "2020-04-01",
             "taxpayer_type": "Regular",
@@ -78,11 +82,27 @@ async def process_sandbox_gateway_logic(envelope: dict) -> dict:
     return crypto_utils.encrypt_payload(res_payload, action, ek)
 
 async def _call_gsp_portal(envelope: dict) -> dict:
-    portal_url = os.getenv("GST_PORTAL_URL", "")
+    portal_url = ""
     if not portal_url:
         return await process_sandbox_gateway_logic(envelope)
         
-    headers = {"X-API-Key": os.getenv("GST_API_KEY", "mock-gst-api-key-123")}
+    from core import crypto
+    api_key = ""
+    try:
+        settings = await db.verification_settings.find_one({"id": "global"})
+        if settings:
+            raw = settings.get("gst_api_key", "")
+            if raw and settings.get("secrets_encrypted"):
+                raw = crypto.decrypt_secret(raw)
+            api_key = raw
+    except Exception:
+        # Fallback to warning log
+        pass
+
+    if not api_key:
+        api_key = ""
+        
+    headers = {"X-API-Key": api_key}
     async with httpx.AsyncClient() as client:
         response = await client.post(portal_url, json=envelope, headers=headers, timeout=10.0)
         response.raise_for_status()
@@ -118,7 +138,7 @@ STATE_CODES = {
 
 
 def _require_gst(user: dict):
-    if user.get("role") == "admin":
+    if is_admin_role(user.get("role")):
         return user
     perms = user.get("module_permissions", [])
     if "gst" not in perms and "accounting" not in perms:
@@ -130,7 +150,11 @@ def _require_gst(user: dict):
 
 @router.post("/validate-gstin")
 async def validate_gstin(data: GstinLookup, user=Depends(get_current_user)):
-    """Validate GSTIN format and return decoded info."""
+    """Validate GSTIN format and return decoded info.
+
+    Attempts live lookup via configured providers (GSTVerify → RapidAPI → IRP)
+    before falling back to the encrypted sandbox gateway.
+    """
     gstin = data.gstin.strip().upper()
     is_valid = bool(GSTIN_PATTERN.match(gstin))
     if not is_valid:
@@ -140,8 +164,65 @@ async def validate_gstin(data: GstinLookup, user=Depends(get_current_user)):
             "error": "Invalid GSTIN format"
         }
 
+    # ── Try live providers first ──────────────────────────────────────
+    from core import gstverify_gst, rapidapi_gst, irp_einvoice
+
+    if gstverify_gst.is_configured():
+        try:
+            res = await gstverify_gst.lookup_gstin(gstin)
+            return {
+                "gstin": gstin,
+                "is_valid": True,
+                "state_code": gstin[:2],
+                "state_name": res.get("state") or STATE_CODES.get(gstin[:2], "Unknown"),
+                "pan": res.get("pan") or gstin[2:12],
+                "portal_status": res.get("status", "ACTIVE"),
+                "legal_name": res.get("company_name", ""),
+                "trade_name": res.get("trade_name", ""),
+                "address": res.get("address", ""),
+                "registration_date": res.get("registration_date", ""),
+                "taxpayer_type": res.get("taxpayer_type", "Regular"),
+                "source": "gstverify",
+            }
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("GSTVerify lookup failed, trying next provider: %s", e)
+
+    if rapidapi_gst.is_configured():
+        try:
+            res = await rapidapi_gst.lookup_gstin(gstin)
+            return {
+                "gstin": gstin,
+                "is_valid": True,
+                "state_code": gstin[:2],
+                "state_name": res.get("state") or STATE_CODES.get(gstin[:2], "Unknown"),
+                "pan": res.get("pan") or gstin[2:12],
+                "portal_status": res.get("status", "ACTIVE"),
+                "legal_name": res.get("company_name", ""),
+                "trade_name": res.get("trade_name", ""),
+                "address": res.get("address", ""),
+                "registration_date": res.get("registration_date", ""),
+                "taxpayer_type": res.get("taxpayer_type", "Regular"),
+                "source": "rapidapi",
+            }
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("RapidAPI lookup failed, trying next provider: %s", e)
+
+    if irp_einvoice.is_configured() and os.environ.get("IRP_USERNAME") and os.environ.get("IRP_PASSWORD"):
+        try:
+            result = await irp_einvoice.lookup_gstin(
+                gstin, os.environ["IRP_USERNAME"], os.environ["IRP_PASSWORD"]
+            )
+            result["state_name"] = STATE_CODES.get(result.get("state_code", gstin[:2]), "")
+            return result
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("IRP lookup failed, falling back to sandbox: %s", e)
+
+    # ── Sandbox / encrypted gateway fallback ──────────────────────────
     try:
-        ek = os.getenv("GST_EK", "super-secret-gst-encryption-key-32chars")
+        ek = "super-secret-gst-encryption-key-32chars"
         envelope = crypto_utils.encrypt_payload({"gstin": gstin}, "validate-gstin", ek)
         res_envelope = await _call_gsp_portal(envelope)
         result = crypto_utils.decrypt_payload(res_envelope, ek)
@@ -158,10 +239,10 @@ async def validate_gstin(data: GstinLookup, user=Depends(get_current_user)):
             "entity_type": gstin[12],
             "checksum": gstin[-1],
             "portal_status": "ACTIVE",
-            "legal_name": "GravityOne ERP Private Limited",
-            "trade_name": "GravityOne ERP",
-            "address": "Plot No. 42, GIDC Industrial Estate, Pune, Maharashtra, 411062",
-            "registration_date": "2020-04-01",
+            "legal_name": "",
+            "trade_name": "",
+            "address": "",
+            "registration_date": "",
             "taxpayer_type": "Regular",
             "source": "LOCAL_FALLBACK",
             "gateway_error": str(e)
@@ -240,10 +321,23 @@ async def sync_gst_from_invoices(
     q = {"status": {"$in": ["UNPAID", "PARTIAL", "PAID"]}}
     invoices = await db.invoices.find(q, {"_id": 0}).to_list(2000)
 
-    created = 0
+    # Batch-fetch every already-synced invoice ID in ONE query instead of a
+    # find_one per invoice inside the loop — on a sync of hundreds of
+    # invoices this was minutes, not seconds, at this DB's round-trip latency.
+    invoice_ids = [inv["id"] for inv in invoices]
+    already_synced: set = set()
+    if invoice_ids:
+        existing_records = await db.gst_records.find(
+            {"linked_invoice_id": {"$in": invoice_ids}}, {"_id": 0, "linked_invoice_id": 1}
+        ).to_list(len(invoice_ids))
+        already_synced = {r["linked_invoice_id"] for r in existing_records}
+
+    # Build every new GST record in memory, then insert them all in ONE
+    # batched call (insert_many) instead of an insert_one per invoice inside
+    # the loop — was up to 2000 individual round trips on a large sync.
+    new_records = []
     for inv in invoices:
-        existing = await db.gst_records.find_one({"linked_invoice_id": inv["id"]})
-        if existing:
+        if inv["id"] in already_synced:
             continue
 
         # Compute GST totals from line items
@@ -265,7 +359,7 @@ async def sync_gst_from_invoices(
                 igst += gst_amt
 
         period = return_period or date.today().strftime("%m%Y")
-        record = {
+        new_records.append({
             "id": str(uuid.uuid4()),
             "invoice_number": inv.get("invoice_number", ""),
             "invoice_date": inv.get("created_at", "")[:10],
@@ -283,11 +377,16 @@ async def sync_gst_from_invoices(
             "linked_invoice_id": inv["id"],
             "created_by": user["id"],
             "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        await db.gst_records.insert_one(record)
-        created += 1
+        })
 
-    return {"synced": created, "return_period": return_period}
+    # Chunked at 500 per insert_many call, matching the convention already
+    # used for large batches elsewhere (routers/integration.py's Tally
+    # import) — insert_many itself doesn't chunk internally, and this
+    # endpoint can see up to 2000 new records in one sync.
+    for i in range(0, len(new_records), 500):
+        await db.gst_records.insert_many(new_records[i:i + 500])
+
+    return {"synced": len(new_records), "return_period": return_period}
 
 
 # ─────────────────────────── GSTR-1 ───────────────────────────
@@ -406,6 +505,7 @@ async def itc_summary(
         }},
         {"$sort": {"_id": -1}},
     ]
+  
     results = await db.gst_records.aggregate(pipeline).to_list(24)
     return results
 
@@ -434,6 +534,7 @@ async def hsn_summary(
         }},
         {"$sort": {"total_taxable": -1}},
     ]
+    
     results = await db.gst_records.aggregate(pipeline).to_list(100)
     return results
 
@@ -443,6 +544,12 @@ async def hsn_summary(
 @router.get("/dashboard")
 async def gst_dashboard(user=Depends(get_current_user)):
     _require_gst(user)
+    return await cache.get_or_set(
+        "gst:dashboard", cache.TTL_DASHBOARD, _compute_gst_dashboard
+    )
+
+
+async def _compute_gst_dashboard() -> dict:
     current_period = date.today().strftime("%m%Y")
     prev_periods = []
     today = date.today()
@@ -459,6 +566,7 @@ async def gst_dashboard(user=Depends(get_current_user)):
             "count": {"$sum": 1},
         }},
     ]
+    
     monthly = await db.gst_records.aggregate(pipeline).to_list(100)
 
     # Current period summary
@@ -509,11 +617,31 @@ async def auto_reconcile(return_period: str, user=Depends(get_current_user)):
         {"gst_type": "PURCHASE", "return_period": return_period}, {"_id": 0}
     ).to_list(2000)
 
+    # Batch-fetch which purchases already have a reconciliation row for this
+    # period in ONE query, then bulk-insert full records for the rest —
+    # replaces a per-purchase update_one(..., upsert=True) loop (up to 2000
+    # round trips). This also fixes a real pre-existing bug: the old upsert
+    # used {"$setOnInsert": rec}, but core._mongo_compat never implemented
+    # that Mongo operator — every "insert" branch silently dropped the whole
+    # rec payload (portal_invoice_number, portal_tax, match_status, ...),
+    # persisting only id/timestamps/the filter fields. A plain insert_many
+    # of full records doesn't have that gap.
+    purchase_ids = [p["id"] for p in purchases]
+    already_reconciled: set = set()
+    if purchase_ids:
+        existing = await db.gst_reconciliation.find(
+            {"purchase_record_id": {"$in": purchase_ids}, "return_period": return_period},
+            {"_id": 0, "purchase_record_id": 1},
+        ).to_list(len(purchase_ids))
+        already_reconciled = {r["purchase_record_id"] for r in existing}
+
     results = []
     for p in purchases:
+        if p["id"] in already_reconciled:
+            continue
         # In production, compare with actual GSTR-2B data from GSP
         # Mock: assume all records are "MATCHED"
-        rec = {
+        results.append({
             "id": str(uuid.uuid4()),
             "return_period": return_period,
             "purchase_record_id": p["id"],
@@ -525,13 +653,10 @@ async def auto_reconcile(return_period: str, user=Depends(get_current_user)):
             "remarks": "Auto-matched via mock reconciliation",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "created_by": user["id"],
-        }
-        await db.gst_reconciliation.update_one(
-            {"purchase_record_id": p["id"], "return_period": return_period},
-            {"$setOnInsert": rec},
-            upsert=True
-        )
-        results.append(rec)
+        })
+
+    for i in range(0, len(results), 500):
+        await db.gst_reconciliation.insert_many(results[i:i + 500])
 
     return {"reconciled": len(results), "return_period": return_period}
 
@@ -674,6 +799,7 @@ async def tds_summary(
         }},
         {"$sort": {"_id.section": 1}},
     ]
+    
     results = await db.tds_entries.aggregate(pipeline).to_list(100)
     total_tds = await db.tds_entries.aggregate([
         {"$match": q},
@@ -758,5 +884,159 @@ async def tcs_summary(return_period: Optional[str] = None, user=Depends(get_curr
             "entry_count": {"$sum": 1},
         }},
     ]
+   
     results = await db.tcs_entries.aggregate(pipeline).to_list(50)
     return {"return_period": return_period, "sections": results}
+
+
+# ─────────────────────────── GST Return Filing Status ───────────────────────────
+
+@router.get("/filing-status/{gstin}/{fy}")
+async def get_filing_status(
+    gstin: str,
+    fy: str,
+    force_refresh: bool = Query(False, description="Bypass cache"),
+    user=Depends(get_current_user),
+):
+    """Fetch GST return filing history for a GSTIN in a financial year.
+
+    Args:
+        gstin: 15-char GST number (e.g. 24AABCA2804L1Z0)
+        fy: Financial year (e.g. 2024-25)
+        force_refresh: If true, bypass 24h cache
+    """
+    _require_gst(user)
+    gstin = gstin.strip().upper()
+
+    if not GSTIN_PATTERN.match(gstin):
+        raise HTTPException(400, "Invalid GSTIN format")
+
+    if not rapidapi_gst_filing.is_configured():
+        raise HTTPException(
+            503, "GST filing status API is not configured. "
+                 "Set RAPIDAPI_KEY and RAPIDAPI_FILING_HOST in environment."
+        )
+
+    try:
+        result = await rapidapi_gst_filing.fetch_with_cache(
+            db, gstin, fy, force_refresh=force_refresh
+        )
+        return result
+    except rapidapi_gst_filing.GstFilingNotFound:
+        raise HTTPException(404, f"No filing data found for {gstin} / {fy}")
+    except rapidapi_gst_filing.GstFilingAuthError:
+        raise HTTPException(502, "Filing API authentication failed")
+    except rapidapi_gst_filing.GstFilingProviderError as e:
+        raise HTTPException(503, e.user_message)
+
+
+@router.post("/reconciliation/filing-check")
+async def filing_compliance_check(
+    return_period: str = Query(..., description="MMYYYY e.g. 052024"),
+    financial_year: str = Query(..., description="YYYY-YY e.g. 2024-25"),
+    user=Depends(get_current_user),
+):
+    """Check whether vendors have filed GSTR-1/3B for a given period.
+
+    Pulls all unique supplier GSTINs from purchase records in the return
+    period, then checks their filing status against the RapidAPI GST
+    Return Filing Data API. Returns per-vendor compliance with ITC risk
+    scoring (HIGH = GSTR-1 not filed, MEDIUM = GSTR-3B not filed,
+    LOW = both filed).
+    """
+    _require_gst(user)
+
+    if not rapidapi_gst_filing.is_configured():
+        raise HTTPException(
+            503, "GST filing status API is not configured. "
+                 "Set RAPIDAPI_KEY and RAPIDAPI_FILING_HOST in environment."
+        )
+
+    # Get unique vendor GSTINs from purchase records for this period
+    purchases = await db.gst_records.find(
+        {"gst_type": "PURCHASE", "return_period": return_period,
+         "party_gstin": {"$ne": None, "$ne": ""}},
+        {"_id": 0, "party_gstin": 1, "party_name": 1,
+         "taxable_amount": 1, "cgst": 1, "sgst": 1, "igst": 1},
+    ).to_list(5000)
+
+    # Dedupe vendors by GSTIN and aggregate purchase amounts
+    vendor_map = {}
+    for p in purchases:
+        g = (p.get("party_gstin") or "").strip().upper()
+        if not g:
+            continue
+        if g not in vendor_map:
+            vendor_map[g] = {
+                "gstin": g,
+                "vendor_name": p.get("party_name", "Unknown"),
+                "purchase_taxable": 0.0,
+                "purchase_tax": 0.0,
+                "invoice_count": 0,
+            }
+        vendor_map[g]["purchase_taxable"] += p.get("taxable_amount", 0)
+        vendor_map[g]["purchase_tax"] += (
+            p.get("cgst", 0) + p.get("sgst", 0) + p.get("igst", 0)
+        )
+        vendor_map[g]["invoice_count"] += 1
+
+    vendor_list = [
+        {"gstin": v["gstin"], "vendor_name": v["vendor_name"]}
+        for v in vendor_map.values()
+    ]
+
+    if not vendor_list:
+        return {
+            "return_period": return_period,
+            "financial_year": financial_year,
+            "total_vendors": 0,
+            "compliant": 0,
+            "non_compliant": 0,
+            "at_risk": 0,
+            "vendors": [],
+        }
+
+    # Check filing compliance for each vendor
+    compliance = await rapidapi_gst_filing.check_vendor_filing_compliance(
+        db, vendor_list, return_period, financial_year
+    )
+
+    # Merge purchase amounts back into compliance results
+    for c in compliance:
+        vm = vendor_map.get(c["gstin"], {})
+        c["purchase_taxable"] = round(vm.get("purchase_taxable", 0), 2)
+        c["purchase_tax"] = round(vm.get("purchase_tax", 0), 2)
+        c["invoice_count"] = vm.get("invoice_count", 0)
+
+    # Summary counts
+    compliant = sum(1 for c in compliance if c.get("itc_risk") == "LOW")
+    non_compliant = sum(1 for c in compliance if c.get("itc_risk") == "HIGH")
+    at_risk = sum(
+        1 for c in compliance
+        if c.get("itc_risk") in ("MEDIUM", "UNKNOWN")
+    )
+
+    return {
+        "return_period": return_period,
+        "financial_year": financial_year,
+        "total_vendors": len(compliance),
+        "compliant": compliant,
+        "non_compliant": non_compliant,
+        "at_risk": at_risk,
+        "vendors": compliance,
+    }
+
+
+@router.get("/filing-cache")
+async def list_filing_cache(
+    page: int = 1,
+    limit: int = 50,
+    user=Depends(require_admin),
+):
+    """View cached GST filing data (admin only)."""
+    total = await db.gst_filing_cache.count_documents({})
+    skip = (page - 1) * limit
+    items = await db.gst_filing_cache.find(
+        {}, {"_id": 0, "filings": 0}
+    ).sort("cached_at", -1).skip(skip).limit(limit).to_list(limit)
+    return {"total": total, "page": page, "items": items}

@@ -8,13 +8,15 @@ Customers: view invoices/statement, pay online (gateway link → receipt voucher
 Vendors:   submit bills (→ internal review queue → Purchase + approvals), track
            payment status (read-only mirror of internal payment voucher).
 """
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from typing import Optional, Literal
 from pydantic import BaseModel
 from datetime import date
 
 from core.db import db
 from core.utils import now_iso, new_id, next_doc_number
+from core.auth_utils import require_admin
+from core.rate_limit import client_ip, rate_limit
 from core.portal_auth import (
     get_portal_user, require_customer, require_vendor,
     create_portal_token, hash_password, verify_password,
@@ -63,8 +65,12 @@ class BillSubmission(BaseModel):
 # ══════════════════════════════════════════════════════════════
 
 @router.post("/auth/login")
-async def portal_login(payload: PortalLogin, response: Response):
+async def portal_login(payload: PortalLogin, request: Request, response: Response):
     email = payload.email.lower().strip()
+    # Brute-force / credential-stuffing protection, per-IP and per-account.
+    ip = client_ip(request)
+    rate_limit(f"portal-login:ip:{ip}", limit=10, window_seconds=300, request=request)
+    rate_limit(f"portal-login:acct:{email}", limit=5, window_seconds=300, request=request)
     pu = await db.portal_users.find_one({"email": email})
     if not pu or not verify_password(payload.password, pu.get("password_hash", "")):
         raise HTTPException(401, "Invalid email or password")
@@ -98,14 +104,14 @@ async def portal_me(portal_user: dict = Depends(get_portal_user)):
     }
 
 
-# Provisioning is an INTERNAL-admin action; gated by the internal realm.
+# Provisioning is an INTERNAL-admin action; gated by the internal admin realm.
 @router.post("/admin/users")
-async def provision_portal_user(payload: PortalUserCreate):
+async def provision_portal_user(payload: PortalUserCreate, _admin: dict = Depends(require_admin)):
     """
-    Create a portal login for a party. NOTE: this is invoked by internal admin
-    tooling; it deliberately lives under /portal/admin and should be fronted by
-    the internal require_admin dependency at the gateway. Kept dependency-light
-    here so the portal module stays self-contained.
+    Create a portal login for a party. This is an internal-admin action: it
+    requires a logged-in internal admin (require_admin), NOT a portal token —
+    otherwise anyone could self-provision a portal login for any party_id and
+    read that party's invoices/statements.
     """
     email = payload.email.lower().strip()
     if await db.portal_users.find_one({"email": email}):
