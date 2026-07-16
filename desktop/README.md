@@ -1,4 +1,4 @@
-# Gravity One ERP — Desktop App
+﻿# Ormodex ERP — Desktop App
 
 Real native installers for **Windows (`.exe`), macOS (`.dmg`) and Linux (`.AppImage`/`.deb`)**.
 
@@ -27,7 +27,7 @@ First match wins:
 1. `GRAVITYONE_BACKEND_URL` environment variable
 2. A URL the user saved via **File → ERP Server…** (stored in userData/config.json)
 3. `DEFAULT_BACKEND_URL` in [`main.js`](main.js) — **set this to your production API
-   host before releasing** (default `https://api.gravityone.com`)
+   host before releasing** (default `https://api.ormodex.com`)
 
 The frontend reads it through `window.__GRAVITYONE_BACKEND_URL__`, wired up in
 `frontend/src/lib/api.js` and `portalApi.js`.
@@ -40,8 +40,8 @@ npm install
 npm i -D sharp png-to-ico   # icon tooling (once)
 node scripts/gen-icons.js   # creates icon.png + icon.ico
 
-npm run dist:win    # → release/GravityOne-ERP-Setup-<v>.exe
-npm run dist:linux  # → release/GravityOne-ERP-<v>.AppImage + .deb
+npm run dist:win    # → release/Ormodex-ERP-Setup-<v>.exe
+npm run dist:linux  # → release/Ormodex-ERP-<v>.AppImage + .deb
 npm run dist:mac    # macOS ONLY — .dmg can't be built on Windows/Linux
 ```
 
@@ -68,9 +68,9 @@ so they start working the moment a release is published — no website redeploy 
 Each release uploads **two copies** of every installer:
 
 - a **versioned** file for humans browsing the release
-  (`GravityOne-ERP-Setup-2.4.0.exe`)
+  (`Ormodex-ERP-Setup-2.4.0.exe`)
 - a **version-less alias** the website links to
-  (`GravityOne-ERP-Setup.exe`, `GravityOne-ERP.dmg`, `GravityOne-ERP.AppImage`)
+  (`Ormodex-ERP-Setup.exe`, `Ormodex-ERP.dmg`, `Ormodex-ERP.AppImage`)
 
 Because the website uses the stable aliases, the download links keep working
 across releases even if `desktop/package.json` `version` and

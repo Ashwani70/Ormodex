@@ -4,6 +4,14 @@
 .idea/
 .vscode/
 
+# Claude Code tool-managed local state (skill vendoring, local settings)
+.claude/
+.agents/
+
+# Locally-stored uploads (company logos, product images) when no object store
+# is configured. User data — must never be committed.
+backend/uploads/
+
 # Dependencies
 node_modules/
 /node_modules
@@ -41,6 +49,9 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 dump.rdb
+server_*.log
+server_*.log.err
+frontend_run*.log*
 
 # System files
 .DS_Store

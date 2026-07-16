@@ -1,11 +1,11 @@
-{
-  "name": "gravityone-desktop",
-  "productName": "Gravity One ERP",
+﻿{
+  "name": "ormodex-desktop",
+  "productName": "Ormodex ERP",
   "version": "2.4.0",
-  "description": "Gravity One ERP desktop app — Windows, macOS & Linux.",
+  "description": "Ormodex ERP desktop app — Windows, macOS & Linux.",
   "author": {
-    "name": "Gravity One",
-    "email": "support@gravityone.com"
+    "name": "Ormodex",
+    "email": "support@ormodex.com"
   },
   "license": "UNLICENSED",
   "private": true,
@@ -27,9 +27,9 @@
     "electron-builder": "^24.13.3"
   },
   "build": {
-    "appId": "com.gravityone.erp",
-    "productName": "Gravity One ERP",
-    "copyright": "Copyright © 2026 Gravity One",
+    "appId": "com.ormodex.erp",
+    "productName": "Ormodex ERP",
+    "copyright": "Copyright © 2026 Ormodex",
     "directories": {
       "output": "release",
       "buildResources": "build-resources"
@@ -45,7 +45,7 @@
       {
         "provider": "github",
         "owner": "Ashwani70",
-        "repo": "Gravity-engineering-works-ERP"
+        "repo": "Ormodex-ERP"
       }
     ],
     "win": {
@@ -53,7 +53,7 @@
         { "target": "nsis", "arch": ["x64"] }
       ],
       "icon": "build-resources/icon.ico",
-      "artifactName": "GravityOne-ERP-Setup-${version}.${ext}"
+      "artifactName": "Ormodex-ERP-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -61,7 +61,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Gravity One ERP"
+      "shortcutName": "Ormodex ERP"
     },
     "mac": {
       "target": [
@@ -69,17 +69,17 @@
       ],
       "icon": "build-resources/icon.icns",
       "category": "public.app-category.business",
-      "artifactName": "GravityOne-ERP-${version}-${arch}.${ext}"
+      "artifactName": "Ormodex-ERP-${version}-${arch}.${ext}"
     },
     "dmg": {
-      "title": "Gravity One ERP ${version}"
+      "title": "Ormodex ERP ${version}"
     },
     "linux": {
       "target": ["AppImage", "deb"],
       "icon": "build-resources/icon.png",
       "category": "Office",
-      "maintainer": "Gravity One <support@gravityone.com>",
-      "artifactName": "GravityOne-ERP-${version}.${ext}"
+      "maintainer": "Ormodex <support@ormodex.com>",
+      "artifactName": "Ormodex-ERP-${version}.${ext}"
     }
   }
 }

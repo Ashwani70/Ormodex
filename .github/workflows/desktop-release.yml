@@ -1,6 +1,6 @@
-name: Desktop Release
+﻿name: Desktop Release
 
-# Builds the Gravity One ERP desktop installers for Windows, macOS and Linux and
+# Builds the Ormodex ERP desktop installers for Windows, macOS and Linux and
 # uploads them to a GitHub Release. Trigger by pushing a tag like `v2.4.0`, or run
 # manually from the Actions tab (workflow_dispatch) for a dry run.
 
@@ -77,10 +77,10 @@ jobs:
         run: |
           shopt -s nullglob
           declare -A STABLE=(
-            [exe]="GravityOne-ERP-Setup.exe"
-            [dmg]="GravityOne-ERP.dmg"
-            [AppImage]="GravityOne-ERP.AppImage"
-            [deb]="GravityOne-ERP.deb"
+            [exe]="Ormodex-ERP-Setup.exe"
+            [dmg]="Ormodex-ERP.dmg"
+            [AppImage]="Ormodex-ERP.AppImage"
+            [deb]="Ormodex-ERP.deb"
           )
           for ext in exe AppImage deb; do
             for f in *."$ext"; do

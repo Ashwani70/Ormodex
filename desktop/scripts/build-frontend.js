@@ -1,4 +1,4 @@
-// Builds the CRA frontend for desktop use and copies it into desktop/app/.
+﻿// Builds the CRA frontend for desktop use and copies it into desktop/app/.
 //
 // Key differences from a web build:
 //   • PUBLIC_URL="." so asset URLs are relative and work under file://
@@ -56,8 +56,8 @@ const ENV_SNIPPET = `
       // On the web (no bridge) this is a no-op and REACT_APP_BACKEND_URL wins.
       window.__GRAVITYONE_BOOTSTRAP__ = async function () {
         try {
-          if (window.gravityone && window.gravityone.getConfig) {
-            var cfg = await window.gravityone.getConfig();
+          if (window.ormodex && window.ormodex.getConfig) {
+            var cfg = await window.ormodex.getConfig();
             if (cfg && cfg.backendUrl) window.__GRAVITYONE_BACKEND_URL__ = cfg.backendUrl;
           }
         } catch (e) { /* ignore — fall back to default */ }

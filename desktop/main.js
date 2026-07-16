@@ -1,4 +1,4 @@
-// Gravity One ERP — Electron main process.
+﻿// Ormodex ERP — Electron main process.
 //
 // This is a THIN CLIENT: it ships the built React UI locally and calls your hosted
 // backend over HTTPS. The backend/database is NOT bundled — set the server URL once
@@ -21,7 +21,7 @@ const buildMenu = require("./menu");
 // ⚠ PLACEHOLDER — the production backend is not deployed yet. Replace this with
 // your real API host before cutting a public release. Until then, end-users can
 // point the app at any server via File → ERP Server… (or the env var above).
-const DEFAULT_BACKEND_URL = "https://api.gravityone.com";
+const DEFAULT_BACKEND_URL = "https://api.ormodex.com";
 
 const CONFIG_PATH = () => path.join(app.getPath("userData"), "config.json");
 
@@ -56,7 +56,7 @@ function createWindow() {
     minHeight: 680,
     backgroundColor: "#070912",
     show: false,
-    title: "Gravity One ERP",
+    title: "Ormodex ERP",
     icon: path.join(__dirname, "build-resources", iconForPlatform()),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -109,7 +109,7 @@ async function promptForServer() {
   const { response } = await dialog.showMessageBox(mainWindow, {
     type: "question",
     title: "ERP Server",
-    message: "Where is your Gravity One ERP server?",
+    message: "Where is your Ormodex ERP server?",
     detail: `Current: ${current}\n\nEnter a new server URL to connect this device to a different backend. The app will reload.`,
     buttons: ["Keep current", "Change…"],
     defaultId: 0,
@@ -147,10 +147,10 @@ function textPrompt(initial) {
         <input id="u" value="${initial}" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #334;background:#070912;color:#fff;font-size:14px"/>
         <div style="margin-top:16px;text-align:right">
           <button onclick="window.close()" style="padding:8px 14px;margin-right:8px;border-radius:8px;border:1px solid #334;background:transparent;color:#cbd5e1;cursor:pointer">Cancel</button>
-          <button onclick="window.gravityone.submitServer(document.getElementById('u').value)" style="padding:8px 14px;border-radius:8px;border:0;background:#6366f1;color:#fff;cursor:pointer">Save</button>
+          <button onclick="window.ormodex.submitServer(document.getElementById('u').value)" style="padding:8px 14px;border-radius:8px;border:0;background:#6366f1;color:#fff;cursor:pointer">Save</button>
         </div>
         <script>document.getElementById('u').focus();document.getElementById('u').select();
-        document.getElementById('u').addEventListener('keydown',e=>{if(e.key==='Enter')window.gravityone.submitServer(e.target.value)});</script>
+        document.getElementById('u').addEventListener('keydown',e=>{if(e.key==='Enter')window.ormodex.submitServer(e.target.value)});</script>
       </body>`)}`;
     ipcMain.once("server:submit", (_e, value) => {
       resolve(value);

@@ -1,4 +1,4 @@
-// Headless smoke test: boots the real Electron main process, loads the bundled
+﻿// Headless smoke test: boots the real Electron main process, loads the bundled
 // app/ under file://, and asserts the renderer initialised with the runtime
 // backend URL from the preload bridge. Exits non-zero on failure.
 //
@@ -7,7 +7,7 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 
-const EXPECTED = process.env.GRAVITYONE_BACKEND_URL || "https://api.gravityone.com";
+const EXPECTED = process.env.GRAVITYONE_BACKEND_URL || "https://api.ormodex.com";
 
 app.whenReady().then(async () => {
   // Mirror the production config IPC so the injected bootstrap can resolve.

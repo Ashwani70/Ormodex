@@ -5,11 +5,16 @@
   "scripts": {
     "install:frontend": "npm install --prefix frontend --legacy-peer-deps",
     "install:backend": "cd backend && python -m venv venv && .\\venv\\Scripts\\activate && pip install -r requirements.txt",
+    "install:marketing": "npm install --prefix marketing --legacy-peer-deps",
     "start:frontend": "npm start --prefix frontend",
-    "start:backend": "cd backend && .\\venv\\Scripts\\activate && uvicorn server:app --reload",
-    "install:all": "npm run install:frontend && npm run install:backend",
-    "start:all": "npx -y concurrently \"npm run start:frontend\" \"npm run start:backend\"",
+    "start:backend": "cd backend && .\\venv\\Scripts\\activate && uvicorn server:app --reload --port 8001",
+    "start:marketing": "npm run dev --prefix marketing",
+    "install:all": "npm run install:frontend && npm run install:backend && npm run install:marketing",
+    "start:all": "npx -y concurrently \"npm run start:frontend\" \"npm run start:backend\" \"npm run start:marketing\"",
     "start": "npm run start:all"
+  },
+  "dependencies": {
+    "@supabase/server": "^1.2.0",
+    "openai": "^6.45.0"
   }
 }
-

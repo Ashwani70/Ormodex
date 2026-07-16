@@ -1,4 +1,4 @@
-// Native application menu. Keeps standard edit/view/window roles and adds a
+﻿// Native application menu. Keeps standard edit/view/window roles and adds a
 // "Server" item so users can repoint the app at a different ERP backend.
 const { app, Menu, shell } = require("electron");
 
@@ -33,8 +33,8 @@ module.exports = function buildMenu({ onChangeServer }) {
     {
       role: "help",
       submenu: [
-        { label: "Documentation", click: () => shell.openExternal("https://gravityone.com/docs") },
-        { label: "Contact Support", click: () => shell.openExternal("https://gravityone.com/contact") },
+        { label: "Documentation", click: () => shell.openExternal("https://ormodex.com/docs") },
+        { label: "Contact Support", click: () => shell.openExternal("https://ormodex.com/contact") },
         { type: "separator" },
         { label: `Version ${app.getVersion()}`, enabled: false },
       ],
