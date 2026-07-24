@@ -172,12 +172,25 @@ async def update_voucher(voucher_id: str, data: VoucherUpdate, user=Depends(get_
 
 
 @router.delete("/{voucher_id}")
-async def cancel_voucher(voucher_id: str, user=Depends(require_admin)):
+async def delete_or_cancel_voucher(voucher_id: str, user=Depends(require_admin)):
+    """DRAFT vouchers (never posted a journal entry — see _auto_create_journal)
+    are hard-deleted; anything already APPROVED has real accounting-ledger
+    side effects, so it's cancelled in place instead (never hard-deleted —
+    would silently orphan its journal_entries row). Returns which action
+    actually happened so the caller can be honest about it rather than
+    always saying "deleted" for what might just be a status flip."""
     v = await db.vouchers.find_one({"id": voucher_id})
     if not v:
         raise HTTPException(404, "Not found")
+    if v.get("status") == "CANCELLED":
+        raise HTTPException(400, "Voucher is already cancelled")
 
     old_values = await db.vouchers.find_one({"id": voucher_id}, {"_id": 0})
+
+    if v.get("status") == "DRAFT" and not v.get("journal_entry_id"):
+        await db.vouchers.delete_one({"id": voucher_id})
+        await log_audit("DELETE", "vouchers", voucher_id, user, old_values=old_values)
+        return {"ok": True, "action": "deleted"}
 
     await db.vouchers.update_one(
         {"id": voucher_id},
@@ -187,7 +200,7 @@ async def cancel_voucher(voucher_id: str, user=Depends(require_admin)):
     new_values = await db.vouchers.find_one({"id": voucher_id}, {"_id": 0})
     await log_audit("DELETE", "vouchers", voucher_id, user, old_values=old_values, new_values=new_values)
 
-    return {"ok": True}
+    return {"ok": True, "action": "cancelled"}
 
 
 async def _auto_create_journal(voucher: dict, user: dict):

@@ -9,10 +9,16 @@
 //   2. A value the user saved in-app (userData/config.json)
 //   3. DEFAULT_BACKEND_URL below (baked default for your production server)
 
-const { app, BrowserWindow, shell, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, dialog, ipcMain, Notification } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const https = require("https");
+const http = require("http");
 const buildMenu = require("./menu");
+const log = require("./logger");
+const { setupAutoUpdate, checkForUpdatesNow } = require("./updater");
+
+const isDev = !app.isPackaged;
 
 // ── Configuration ────────────────────────────────────────────────────
 // Change this to your production API host before cutting a release, or override
@@ -45,10 +51,63 @@ function backendUrl() {
   return (fromEnv || fromCfg || DEFAULT_BACKEND_URL).replace(/\/$/, "");
 }
 
+// Reachability probe used by the offline splash screen — a plain HTTPS/HTTP
+// request rather than pulling a fetch polyfill into the main process.
+function pingBackend(url, timeoutMs = 6000) {
+  return new Promise((resolve) => {
+    let target;
+    try {
+      target = new URL(`${url}/api/health`);
+    } catch {
+      resolve(false);
+      return;
+    }
+    const lib = target.protocol === "http:" ? http : https;
+    const req = lib.request(
+      { hostname: target.hostname, port: target.port, path: target.pathname, method: "GET", timeout: timeoutMs },
+      (res) => {
+        resolve(res.statusCode < 500);
+        res.resume();
+      }
+    );
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+    req.on("error", () => resolve(false));
+    req.end();
+  });
+}
+
 // ── Window ───────────────────────────────────────────────────────────
 let mainWindow = null;
+let splashWindow = null;
 
-function createWindow() {
+function iconForPlatform() {
+  if (process.platform === "win32") return "icon.ico";
+  if (process.platform === "darwin") return "icon.icns";
+  return "icon.png";
+}
+
+function createSplash() {
+  splashWindow = new BrowserWindow({
+    width: 420,
+    height: 320,
+    frame: false,
+    resizable: false,
+    movable: false,
+    backgroundColor: "#070912",
+    show: true,
+    icon: path.join(__dirname, "build-resources", iconForPlatform()),
+    webPreferences: {
+      preload: path.join(__dirname, "splash-preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  splashWindow.loadFile(path.join(__dirname, "splash.html"));
+  return splashWindow;
+}
+
+function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -63,6 +122,9 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Native devtools are a real risk on a production business app (token/data
+      // inspection, arbitrary IPC probing). Only ever enabled in dev builds.
+      devTools: isDev,
     },
   });
 
@@ -70,7 +132,13 @@ function createWindow() {
   // (loaded before the bundle) tells the React app which backend to call.
   mainWindow.loadFile(path.join(__dirname, "app", "index.html"));
 
-  mainWindow.once("ready-to-show", () => mainWindow.show());
+  mainWindow.once("ready-to-show", () => {
+    // Launch maximized (professional "fills the screen" feel) rather than a
+    // forced OS-level kiosk fullscreen, which would hide window controls.
+    mainWindow.maximize();
+    mainWindow.show();
+    if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
+  });
 
   // Open external links (docs, marketing site, mailto) in the user's browser,
   // never inside the app window.
@@ -90,17 +158,40 @@ function createWindow() {
     }
   });
 
+  // Belt-and-suspenders devtools lock: also block the shortcuts, in case a
+  // packaging misconfiguration ever left devTools:true in a release build.
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (isDev) return;
+    const key = (input.key || "").toUpperCase();
+    const blocked =
+      key === "F12" ||
+      (input.control && input.shift && (key === "I" || key === "J" || key === "C")) ||
+      (input.meta && input.alt && key === "I");
+    if (blocked) event.preventDefault();
+  });
+
+  mainWindow.webContents.on("render-process-gone", (_e, details) => {
+    log.error("Renderer process crashed", details);
+    dialog.showErrorBox(
+      "Ormodex ERP crashed",
+      `The application view stopped responding (${details.reason}). It will restart.\n\nA diagnostic log has been saved.`
+    );
+    createMainWindow();
+  });
+
+  mainWindow.on("unresponsive", () => log.warn("Renderer became unresponsive"));
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
 
-  buildMenu({ onChangeServer: promptForServer, getBackendUrl: backendUrl });
-}
+  buildMenu({
+    onChangeServer: promptForServer,
+    getBackendUrl: backendUrl,
+    onCheckForUpdates: () => checkForUpdatesNow(log),
+  });
 
-function iconForPlatform() {
-  if (process.platform === "win32") return "icon.ico";
-  if (process.platform === "darwin") return "icon.icns";
-  return "icon.png";
+  setupAutoUpdate(mainWindow, log);
 }
 
 // ── In-app server configuration ──────────────────────────────────────
@@ -117,7 +208,6 @@ async function promptForServer() {
   });
   if (response !== 1) return;
 
-  // Electron has no native text-input dialog; use a tiny prompt window.
   const input = await textPrompt(current);
   if (input && /^https?:\/\//.test(input)) {
     writeConfig({ backendUrl: input.replace(/\/$/, "") });
@@ -165,7 +255,64 @@ function textPrompt(initial) {
 ipcMain.handle("config:get", () => ({
   backendUrl: backendUrl(),
   version: app.getVersion(),
+  platform: process.platform,
 }));
+
+// ── Native notifications (renderer asks main to show an OS-level toast) ──
+ipcMain.handle("notify:show", (_e, { title, body, silent } = {}) => {
+  if (!Notification.isSupported()) return false;
+  new Notification({
+    title: title || "Ormodex ERP",
+    body: body || "",
+    silent: !!silent,
+    icon: path.join(__dirname, "build-resources", "icon.png"),
+  }).show();
+  return true;
+});
+
+// ── Native print (current view, or an in-memory PDF export) ──
+ipcMain.handle("print:current", (_e, options = {}) =>
+  new Promise((resolve) => {
+    if (!mainWindow) return resolve(false);
+    mainWindow.webContents.print({ silent: false, printBackground: true, ...options }, (ok) => resolve(ok));
+  })
+);
+
+ipcMain.handle("print:toPdf", async (_e, options = {}) => {
+  if (!mainWindow) return null;
+  const data = await mainWindow.webContents.printToPDF({ printBackground: true, ...options });
+  return data.toString("base64");
+});
+
+// ── File save (download) — renderer hands over bytes, main shows a native Save dialog ──
+ipcMain.handle("file:save", async (_e, { suggestedName, base64 } = {}) => {
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: suggestedName || "download",
+  });
+  if (canceled || !filePath) return { saved: false };
+  fs.writeFileSync(filePath, Buffer.from(base64, "base64"));
+  shell.showItemInFolder(filePath);
+  return { saved: true, filePath };
+});
+
+// ── File open (upload) — native file picker, returns path + base64 content ──
+ipcMain.handle("file:open", async (_e, options = {}) => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openFile"],
+    filters: options.filters,
+  });
+  if (canceled || !filePaths.length) return null;
+  const filePath = filePaths[0];
+  const buf = fs.readFileSync(filePath);
+  return { name: path.basename(filePath), path: filePath, base64: buf.toString("base64") };
+});
+
+// Renderer console/runtime errors forwarded to the main-process log file.
+ipcMain.on("log:error", (_e, payload) => log.error("Renderer error", payload));
+
+// Splash-time connectivity probe, callable again from inside the app (e.g. a
+// "Retry connection" button on an in-page offline banner).
+ipcMain.handle("net:checkBackend", async () => pingBackend(backendUrl()));
 
 // ── App lifecycle ────────────────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock();
@@ -179,13 +326,27 @@ if (!gotLock) {
     }
   });
 
-  app.whenReady().then(createWindow);
+  app.whenReady().then(async () => {
+    log.info(`Ormodex ERP starting — v${app.getVersion()} (${process.platform})`);
+    createSplash();
+    const online = await pingBackend(backendUrl());
+    if (splashWindow && !splashWindow.isDestroyed()) {
+      splashWindow.webContents.send("splash:status", online ? "online" : "offline");
+    }
+    // Give the splash a brief, deliberate beat so the online/offline state is
+    // readable instead of flickering past, then proceed regardless — the app
+    // itself also has an in-page offline banner once loaded.
+    setTimeout(createMainWindow, online ? 400 : 1400);
+  });
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
   });
 }
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
+
+process.on("uncaughtException", (err) => log.error("uncaughtException", { message: err.message, stack: err.stack }));
+process.on("unhandledRejection", (err) => log.error("unhandledRejection", { message: String(err) }));

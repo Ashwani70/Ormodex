@@ -21,6 +21,7 @@ import SearchableSelect from "@/components/SearchableSelect";
 import BulkDeleteBar, { SelectCheckbox } from "@/components/BulkDeleteBar";
 import useBulkSelect from "@/hooks/useBulkSelect";
 import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
 import { Plus, Search, Pencil, Trash2, QrCode, AlertTriangle, RefreshCw, CheckCircle, Calendar, Eye } from "lucide-react";
 
 const TABS = [
@@ -357,21 +358,32 @@ export default function Products() {
   };
 
   // Keyboard shortcuts (active while the product form is open):
-  //   Alt+C  → add a new category   ·   Ctrl/Cmd+S → save the product
+  //   Alt+C → add a new category (still a bare page-level shortcut — it has
+  //   no natural field to anchor a data-quick-create host to, unlike
+  //   ItemSearch/PartySearch's inline quick-create).
   useEffect(() => {
     if (!open) return;
     const onKey = (e) => {
       if (e.altKey && (e.key === "c" || e.key === "C")) {
         e.preventDefault();
         openCatModal();
-      } else if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
-        e.preventDefault();
-        if (!catModal) submit(e);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, catModal, form]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Enter-as-Tab data entry (see useEnterNavigation): Enter/Tab moves through
+  // the product form field-by-field, Ctrl+Enter/Ctrl+S/Alt+S saves, Escape
+  // cancels. Disabled while the category quick-add modal is open on top so
+  // its own Enter/Escape aren't swallowed by this form's listener underneath.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: open && !catModal,
+    autoFocus: true,
+    onSave: () => submit(new Event("submit", { cancelable: true })),
+    onCancel: () => setOpen(false),
+  });
 
   const onDelete = async (item) => {
     if (!window.confirm(`Delete ${item.name}?`)) return;
@@ -954,7 +966,7 @@ export default function Products() {
           </>
         }
       >
-        <form onSubmit={submit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <form ref={formRef} onSubmit={submit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Field label="Product Name" required hint={editingId ? undefined : "Start typing to reuse an existing product's details"}>
             <div className="relative" ref={nameBoxRef}>
               <Input
@@ -1031,6 +1043,26 @@ export default function Products() {
                 </option>
               ))}
             </Select>
+          </Field>
+          {!editingId && (
+            <Field label="Opening Quantity" hint="Posted as an OPENING stock movement — sets the starting stock-on-hand for this product">
+              <Input
+                type="text"
+                inputMode="decimal"
+                data-testid="form-opening-quantity"
+                value={form.quantity}
+                onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+              />
+            </Field>
+          )}
+          <Field label="Cost Price" hint={!editingId ? "Values the opening quantity above (FIFO/LIFO/Weighted-Avg costing)" : undefined}>
+            <Input
+              type="text"
+              inputMode="decimal"
+              data-testid="form-cost-price"
+              value={form.cost_price}
+              onChange={(e) => setForm({ ...form, cost_price: e.target.value })}
+            />
           </Field>
 
           <div className="md:col-span-2">

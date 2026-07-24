@@ -1,8 +1,10 @@
-﻿// Native application menu. Keeps standard edit/view/window roles and adds a
-// "Server" item so users can repoint the app at a different ERP backend.
-const { app, Menu, shell } = require("electron");
+﻿// Native application menu. Keeps standard edit/view/window roles and adds
+// "Server" + "Check for Updates" + "Print" so users can repoint the app at a
+// different ERP backend, manually trigger an update check, or print the
+// current screen without leaving the keyboard.
+const { app, Menu, shell, BrowserWindow } = require("electron");
 
-module.exports = function buildMenu({ onChangeServer }) {
+module.exports = function buildMenu({ onChangeServer, onCheckForUpdates }) {
   const isMac = process.platform === "darwin";
 
   const template = [
@@ -11,6 +13,12 @@ module.exports = function buildMenu({ onChangeServer }) {
       label: "File",
       submenu: [
         { label: "ERP Server…", click: () => onChangeServer && onChangeServer() },
+        { type: "separator" },
+        {
+          label: "Print…",
+          accelerator: "CmdOrCtrl+P",
+          click: (_item, win) => (win || BrowserWindow.getFocusedWindow())?.webContents.print({ printBackground: true }),
+        },
         { type: "separator" },
         isMac ? { role: "close" } : { role: "quit" },
       ],
@@ -33,6 +41,11 @@ module.exports = function buildMenu({ onChangeServer }) {
     {
       role: "help",
       submenu: [
+        {
+          label: "Check for Updates…",
+          click: () => onCheckForUpdates && onCheckForUpdates(),
+        },
+        { type: "separator" },
         { label: "Documentation", click: () => shell.openExternal("https://ormodex.com/docs") },
         { label: "Contact Support", click: () => shell.openExternal("https://ormodex.com/contact") },
         { type: "separator" },

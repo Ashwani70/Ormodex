@@ -122,7 +122,7 @@ VoucherParentType = Literal[
     "Payment", "Receipt", "Contra", "Journal",
     "Sales", "Purchase", "Credit Note", "Debit Note",
     "Stock Journal", "Physical Stock", "Delivery Note", "Receipt Note",
-    "Sales Order", "Purchase Order", "Quotation",
+    "Sales Order", "Purchase Order", "Quotation", "Job Work",
     "Memorandum", "Reversing Journal", "Payroll", "Attendance",
 ]
 

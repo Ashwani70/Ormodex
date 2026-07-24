@@ -7,7 +7,7 @@ import { ArrowRight, ShieldCheck, Mail, ArrowLeft, CheckCircle2, Eye, EyeOff, Lo
 import { Input, Field, PrimaryButton } from "@/components/ui-kit";
 import Logo, { BRAND } from "@/components/Logo";
 
-const HERO = "/login_hero.png";
+const HERO = "/login_hero.webp"; // WebP re-encode of the original ~827KB PNG (~127KB) — see docs/BUILD_GUIDE.md
 const CAPTCHA_AFTER_FAILURES = 5;
 
 export default function Login() {

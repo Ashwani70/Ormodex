@@ -7,6 +7,8 @@ import {
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
 import OfflineBanner from "@/components/OfflineBanner";
+import BulkDeleteBar, { SelectCheckbox } from "@/components/BulkDeleteBar";
+import useBulkSelect from "@/hooks/useBulkSelect";
 import useOnline from "@/hooks/useOnline";
 import useTrackingFlags from "@/hooks/useTrackingFlags";
 import { missingTrackingFields } from "@/lib/tracking";
@@ -15,7 +17,7 @@ import useEnterNavigation from "@/hooks/useEnterNavigation";
 import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import {
   Plus, X, PenLine, Package, PackageCheck, FileText, Truck, ScanLine,
-  FileSpreadsheet, ClipboardCheck, Info, ShieldCheck, Save, Eye, Printer,
+  FileSpreadsheet, ClipboardCheck, Info, ShieldCheck, Save, Eye, Printer, Trash2,
 } from "lucide-react";
 
 const UOM_OPTIONS = ["pcs", "nos", "kg", "g", "mg", "l", "ml", "m", "cm", "mm", "ft", "inch", "box", "pair", "set", "bag", "roll", "sheet", "mtr", "sqft", "sqm", "hr", "day"];
@@ -49,6 +51,7 @@ export default function GRNs() {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(blank());
   const { flagsFor, ensureFlags } = useTrackingFlags();
+  const sel = useBulkSelect(grns);
 
   const load = async () => {
     const [it, gd, vd, po, gr] = await Promise.all([
@@ -186,6 +189,29 @@ export default function GRNs() {
 
   const openNew = () => { setForm(blank()); setOpen(true); };
 
+  const deleteOne = async (grn) => {
+    if (!window.confirm(`Delete GRN ${grn.grn_number || grn.id}? This reverses its stock receipt.`)) return;
+    try {
+      await api.delete(`/purchase/v2/grns/${grn.id}`);
+      toast.success(`${grn.grn_number || "GRN"} deleted`);
+      sel.clear();
+      load();
+    } catch (err) {
+      console.error("GRN delete failure:", err);
+      toast.error(formatApiErrorDetail(null, err));
+    }
+  };
+
+  const bulkDelete = async () => {
+    const { ok, failed, firstError } = await sel.runDelete((id) => api.delete(`/purchase/v2/grns/${id}`), { reload: load });
+    if (failed) {
+      if (firstError) console.error("GRN bulk delete failure:", firstError);
+      toast.error(`Deleted ${ok}, failed ${failed} — ${formatApiErrorDetail(null, firstError)}`);
+    } else {
+      toast.success(`Deleted ${ok} GRN${ok === 1 ? "" : "s"}`);
+    }
+  };
+
   // Enter-as-Tab data entry engine (see useEnterNavigation): Enter moves to
   // the next field anywhere in this form (General Information fields, falling
   // through to the grid's own Enter handling inside the line-item table),
@@ -250,25 +276,50 @@ export default function GRNs() {
           <table className="w-full text-sm text-left">
             <thead className="bg-muted text-muted-foreground">
               <tr className="border-b border-border label-overline">
+                <th className="px-3 py-2.5 w-10">
+                  <SelectCheckbox checked={sel.allSelected} indeterminate={sel.someSelected} onChange={sel.toggleAll} label="Select all GRNs" />
+                </th>
                 <th className="px-3 py-2.5">GRN Number</th>
                 <th className="px-3 py-2.5">Date</th>
                 <th className="px-3 py-2.5">Vendor</th>
                 <th className="px-3 py-2.5 text-right">Lines</th>
+                <th className="px-3 py-2.5 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
               {grns.map((g) => (
                 <tr key={g.id} data-testid={`grn-row-${g.id}`} className="border-b border-border hover:bg-muted/40 text-foreground">
+                  <td className="px-3 py-2.5">
+                    <SelectCheckbox checked={sel.isSelected(g.id)} onChange={() => sel.toggle(g.id)} label={`Select ${g.grn_number || g.id}`} />
+                  </td>
                   <td className="px-3 py-2.5 text-foreground font-semibold">{g.grn_number || "—"}</td>
                   <td className="px-3 py-2.5 text-muted-foreground">{g.received_date || (g.created_at ? new Date(g.created_at).toLocaleDateString("en-IN") : "—")}</td>
                   <td className="px-3 py-2.5 text-muted-foreground">{g.vendor_name || "—"}</td>
                   <td className="px-3 py-2.5 text-right text-muted-foreground">{(g.lines || []).length}</td>
+                  <td className="px-3 py-2.5 text-right">
+                    <button
+                      onClick={() => deleteOne(g)}
+                      title="Delete GRN"
+                      className="text-muted-foreground hover:text-destructive"
+                    >
+                      <Trash2 className="w-4 h-4 inline" />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
+
+      <BulkDeleteBar
+        count={sel.count}
+        deleting={sel.deleting}
+        onClear={sel.clear}
+        onDelete={bulkDelete}
+        noun="GRN"
+        nounPlural="GRNs"
+      />
 
       <Modal
         open={open}

@@ -5,7 +5,8 @@ These guard the builders added alongside the sales templates:
     recomputes subtotal/GST/total from the lines.
   * build_doc_pdf() renders PURCHASE INVOICE / DEBIT NOTE / CREDIT NOTE with a
     switchable party label.
-  * build_jobwork_pdf() renders a money-free challan.
+  * job work challans render through the shared build_document_pdf template
+    (rate/HSN/GST/taxable/amount columns), same as every other doc type.
   * build_bank_statement_pdf() renders a ledger and carries a running balance.
 
 Like test_pdf_rupee_font, text-layer assertions skip when pypdf is unavailable
@@ -137,38 +138,50 @@ def test_credit_note_fixed_schema_renders_customer_side():
 
 
 # --- job work challan -------------------------------------------------------
+# Rendered through the same shared build_document_pdf template as Purchase
+# Orders, so rate/HSN/GST/taxable/amount all show — the ITC-04 valuation data
+# was always computed and stored on the challan, just never displayed.
 
 def _challan():
     return {
         "challan_number": "JWC-11", "date": "2026-06-15", "job_worker_name": "Sharma Fab",
-        "nature": "inputs", "status": "PENDING",
+        "nature": "inputs", "status": "PENDING", "is_inter_state": False,
         "items": [
-            {"product_name": "Casting blank A", "sku": "CB-A", "quantity": 120, "unit": "pcs"},
-            {"product_name": "Shaft rod", "sku": "SR-9", "quantity": 40, "unit": "pcs"},
+            {"product_name": "Casting blank A", "sku": "CB-A", "quantity": 120, "unit": "pcs",
+             "rate": 250, "taxable_value": 30000, "gst_rate": 18, "hsn_code": "7326"},
+            {"product_name": "Shaft rod", "sku": "SR-9", "quantity": 40, "unit": "pcs",
+             "rate": 100, "taxable_value": 4000, "gst_rate": 18, "hsn_code": "7326"},
         ],
         "notes": "Return after machining.",
     }
 
 
+def _jw_party():
+    return {"name": "Sharma Fab", "gstin": "27SHARM1234F1Z1", "address": "MIDC Pune"}
+
+
 def test_jobwork_builds():
-    assert _is_pdf(pdfmod.build_jobwork_pdf(_challan()))
+    doc = _challan()
+    assert _is_pdf(pdfmod.build_document_pdf(doc_type="JOB WORK CHALLAN", doc_number="JWC-11", doc=doc,
+                                              party=_jw_party(), party_role="SUPPLIER"))
 
 
-def test_jobwork_text_layer_has_no_money_and_section_143():
-    text = _pdf_text(pdfmod.build_jobwork_pdf(_challan()))
+def test_jobwork_text_layer_has_rate_and_section_143():
+    doc = _challan()
+    text = _pdf_text(pdfmod.build_document_pdf(doc_type="JOB WORK CHALLAN", doc_number="JWC-11", doc=doc,
+                                                party=_jw_party(), party_role="SUPPLIER"))
     if text is None:
         pytest.skip("pypdf not installed; cannot inspect PDF text layer")
     assert "JOB WORK CHALLAN" in text
     assert "Sharma Fab" in text
     assert "Casting blank A" in text
-    assert "Section 143" in text  # the non-supply / no-GST disclaimer
-    # money columns must not appear on a job-work challan
-    assert "RATE" not in text
-    assert "AMOUNT" not in text
+    assert "RATE" in text
+    assert "AMOUNT" in text
 
 
 def test_jobwork_handles_empty_items():
-    assert _is_pdf(pdfmod.build_jobwork_pdf({"challan_number": "JWC-0", "items": []}))
+    doc = {"challan_number": "JWC-0", "items": []}
+    assert _is_pdf(pdfmod.build_document_pdf(doc_type="JOB WORK CHALLAN", doc_number="JWC-0", doc=doc))
 
 
 # --- bank statement ---------------------------------------------------------

@@ -280,6 +280,10 @@ class StockTransaction(Base):
     # source_doc_id (an opaque row id) — populated alongside doc_type going
     # forward; historical rows fall back to parsing it out of `reason`.
     voucher_no = _text()
+    # doc_type alone can't distinguish e.g. a v2 GRN from a plain PO direct
+    # receive (both "PURCHASE") — needed so the drill-down knows which page to
+    # open. See migration 026 / project-stocklog-grn-route-mislabel.md.
+    source_doc_type = _text()
 
 
 class StockTransfer(Base):
@@ -838,6 +842,9 @@ class Attendance(Base):
         Index("ix_attendance_tenant_id", "tenant_id"),
         Index("ix_attendance_tenant_employee", "tenant_id", "employee_id"),
         Index("ix_attendance_tenant_date", "tenant_id", "attendance_date"),
+        # One row per (employee, period) for the monthly payroll aggregate —
+        # partial index would be ideal but plain columns keep this portable.
+        Index("ix_attendance_employee_period", "employee_id", "period"),
     )
     from sqlalchemy.orm import synonym
     id = _pk(); tenant_id = _text(); employee_id = _text()
@@ -845,16 +852,136 @@ class Attendance(Base):
     attendance_date = synonym("date")
     status = _text(); in_time = _ts(); out_time = _ts(); shift_id = _text()
     notes = _text(); created_at = _ts(); updated_at = _ts()
+    # Daily fields written by routers/hr_attendance.py's manual/QR/bulk/webhook
+    # flows and core/biometric_sync.py's derivation — were previously silently
+    # dropped on every write (no matching column, no extra/data catch-all).
+    check_in = _text(); check_out = _text()
+    working_hours = _num(); overtime_hours = _num()
+    source = _text()  # "manual" | "qr" | "biometric" | "self"
+    late = _bool(); early_leave = _bool(); missing_punch = _bool()
+    remarks = _text()
+    # Monthly payroll-aggregate fields (core.biometric_sync.aggregate_monthly_paid_days).
+    # A period-aggregate row has date=NULL and period="MMYYYY"; a daily row has
+    # date set and period=NULL — the two never collide on a date-range filter
+    # since SQL NULL comparisons never match a $gte/$lte range.
+    period = _text(); paid_days = _num(); total_days = _int()
 
 
 class AttendanceLog(Base):
+    """Raw punch log — one row per device punch, before dedup/derivation into
+    the daily `attendance` summary. `dedup_key` (device_id + raw device punch
+    id, or device_id + employee_code + log_time when the device has no punch
+    id) makes re-ingesting the same punch a no-op instead of a duplicate row."""
     __tablename__ = "attendance_logs"
     __table_args__ = (
         Index("ix_attendance_logs_tenant_id", "tenant_id"),
         Index("ix_attendance_logs_tenant_employee", "tenant_id", "employee_id"),
+        Index("ix_attendance_logs_tenant_device", "tenant_id", "device_id"),
+        Index("ix_attendance_logs_tenant_time", "tenant_id", "log_time"),
+        Index("ix_attendance_logs_dedup_key", "dedup_key", unique=True),
     )
     id = _pk(); tenant_id = _text(); employee_id = _text(); log_time = _ts()
     direction = _text(); device_id = _text(); created_at = _ts()
+    employee_code = _text()  # as reported by the device, kept even if mapping is later changed
+    dedup_key = _text()
+    sync_run_id = _text()  # which AttendanceSyncRun ingested this punch (NULL for direct webhook pushes)
+    source = _text()  # "webhook" | "poll"
+    raw_payload = _jsonb()  # device's original punch record, for troubleshooting
+    processed = _bool(False)  # True once folded into the daily attendance summary
+    processed_at = _ts()
+
+
+class BiometricDevice(Base):
+    """A registered eSSL (or compatible ADMS/push) biometric device/terminal."""
+    __tablename__ = "biometric_devices"
+    __table_args__ = (
+        Index("ix_biometric_devices_tenant_id", "tenant_id"),
+        Index("ix_biometric_devices_tenant_branch", "tenant_id", "branch_id"),
+    )
+    id = _pk(); tenant_id = _text(); name = _text(); serial_number = _text()
+    branch_id = _text()  # nullable; hr_branches.id
+    device_model = _text()  # e.g. "eSSL X990", "eSSL BioTime"
+    integration_mode = _text()  # "push" | "poll"
+    host = _text(); port = _int(4370); api_path = _text()  # poll-mode connection details
+    push_secret = _text()  # HMAC secret for verifying this device's inbound webhook pushes
+    poll_interval_seconds = _int(300)
+    is_active = _bool(True)
+    last_sync_at = _ts(); last_sync_status = _text()  # "success" | "partial" | "failed"
+    last_seen_at = _ts()  # last time we received ANY punch or successful poll — device health signal
+    notes = _text()
+    is_deleted = _bool(); deleted_at = _ts(); created_at = _ts(); updated_at = _ts()
+
+
+class EmployeeDeviceMapping(Base):
+    """Maps a device's own enrollment id for a person to our employee_id —
+    devices identify punches by their own numeric user id, not employee_code."""
+    __tablename__ = "employee_device_mappings"
+    __table_args__ = (
+        Index("ix_emp_device_map_tenant_id", "tenant_id"),
+        Index("ix_emp_device_map_tenant_device", "tenant_id", "device_id"),
+        Index("ix_emp_device_map_tenant_employee", "tenant_id", "employee_id"),
+        Index("ix_emp_device_map_device_enrollment", "device_id", "device_enrollment_id", unique=True),
+    )
+    id = _pk(); tenant_id = _text(); device_id = _text(); employee_id = _text()
+    device_enrollment_id = _text()  # the device's own user/enrollment number
+    is_active = _bool(True)
+    created_at = _ts(); updated_at = _ts()
+
+
+class AttendanceSyncRun(Base):
+    """One row per sync attempt (manual or scheduled) against one device —
+    the sync history / audit trail."""
+    __tablename__ = "attendance_sync_runs"
+    __table_args__ = (
+        Index("ix_att_sync_runs_tenant_id", "tenant_id"),
+        Index("ix_att_sync_runs_tenant_device", "tenant_id", "device_id"),
+        Index("ix_att_sync_runs_status", "tenant_id", "status"),
+    )
+    id = _pk(); tenant_id = _text(); device_id = _text()
+    trigger = _text()  # "manual" | "scheduled" | "webhook"
+    status = _text()  # "running" | "success" | "partial" | "failed"
+    started_at = _ts(); finished_at = _ts()
+    punches_fetched = _int(0); punches_new = _int(0); punches_duplicate = _int(0)
+    error_message = _text()
+    attempt = _int(1)
+    next_attempt_at = _ts()  # set when status=failed and a retry is scheduled
+    triggered_by = _text()  # user id, or "system" for scheduled runs
+    created_at = _ts()
+
+
+class AttendanceRule(Base):
+    """Per-tenant (optionally per-shift) late/early/OT/missing-punch rules
+    used to derive attendance status from raw punches."""
+    __tablename__ = "attendance_rules"
+    __table_args__ = (Index("ix_attendance_rules_tenant_id", "tenant_id"),)
+    id = _pk(); tenant_id = _text(); shift_id = _text()  # NULL = tenant-wide default
+    late_grace_minutes = _int(10)
+    early_leave_grace_minutes = _int(10)
+    half_day_threshold_hours = _num()  # worked hours below this -> HALF_DAY
+    full_day_threshold_hours = _num()  # worked hours at/above this -> PRESENT
+    overtime_after_hours = _num()  # hours beyond this on a working day count as OT
+    missing_punch_action = _text()  # "flag" | "absent" | "ignore"
+    is_active = _bool(True)
+    created_at = _ts(); updated_at = _ts()
+
+
+class AttendanceCorrection(Base):
+    """Employee/HR-requested change to a derived attendance day, gated by
+    HR/admin approval. Approving one re-runs derive_daily_attendance's rule
+    logic against the corrected check-in/check-out rather than hand-editing
+    the attendance row, so late/OT/paid_days recompute consistently."""
+    __tablename__ = "attendance_corrections"
+    __table_args__ = (
+        Index("ix_att_corrections_tenant_id", "tenant_id"),
+        Index("ix_att_corrections_tenant_employee", "tenant_id", "employee_id"),
+        Index("ix_att_corrections_status", "tenant_id", "status"),
+    )
+    id = _pk(); tenant_id = _text(); employee_id = _text(); attendance_date = _text()
+    requested_check_in = _text(); requested_check_out = _text(); requested_status = _text()
+    reason = _text(); status = _text()  # "PENDING" | "APPROVED" | "REJECTED"
+    requested_by = _text(); requested_at = _ts()
+    decided_by = _text(); decided_at = _ts(); rejection_reason = _text()
+    created_at = _ts(); updated_at = _ts()
 
 
 class Leave(Base):
@@ -893,6 +1020,17 @@ class Shift(Base):
     id = _pk(); tenant_id = _text(); name = _text(); start_time = _text()
     end_time = _text(); grace_minutes = _int(0); is_deleted = _bool(); deleted_at = _ts()
     created_at = _ts(); updated_at = _ts()
+    # core/hr_models.py's Shift Pydantic model has declared these since before
+    # this ORM class existed, but they had no matching column and Shift has no
+    # extra/data catch-all — every create/update of a shift silently dropped
+    # weekly_off_days/late_grace_min/full_day_hours/half_day_hours, so
+    # routers/hr_attendance.py's late-detection always fell back to its
+    # hardcoded defaults regardless of what was configured.
+    weekly_off_days = _jsonb()  # list[int], 0=Sun..6=Sat
+    late_grace_min = _int(10)
+    full_day_hours = _num()
+    half_day_hours = _num()
+    crosses_midnight = _bool(False)  # night shift whose end_time is on the following calendar day
 
 
 # ── payroll ────────────────────────────────────────────────────────────────────
@@ -1230,6 +1368,7 @@ class JobWorkChallan(Base):
     contact_person = _text(); driver_name = _text(); lr_number = _text()
     eway_bill_number = _text(); process_name = _text(); instructions = _text()
     prepared_by = _text(); checked_by = _text()
+    attachments = _jsonb()  # [{id, name, path, size, content_type, uploaded_at}]
 
 
 class JobWorkChallanItem(Base):
@@ -1260,6 +1399,7 @@ class JobWorkReceipt(Base):
     notes = _text()
     status = _text()
     created_at = _ts(); updated_at = _ts()
+    attachments = _jsonb()  # [{id, name, path, size, content_type, uploaded_at}]
 
 
 class JobWorkReceiptItem(Base):

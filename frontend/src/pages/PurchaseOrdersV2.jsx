@@ -3,13 +3,14 @@ import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import {
   PageHeader, PrimaryButton, SecondaryButton, Input, Field, Select, EmptyState,
-  FormSection, SummaryCard, Badge, NumericInput,
+  FormSection, CollapsibleFormSection, SummaryCard, Badge, NumericInput,
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
 import OfflineBanner from "@/components/OfflineBanner";
 import ItemSearch from "@/components/ItemSearch";
 import useOnline from "@/hooks/useOnline";
 import usePdfAction from "@/hooks/usePdfAction";
+import useAccordionState from "@/hooks/useAccordionState";
 import BulkDeleteBar, { SelectCheckbox } from "@/components/BulkDeleteBar";
 import useBulkSelect from "@/hooks/useBulkSelect";
 import useGridKeyNav from "@/hooks/useGridKeyNav";
@@ -18,7 +19,12 @@ import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import {
   Plus, X, Download, Pencil, Trash2, Lock, PenLine, Package,
   TrendingDown, TrendingUp, Boxes, ShoppingCart, FileText, ImageOff, MapPin,
+  ChevronsUpDown,
 } from "lucide-react";
+
+// Which sections start open — Basic Info expanded by default per spec; Line
+// Items is a plain (non-collapsible) FormSection so it's always visible.
+const PO_SECTION_DEFAULTS = { numbering: true, details: true };
 
 const inr = (n) => Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const qtyFmt = (n) => Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
@@ -71,6 +77,9 @@ export default function PurchaseOrdersV2() {
   const [stockMap, setStockMap] = useState({});
   // Most-recently-selected product → drives the right-rail Inventory/Product cards
   const [activeProductId, setActiveProductId] = useState("");
+  // Which form sections are expanded — persisted so a section left open stays
+  // open next time this form is used ("remember last expanded state").
+  const acc = useAccordionState("po-form-sections", PO_SECTION_DEFAULTS);
 
   const isReceived = (po) =>
     (po.lines || []).some((l) => parseFloat(l.received_qty) > 0) ||
@@ -526,6 +535,11 @@ export default function PurchaseOrdersV2() {
         <form ref={formRef} id="po-form" onSubmit={submit} className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
           <div className="flex min-w-0 flex-col gap-6">
 
+            <div className="flex justify-end gap-2 -mb-2">
+              <SecondaryButton icon={ChevronsUpDown} className="h-8 px-2.5 text-xs" onClick={acc.expandAll}>Expand All</SecondaryButton>
+              <SecondaryButton icon={ChevronsUpDown} className="h-8 px-2.5 text-xs" onClick={acc.collapseAll}>Collapse All</SecondaryButton>
+            </div>
+
             {/* ── PO numbering (logic preserved verbatim) ─────────────── */}
             {(() => {
               const locked = editingId ? isNumberLocked(editingPo) : false;
@@ -535,7 +549,10 @@ export default function PurchaseOrdersV2() {
               const showReason = editingId && numberEditable &&
                 (form.po_number || "") !== (editingPo?.po_number || "");
               return (
-                <FormSection title="PO Numbering" icon={FileText} grid={false}>
+                <CollapsibleFormSection
+                  title="PO Numbering" icon={FileText} grid={false}
+                  open={acc.isOpen("numbering")} onOpenChange={() => acc.toggle("numbering")}
+                >
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
                     <Field label="PO Number" required={!editingId && numbering?.mode === "MANUAL"}>
                       <div className="relative">
@@ -588,12 +605,15 @@ export default function PurchaseOrdersV2() {
                       </div>
                     </div>
                   )}
-                </FormSection>
+                </CollapsibleFormSection>
               );
             })()}
 
             {/* ── Purchase Order Details (4-col) ──────────────────────── */}
-            <FormSection title="Purchase Order Details" icon={FileText} cols={4}>
+            <CollapsibleFormSection
+              title="Purchase Order Details" icon={FileText} cols={4}
+              open={acc.isOpen("details")} onOpenChange={() => acc.toggle("details")}
+            >
               <Field label="Vendor" required>
                 <Select required value={form.vendor_id} data-testid="po-vendor"
                   onChange={(e) => setForm({ ...form, vendor_id: e.target.value })}>
@@ -638,7 +658,7 @@ export default function PurchaseOrdersV2() {
               <Field label="Delivery Address" hint="Not stored yet — needs an API field.">
                 <Input placeholder="Ship-to address" disabled />
               </Field>
-            </FormSection>
+            </CollapsibleFormSection>
 
             {/* ── Line items ──────────────────────────────────────────── */}
             <FormSection
@@ -656,35 +676,35 @@ export default function PurchaseOrdersV2() {
               }
             >
               <div className="overflow-x-auto rounded-lg border border-border">
-                <table data-grid-managed className="w-full text-left text-xs" style={{ minWidth: "1280px" }}>
+                <table data-grid-managed className="w-full text-left text-xs table-fixed" style={{ minWidth: "1180px" }}>
                   <colgroup>
-                    <col style={{ width: "44px" }} />
-                    <col style={{ width: "260px" }} />
-                    <col style={{ width: "180px" }} />
-                    <col style={{ width: "110px" }} />
-                    <col style={{ width: "120px" }} />
-                    <col style={{ width: "100px" }} />
+                    <col style={{ width: "32px" }} />
+                    <col style={{ width: "210px" }} />
+                    <col style={{ width: "130px" }} />
+                    <col style={{ width: "76px" }} />
+                    <col style={{ width: "76px" }} />
+                    <col style={{ width: "76px" }} />
+                    <col style={{ width: "64px" }} />
+                    <col style={{ width: "84px" }} />
+                    <col style={{ width: "70px" }} />
+                    <col style={{ width: "150px" }} />
                     <col style={{ width: "90px" }} />
-                    <col style={{ width: "110px" }} />
-                    <col style={{ width: "100px" }} />
-                    <col style={{ width: "200px" }} />
-                    <col style={{ width: "120px" }} />
-                    <col style={{ width: "56px" }} />
+                    <col style={{ width: "36px" }} />
                   </colgroup>
                   <thead className="sticky top-0 z-10">
                     <tr className="border-b border-border bg-muted text-muted-foreground">
-                      <th className="px-2 py-2.5 text-center font-semibold">#</th>
-                      <th className="px-2 py-2.5 font-semibold">Product</th>
-                      <th className="px-2 py-2.5 font-semibold">Description</th>
-                      <th className="px-2 py-2.5 font-semibold">HSN/SAC</th>
-                      <th className="px-2 py-2.5 text-right font-semibold">Available</th>
-                      <th className="px-2 py-2.5 text-right font-semibold">Ordered Qty</th>
-                      <th className="px-2 py-2.5 font-semibold">Unit</th>
-                      <th className="px-2 py-2.5 text-right font-semibold">Rate</th>
-                      <th className="px-2 py-2.5 text-right font-semibold">Discount</th>
-                      <th className="px-2 py-2.5 font-semibold">GST</th>
-                      <th className="px-2 py-2.5 text-right font-semibold">Amount</th>
-                      <th className="px-2 py-2.5 text-center font-semibold">Action</th>
+                      <th className="px-1.5 py-2.5 text-center font-semibold">#</th>
+                      <th className="px-1.5 py-2.5 font-semibold">Product</th>
+                      <th className="px-1.5 py-2.5 font-semibold">Description</th>
+                      <th className="px-1.5 py-2.5 font-semibold">HSN/SAC</th>
+                      <th className="px-1.5 py-2.5 text-right font-semibold">Available</th>
+                      <th className="px-1.5 py-2.5 text-right font-semibold">Ordered</th>
+                      <th className="px-1.5 py-2.5 font-semibold">Unit</th>
+                      <th className="px-1.5 py-2.5 text-right font-semibold">Rate</th>
+                      <th className="px-1.5 py-2.5 text-right font-semibold">Disc.</th>
+                      <th className="px-1.5 py-2.5 font-semibold">GST</th>
+                      <th className="px-1.5 py-2.5 text-right font-semibold">Amount</th>
+                      <th className="px-1.5 py-2.5 text-center font-semibold">Del</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -692,25 +712,25 @@ export default function PurchaseOrdersV2() {
                       const s = lineStock(l);
                       return (
                         <tr key={idx} className="border-b border-border align-top hover:bg-muted/30">
-                          <td className="px-2 py-2 text-center align-middle text-muted-foreground">{idx + 1}</td>
-                          <td className="px-2 py-2">
-                            <div className="flex items-start gap-1.5">
+                          <td className="px-1.5 py-1.5 text-center align-middle text-muted-foreground">{idx + 1}</td>
+                          <td className="px-1.5 py-1.5">
+                            <div className="flex items-start gap-1">
                               <button
                                 type="button"
                                 title={l._manual ? "Switch to catalog product" : "Enter product manually"}
                                 onClick={() => toggleLineManual(idx)}
-                                className={`mt-px flex h-10 w-9 flex-shrink-0 items-center justify-center rounded-lg border transition-colors ${l._manual ? "border-[var(--warning)] text-[var(--warning)]" : "border-border text-muted-foreground hover:border-primary hover:text-primary"}`}
+                                className={`mt-px flex h-9 w-8 flex-shrink-0 items-center justify-center rounded-lg border transition-colors ${l._manual ? "border-[var(--warning)] text-[var(--warning)]" : "border-border text-muted-foreground hover:border-primary hover:text-primary"}`}
                               >
-                                {l._manual ? <PenLine className="h-4 w-4" /> : <Package className="h-4 w-4" />}
+                                {l._manual ? <PenLine className="h-3.5 w-3.5" /> : <Package className="h-3.5 w-3.5" />}
                               </button>
                               {l._manual ? (
                                 <Input
-                                  placeholder="Product name (manual)"
+                                  placeholder="Product name"
                                   value={l.product_name}
                                   onChange={(e) => setLine(idx, { product_name: e.target.value })}
                                   ref={gridNav.registerCell(idx, 0)}
                                   onKeyDown={gridNav.handleKeyDown(idx, 0)}
-                                  className="h-10"
+                                  className="h-9 px-2"
                                 />
                               ) : (
                                 <div className="flex-1 min-w-0">
@@ -726,48 +746,48 @@ export default function PurchaseOrdersV2() {
                               )}
                             </div>
                           </td>
-                          <td className="px-2 py-2">
+                          <td className="px-1.5 py-1.5">
                             <Input placeholder="Description" value={l.description || ""}
                               onChange={(e) => setLine(idx, { description: e.target.value })}
                               ref={gridNav.registerCell(idx, 1)} onKeyDown={gridNav.handleKeyDown(idx, 1)}
-                              className="h-10" />
+                              className="h-9 px-2" />
                           </td>
-                          <td className="px-2 py-2">
-                            <Input placeholder="e.g. 7308" value={l.hsn_code || ""}
+                          <td className="px-1.5 py-1.5">
+                            <Input placeholder="7308" value={l.hsn_code || ""}
                               onChange={(e) => setLine(idx, { hsn_code: e.target.value })}
                               ref={gridNav.registerCell(idx, 2)} onKeyDown={gridNav.handleKeyDown(idx, 2)}
-                              className="h-10" />
+                              className="h-9 px-2" />
                           </td>
-                          <td className="px-2 py-2 text-right align-middle tabular">
+                          <td className="px-1.5 py-1.5 text-right align-middle tabular">
                             {s ? (
                               <span className={s.closing_qty > 0 ? "text-[var(--success)] font-medium" : "text-[var(--danger)] font-medium"}>
                                 {qtyFmt(s.closing_qty)}
                               </span>
                             ) : <span className="text-muted-foreground">—</span>}
                           </td>
-                          <td className="px-2 py-2">
+                          <td className="px-1.5 py-1.5">
                             <NumericInput compact value={l.qty} onChange={(v) => setLine(idx, { qty: v })} placeholder="0"
                               ref={gridNav.registerCell(idx, 3)} onKeyDown={gridNav.handleKeyDown(idx, 3)}
-                              className="h-10 w-full" />
+                              className="h-9 w-full" />
                           </td>
-                          <td className="px-2 py-2">
+                          <td className="px-1.5 py-1.5">
                             <Select value={l.unit || "pcs"} onChange={(e) => setLine(idx, { unit: e.target.value })}
                               ref={gridNav.registerCell(idx, 4)} onKeyDown={gridNav.handleKeyDown(idx, 4)}
-                              className="h-10">
+                              className="h-9 px-1.5">
                               {UOM_OPTIONS.map((u) => <option key={u} value={u}>{uomLabel(u)}</option>)}
                             </Select>
                           </td>
-                          <td className="px-2 py-2">
+                          <td className="px-1.5 py-1.5">
                             <NumericInput compact value={l.rate} onChange={(v) => setLine(idx, { rate: v })} placeholder="0.00"
                               ref={gridNav.registerCell(idx, 5)} onKeyDown={gridNav.handleKeyDown(idx, 5)}
-                              className="h-10 w-full" />
+                              className="h-9 w-full" />
                           </td>
-                          <td className="px-2 py-2">
-                            <NumericInput compact value="" disabled placeholder="0" className="h-10 w-full" />
+                          <td className="px-1.5 py-1.5">
+                            <NumericInput compact value="" disabled placeholder="0" className="h-9 w-full" />
                           </td>
-                          <td className="px-2 py-2">
+                          <td className="px-1.5 py-1.5">
                             {/* GST type + rate — logic preserved */}
-                            <div className="space-y-1.5">
+                            <div className="space-y-1">
                               <div className="flex flex-wrap gap-1">
                                 {["GST", "CGST+SGST", "IGST"].map((label) => {
                                   const key = label === "CGST+SGST" ? "CGST_SGST" : label;
@@ -777,7 +797,7 @@ export default function PurchaseOrdersV2() {
                                       key={key}
                                       type="button"
                                       onClick={() => setGstType(idx, key)}
-                                      className={`rounded-md border px-1.5 py-0.5 text-[10px] font-medium transition-colors ${active ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:border-primary hover:text-primary"}`}
+                                      className={`rounded-md border px-1 py-0.5 text-[9px] font-medium leading-tight transition-colors ${active ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:border-primary hover:text-primary"}`}
                                     >
                                       {label}
                                     </button>
@@ -786,29 +806,29 @@ export default function PurchaseOrdersV2() {
                               </div>
                               {l._gst_type === "GST" && (
                                 <NumericInput compact value={l.gst_rate} onChange={(v) => setLine(idx, { gst_rate: v })} placeholder="18" max={100} aria-label="GST %"
-                                  ref={gridNav.registerCell(idx, 6)} onKeyDown={gridNav.handleKeyDown(idx, 6)} className="h-9 w-full" />
+                                  ref={gridNav.registerCell(idx, 6)} onKeyDown={gridNav.handleKeyDown(idx, 6)} className="h-8 w-full" />
                               )}
                               {l._gst_type === "CGST_SGST" && (
                                 <div className="flex gap-1">
                                   <NumericInput compact value={l._cgst} onChange={(v) => { const n = parseFloat(v) || 0; setLine(idx, { _cgst: v, gst_rate: n + (parseFloat(l._sgst) || 0) }); }} placeholder="9" max={100} aria-label="CGST %"
-                                    ref={gridNav.registerCell(idx, 6)} onKeyDown={gridNav.handleKeyDown(idx, 6)} className="h-9 w-1/2" />
+                                    ref={gridNav.registerCell(idx, 6)} onKeyDown={gridNav.handleKeyDown(idx, 6)} className="h-8 w-1/2" />
                                   <NumericInput compact value={l._sgst} onChange={(v) => { const n = parseFloat(v) || 0; setLine(idx, { _sgst: v, gst_rate: (parseFloat(l._cgst) || 0) + n }); }} placeholder="9" max={100} aria-label="SGST %"
-                                    ref={gridNav.registerCell(idx, 7)} onKeyDown={gridNav.handleKeyDown(idx, 7)} className="h-9 w-1/2" />
+                                    ref={gridNav.registerCell(idx, 7)} onKeyDown={gridNav.handleKeyDown(idx, 7)} className="h-8 w-1/2" />
                                 </div>
                               )}
                               {l._gst_type === "IGST" && (
                                 <NumericInput compact value={l._igst} onChange={(v) => { setLine(idx, { _igst: v, gst_rate: v }); }} placeholder="18" max={100} aria-label="IGST %"
-                                  ref={gridNav.registerCell(idx, 6)} onKeyDown={gridNav.handleKeyDown(idx, 6)} className="h-9 w-full" />
+                                  ref={gridNav.registerCell(idx, 6)} onKeyDown={gridNav.handleKeyDown(idx, 6)} className="h-8 w-full" />
                               )}
                             </div>
                           </td>
-                          <td className="px-2 py-2 text-right align-middle tabular font-semibold text-foreground">
+                          <td className="px-1.5 py-1.5 text-right align-middle tabular font-semibold text-foreground">
                             ₹{inr(lineTotal(l))}
                           </td>
-                          <td className="px-2 py-2 text-center align-middle">
+                          <td className="px-1 py-1.5 text-center align-middle">
                             <button type="button" onClick={() => removeLine(idx)} aria-label="Remove line"
-                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-[var(--danger)] hover:bg-[#FEE2E2] hover:text-[var(--danger)] mx-auto">
-                              <X className="h-4 w-4" />
+                              className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-[var(--danger)] hover:bg-[#FEE2E2] hover:text-[var(--danger)] mx-auto">
+                              <X className="h-3.5 w-3.5" />
                             </button>
                           </td>
                         </tr>

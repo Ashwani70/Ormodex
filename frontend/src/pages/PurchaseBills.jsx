@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import {
   PageHeader, PrimaryButton, SecondaryButton, Input, Field, Select, EmptyState,
-  FormSection, SummaryCard, Badge, NumericInput,
+  FormSection, CollapsibleFormSection, SummaryCard, Badge, NumericInput,
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
 import OfflineBanner from "@/components/OfflineBanner";
@@ -11,6 +11,7 @@ import ItemSearch from "@/components/ItemSearch";
 import PartySearch from "@/components/PartySearch";
 import useOnline from "@/hooks/useOnline";
 import usePdfAction from "@/hooks/usePdfAction";
+import useAccordionState from "@/hooks/useAccordionState";
 import { useAuth } from "@/context/AuthContext";
 import { isAdminRole } from "@/lib/navItems";
 import BulkDeleteBar, { SelectCheckbox } from "@/components/BulkDeleteBar";
@@ -21,7 +22,13 @@ import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import {
   Plus, X, Download, Pencil, Trash2, Receipt, Package, FileText,
   Building2, CreditCard, Printer, Mail, MessageCircle, FileSpreadsheet,
+  ChevronsUpDown,
 } from "lucide-react";
+
+// Vendor + Bill Details start open (Basic Info equivalent); 3-Way Match
+// starts closed (situational — only relevant once GRNs exist for the
+// vendor); Line Items is a plain (non-collapsible) FormSection, always visible.
+const BILL_SECTION_DEFAULTS = { vendor: true, details: true, grnMatch: false };
 
 const inr = (n) => Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const qtyFmt = (n) => Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
@@ -86,6 +93,9 @@ export default function PurchaseBills() {
   const [form, setForm] = useState(blank());
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
+  // Which form sections are expanded — persisted so a section left open stays
+  // open next time this form is used ("remember last expanded state").
+  const acc = useAccordionState("bill-form-sections", BILL_SECTION_DEFAULTS);
 
   const canDeleteBill = (b) => isAdmin && (b.payment_received || 0) <= 0;
   const deletableBills = bills.filter(canDeleteBill);
@@ -168,6 +178,7 @@ export default function PurchaseBills() {
       item_name: it?.name || "",
       hsn_code: it?.hsn_code || "",
       unit: it?.unit || it?.uom || "pcs",
+      rate: it?.cost_price != null ? Number(it.cost_price) : "",
       gst_rate: it?.gst_rate ?? 18,
       _cgst: (it?.gst_rate ?? 18) / 2,
       _sgst: (it?.gst_rate ?? 18) / 2,
@@ -177,6 +188,53 @@ export default function PurchaseBills() {
 
   const toggleGrn = (id) =>
     setForm((f) => ({ ...f, grn_ids: f.grn_ids.includes(id) ? f.grn_ids.filter((g) => g !== id) : [...f.grn_ids, id] }));
+
+  // Auto-fetch line items (product, HSN, qty, rate, GST) from the selected PO
+  // so the user doesn't have to retype what was already agreed with the vendor.
+  // Only overwrites lines when the form is still blank/untouched — if the user
+  // has already started keying in items, ask before clobbering their work.
+  const applyPoLines = (po) => {
+    if (!po?.lines?.length) return;
+    const mapped = po.lines.map((l) => {
+      const gst = l.gst_rate ?? 18;
+      const gstType = l.gst_type || "GST";
+      const productId = l.product_id || l.stock_item_id || "";
+      const product = productId ? items.find((i) => i.id === productId) : null;
+      return {
+        product_id: productId,
+        item_name: l.item_name || l.product_name || product?.name || "",
+        hsn_code: l.hsn_code || product?.hsn_code || "",
+        unit: l.unit || "pcs",
+        qty: l.qty || "",
+        rate: l.rate || "",
+        discount: "",
+        gst_rate: gst,
+        _gst_type: gstType,
+        _cgst: gstType === "CGST_SGST" ? (l.cgst_rate ?? gst / 2) : gst / 2,
+        _sgst: gstType === "CGST_SGST" ? (l.sgst_rate ?? gst / 2) : gst / 2,
+        _igst: gstType === "IGST" ? (l.igst_rate ?? gst) : gst,
+      };
+    });
+    setForm((f) => ({ ...f, lines: mapped }));
+    toast.success(`Fetched ${mapped.length} line${mapped.length === 1 ? "" : "s"} from PO ${po.po_number}`);
+  };
+
+  const isLinesBlank = (lines) =>
+    lines.every((l) => !l.product_id && !l.item_name && !parseFloat(l.qty) && !parseFloat(l.rate));
+
+  const onPickPurchaseOrder = (poId) => {
+    if (!poId) {
+      setForm((f) => ({ ...f, purchase_order_id: "" }));
+      return;
+    }
+    const po = orders.find((p) => p.id === poId);
+    if (!po) return;
+    if (!isLinesBlank(form.lines)) {
+      if (!window.confirm("Replace current line items with this PO's items?")) return;
+    }
+    setForm((f) => ({ ...f, purchase_order_id: poId, vendor_id: f.vendor_id || po.vendor_id || f.vendor_id }));
+    applyPoLines(po);
+  };
 
   // Totals
   const subtotal = form.lines.reduce((s, l) => s + lineTaxable(l), 0);
@@ -503,8 +561,16 @@ export default function PurchaseBills() {
         <form ref={formRef} id="bill-form" onSubmit={submit} className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
           <div className="flex min-w-0 flex-col gap-6">
 
+            <div className="flex justify-end gap-2 -mb-2">
+              <SecondaryButton icon={ChevronsUpDown} className="h-8 px-2.5 text-xs" onClick={acc.expandAll}>Expand All</SecondaryButton>
+              <SecondaryButton icon={ChevronsUpDown} className="h-8 px-2.5 text-xs" onClick={acc.collapseAll}>Collapse All</SecondaryButton>
+            </div>
+
             {/* ── Vendor Info ─────────────────────────────────────────── */}
-            <FormSection title="Vendor" icon={Building2} cols={4}>
+            <CollapsibleFormSection
+              title="Vendor" icon={Building2} cols={4}
+              open={acc.isOpen("vendor")} onOpenChange={() => acc.toggle("vendor")}
+            >
               <Field label="Vendor" required>
                 <PartySearch
                   parties={vendors}
@@ -533,10 +599,13 @@ export default function PurchaseBills() {
                   <Field label="Contact"><Input placeholder="Auto-filled from vendor" disabled /></Field>
                 </>
               )}
-            </FormSection>
+            </CollapsibleFormSection>
 
             {/* ── Bill Details ─────────────────────────────────────────── */}
-            <FormSection title="Bill Details" icon={FileText} cols={4}>
+            <CollapsibleFormSection
+              title="Bill Details" icon={FileText} cols={4}
+              open={acc.isOpen("details")} onOpenChange={() => acc.toggle("details")}
+            >
               <Field label="Vendor Invoice No." required>
                 <Input required value={form.vendor_invoice_no} data-testid="bill-invno"
                   onChange={(e) => setForm({ ...form, vendor_invoice_no: e.target.value })} />
@@ -547,7 +616,7 @@ export default function PurchaseBills() {
               </Field>
               <Field label="Link Purchase Order">
                 <Select value={form.purchase_order_id}
-                  onChange={(e) => setForm({ ...form, purchase_order_id: e.target.value })}>
+                  onChange={(e) => onPickPurchaseOrder(e.target.value)}>
                   <option value="">— None —</option>
                   {orders.filter((p) => !form.vendor_id || p.vendor_id === form.vendor_id)
                     .map((p) => <option key={p.id} value={p.id}>{p.po_number}</option>)}
@@ -580,10 +649,13 @@ export default function PurchaseBills() {
                 <Input value={form.notes} placeholder="Short note"
                   onChange={(e) => setForm({ ...form, notes: e.target.value })} />
               </Field>
-            </FormSection>
+            </CollapsibleFormSection>
 
             {/* ── Link GRNs ─────────────────────────────────────────────── */}
-            <FormSection title="3-Way Match — Link GRNs" icon={Package} grid={false}>
+            <CollapsibleFormSection
+              title="3-Way Match — Link GRNs" icon={Package} grid={false}
+              open={acc.isOpen("grnMatch")} onOpenChange={() => acc.toggle("grnMatch")}
+            >
               <div className="border border-border bg-background p-3 max-h-28 overflow-y-auto rounded-lg flex flex-wrap gap-3">
                 {vendorGrns.length === 0
                   ? <span className="text-xs text-muted-foreground">No GRNs for this vendor yet</span>
@@ -595,7 +667,7 @@ export default function PurchaseBills() {
                     </label>
                   ))}
               </div>
-            </FormSection>
+            </CollapsibleFormSection>
 
             {/* ── Line Items ────────────────────────────────────────────── */}
             <FormSection
@@ -607,42 +679,42 @@ export default function PurchaseBills() {
               }
             >
               <div className="overflow-x-auto rounded-lg border border-border">
-                <table data-grid-managed className="w-full text-left text-xs" style={{ minWidth: "1400px" }}>
+                <table data-grid-managed className="w-full text-left text-xs table-fixed" style={{ minWidth: "1080px" }}>
                   <colgroup>
-                    <col style={{ width: "40px" }} />
-                    <col style={{ width: "260px" }} />
-                    <col style={{ width: "100px" }} />
+                    <col style={{ width: "32px" }} />
+                    <col style={{ width: "220px" }} />
+                    <col style={{ width: "76px" }} />
+                    <col style={{ width: "64px" }} />
+                    <col style={{ width: "60px" }} />
                     <col style={{ width: "80px" }} />
-                    <col style={{ width: "70px" }} />
-                    <col style={{ width: "100px" }} />
-                    <col style={{ width: "80px" }} />
-                    <col style={{ width: "100px" }} />
-                    <col style={{ width: "210px" }} />
-                    <col style={{ width: "110px" }} />
-                    <col style={{ width: "110px" }} />
-                    <col style={{ width: "44px" }} />
+                    <col style={{ width: "60px" }} />
+                    <col style={{ width: "84px" }} />
+                    <col style={{ width: "150px" }} />
+                    <col style={{ width: "84px" }} />
+                    <col style={{ width: "90px" }} />
+                    <col style={{ width: "36px" }} />
                   </colgroup>
                   <thead className="sticky top-0 z-10">
                     <tr className="border-b border-border bg-muted text-muted-foreground">
-                      <th className="px-2 py-2.5 text-center font-semibold">#</th>
-                      <th className="px-2 py-2.5 font-semibold">Product</th>
-                      <th className="px-2 py-2.5 font-semibold">HSN/SAC</th>
-                      <th className="px-2 py-2.5 text-right font-semibold">Qty</th>
-                      <th className="px-2 py-2.5 font-semibold">Unit</th>
-                      <th className="px-2 py-2.5 text-right font-semibold">Rate ₹</th>
-                      <th className="px-2 py-2.5 text-right font-semibold">Disc %</th>
-                      <th className="px-2 py-2.5 text-right font-semibold">Taxable</th>
-                      <th className="px-2 py-2.5 font-semibold">GST</th>
-                      <th className="px-2 py-2.5 text-right font-semibold">GST Amt</th>
-                      <th className="px-2 py-2.5 text-right font-semibold">Total ₹</th>
-                      <th className="px-2 py-2.5 text-center font-semibold">Del</th>
+                      <th className="px-1.5 py-2.5 text-center font-semibold">#</th>
+                      <th className="px-1.5 py-2.5 font-semibold">Product</th>
+                      <th className="px-1.5 py-2.5 font-semibold">HSN/SAC</th>
+                      <th className="px-1.5 py-2.5 text-right font-semibold">Qty</th>
+                      <th className="px-1.5 py-2.5 font-semibold">Unit</th>
+                      <th className="px-1.5 py-2.5 text-right font-semibold">Rate ₹</th>
+                      <th className="px-1.5 py-2.5 text-right font-semibold">Disc %</th>
+                      <th className="px-1.5 py-2.5 text-right font-semibold">Taxable</th>
+                      <th className="px-1.5 py-2.5 font-semibold">GST</th>
+                      <th className="px-1.5 py-2.5 text-right font-semibold">GST Amt</th>
+                      <th className="px-1.5 py-2.5 text-right font-semibold">Total ₹</th>
+                      <th className="px-1.5 py-2.5 text-center font-semibold">Del</th>
                     </tr>
                   </thead>
                   <tbody>
                     {form.lines.map((l, idx) => (
                       <tr key={idx} className="border-b border-border align-top hover:bg-muted/30">
-                        <td className="px-2 py-2 text-center align-middle text-muted-foreground">{idx + 1}</td>
-                        <td className="px-2 py-2">
+                        <td className="px-1.5 py-1.5 text-center align-middle text-muted-foreground">{idx + 1}</td>
+                        <td className="px-1.5 py-1.5">
                           <ItemSearch
                             products={items}
                             value={l.product_id}
@@ -651,33 +723,33 @@ export default function PurchaseBills() {
                             onKeyDown={gridNav.handleKeyDown(idx, 0)}
                           />
                         </td>
-                        <td className="px-2 py-2">
-                          <Input placeholder="e.g. 7308" value={l.hsn_code || ""}
-                            onChange={(e) => setLine(idx, { hsn_code: e.target.value })} className="h-10" />
+                        <td className="px-1.5 py-1.5">
+                          <Input placeholder="7308" value={l.hsn_code || ""}
+                            onChange={(e) => setLine(idx, { hsn_code: e.target.value })} className="h-9 px-2" />
                         </td>
-                        <td className="px-2 py-2">
+                        <td className="px-1.5 py-1.5">
                           <NumericInput compact value={l.qty} onChange={v => setLine(idx, { qty: v })} placeholder="0"
-                            ref={gridNav.registerCell(idx, 1)} onKeyDown={gridNav.handleKeyDown(idx, 1)} className="h-10 w-full" />
+                            ref={gridNav.registerCell(idx, 1)} onKeyDown={gridNav.handleKeyDown(idx, 1)} className="h-9 w-full" />
                         </td>
-                        <td className="px-2 py-2">
+                        <td className="px-1.5 py-1.5">
                           <Select value={l.unit || "pcs"} onChange={(e) => setLine(idx, { unit: e.target.value })}
-                            ref={gridNav.registerCell(idx, 2)} onKeyDown={gridNav.handleKeyDown(idx, 2)} className="h-10">
+                            ref={gridNav.registerCell(idx, 2)} onKeyDown={gridNav.handleKeyDown(idx, 2)} className="h-9 px-1.5">
                             {UOM_OPTIONS.map((u) => <option key={u} value={u}>{uomLabel(u)}</option>)}
                           </Select>
                         </td>
-                        <td className="px-2 py-2">
+                        <td className="px-1.5 py-1.5">
                           <NumericInput compact value={l.rate} onChange={v => setLine(idx, { rate: v })} placeholder="0.00"
-                            ref={gridNav.registerCell(idx, 3)} onKeyDown={gridNav.handleKeyDown(idx, 3)} className="h-10 w-full" />
+                            ref={gridNav.registerCell(idx, 3)} onKeyDown={gridNav.handleKeyDown(idx, 3)} className="h-9 w-full" />
                         </td>
-                        <td className="px-2 py-2">
+                        <td className="px-1.5 py-1.5">
                           <NumericInput compact value={l.discount} onChange={v => setLine(idx, { discount: v })} placeholder="0" max={100}
-                            ref={gridNav.registerCell(idx, 4)} onKeyDown={gridNav.handleKeyDown(idx, 4)} className="h-10 w-full" />
+                            ref={gridNav.registerCell(idx, 4)} onKeyDown={gridNav.handleKeyDown(idx, 4)} className="h-9 w-full" />
                         </td>
-                        <td className="px-2 py-2 text-right align-middle tabular text-muted-foreground">
+                        <td className="px-1.5 py-1.5 text-right align-middle tabular text-muted-foreground">
                           ₹{inr(lineTaxable(l))}
                         </td>
-                        <td className="px-2 py-2">
-                          <div className="space-y-1.5">
+                        <td className="px-1.5 py-1.5">
+                          <div className="space-y-1">
                             <div className="flex flex-wrap gap-1">
                               {["GST", "CGST+SGST", "IGST"].map((label) => {
                                 const key = label === "CGST+SGST" ? "CGST_SGST" : label;
@@ -687,7 +759,7 @@ export default function PurchaseBills() {
                                     key={key}
                                     type="button"
                                     onClick={() => setGstType(idx, key)}
-                                    className={`rounded-md border px-1.5 py-0.5 text-[10px] font-medium transition-colors ${active ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:border-primary hover:text-primary"}`}
+                                    className={`rounded-md border px-1 py-0.5 text-[9px] font-medium leading-tight transition-colors ${active ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:border-primary hover:text-primary"}`}
                                   >
                                     {label}
                                   </button>
@@ -696,32 +768,32 @@ export default function PurchaseBills() {
                             </div>
                             {l._gst_type === "GST" && (
                               <NumericInput compact value={l.gst_rate} onChange={v => setLine(idx, { gst_rate: v })} placeholder="18" max={100} aria-label="GST %"
-                                ref={gridNav.registerCell(idx, 5)} onKeyDown={gridNav.handleKeyDown(idx, 5)} className="h-9 w-full" />
+                                ref={gridNav.registerCell(idx, 5)} onKeyDown={gridNav.handleKeyDown(idx, 5)} className="h-8 w-full" />
                             )}
                             {l._gst_type === "CGST_SGST" && (
                               <div className="flex gap-1">
                                 <NumericInput compact value={l._cgst} onChange={v => { const n = parseFloat(v)||0; setLine(idx, { _cgst: v, gst_rate: n + (parseFloat(l._sgst)||0) }); }} placeholder="9" max={100} aria-label="CGST %"
-                                  ref={gridNav.registerCell(idx, 5)} onKeyDown={gridNav.handleKeyDown(idx, 5)} className="h-9 w-1/2" />
+                                  ref={gridNav.registerCell(idx, 5)} onKeyDown={gridNav.handleKeyDown(idx, 5)} className="h-8 w-1/2" />
                                 <NumericInput compact value={l._sgst} onChange={v => { const n = parseFloat(v)||0; setLine(idx, { _sgst: v, gst_rate: (parseFloat(l._cgst)||0) + n }); }} placeholder="9" max={100} aria-label="SGST %"
-                                  ref={gridNav.registerCell(idx, 6)} onKeyDown={gridNav.handleKeyDown(idx, 6)} className="h-9 w-1/2" />
+                                  ref={gridNav.registerCell(idx, 6)} onKeyDown={gridNav.handleKeyDown(idx, 6)} className="h-8 w-1/2" />
                               </div>
                             )}
                             {l._gst_type === "IGST" && (
                               <NumericInput compact value={l._igst} onChange={v => { setLine(idx, { _igst: v, gst_rate: v }); }} placeholder="18" max={100} aria-label="IGST %"
-                                ref={gridNav.registerCell(idx, 5)} onKeyDown={gridNav.handleKeyDown(idx, 5)} className="h-9 w-full" />
+                                ref={gridNav.registerCell(idx, 5)} onKeyDown={gridNav.handleKeyDown(idx, 5)} className="h-8 w-full" />
                             )}
                           </div>
                         </td>
-                        <td className="px-2 py-2 text-right align-middle tabular text-muted-foreground">
+                        <td className="px-1.5 py-1.5 text-right align-middle tabular text-muted-foreground">
                           ₹{inr(lineGst(l))}
                         </td>
-                        <td className="px-2 py-2 text-right align-middle tabular font-semibold text-foreground">
+                        <td className="px-1.5 py-1.5 text-right align-middle tabular font-semibold text-foreground">
                           ₹{inr(lineTotal(l))}
                         </td>
-                        <td className="px-2 py-2 text-center align-middle">
+                        <td className="px-1 py-1.5 text-center align-middle">
                           <button type="button" onClick={() => removeLine(idx)} aria-label="Remove line"
-                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-[var(--danger)] hover:bg-[#FEE2E2] hover:text-[var(--danger)] mx-auto">
-                            <X className="h-4 w-4" />
+                            className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-[var(--danger)] hover:bg-[#FEE2E2] hover:text-[var(--danger)] mx-auto">
+                            <X className="h-3.5 w-3.5" />
                           </button>
                         </td>
                       </tr>

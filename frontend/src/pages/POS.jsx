@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import api from "@/lib/api";
 import { toast } from "sonner";
+import { registerBackgroundSync, onBackgroundSyncMessage } from "@/lib/pwa";
 
 const fmt = (v) => Number(v || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const uuid = () =>
@@ -164,6 +165,7 @@ function Counter({ session, online, queue, setQueue }) {
     if (!online) {
       const q = [...queue, sale];
       setQueue(q); saveQueue(q);
+      registerBackgroundSync(); // retry even if the tab/app closes before reconnect (Chromium)
       toast.warning("Offline — sale queued, will sync on reconnect");
       resetSale();
       return;
@@ -178,6 +180,7 @@ function Counter({ session, online, queue, setQueue }) {
       // network blip mid-online → queue it (idempotent client_uuid keeps it safe)
       const q = [...queue, sale];
       setQueue(q); saveQueue(q);
+      registerBackgroundSync();
       toast.warning("Post failed — queued for retry");
       resetSale();
     }
@@ -321,7 +324,14 @@ export default function POS() {
     window.addEventListener("online", goOnline);
     window.addEventListener("offline", goOffline);
     if (navigator.onLine) syncQueue();   // sync any leftover queue on mount
-    return () => { window.removeEventListener("online", goOnline); window.removeEventListener("offline", goOffline); };
+    // Also react to the service worker's background-sync wakeup, which can
+    // fire connectivity-restored even if this page wasn't open at the time.
+    const offSync = onBackgroundSyncMessage(syncQueue);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+      offSync();
+    };
   }, [syncQueue]);
 
   return (

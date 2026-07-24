@@ -296,13 +296,22 @@ class TestJobWorkFlow:
 
         # 9. Verify receipts listing contains enriched fields
         receipts_list = admin_session.get(f"{BASE_URL}/api/job-work/receipts").json()
-        match_receipt = next((r for r in receipts_list if r["receipt_number"] == receipt_payload["receipt_number"]), None)
+        match_receipt = next((r for r in receipts_list.get("items", []) if r["receipt_number"] == receipt_payload["receipt_number"]), None)
         assert match_receipt is not None
         assert match_receipt["challan_number"] == jwc["challan_number"]
         assert match_receipt["job_worker_name"] == worker["company"]
         assert match_receipt["items"][0]["quantity_sent"] == 10.0
         assert match_receipt["items"][0]["quantity_pending"] == 6.0
+        receipt_id = match_receipt["id"]
 
-        # 10. Cleanup
+        # 10. Test deleting the receipt
+        r_del_rec = admin_session.delete(f"{BASE_URL}/api/job-work/receipts/{receipt_id}")
+        assert r_del_rec.status_code == 200
+
+        # 11. Test deleting the challan
+        r_del_chal = admin_session.delete(f"{BASE_URL}/api/job-work/challans/{jwc_id}")
+        assert r_del_chal.status_code == 200
+
+        # 12. Cleanup
         admin_session.delete(f"{BASE_URL}/api/products/{prod_id}")
         admin_session.delete(f"{BASE_URL}/api/suppliers/{worker_id}")

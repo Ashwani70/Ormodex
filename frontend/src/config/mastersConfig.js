@@ -115,7 +115,7 @@ export const MASTERS = {
       { key: "parent_type", label: "Parent Type", type: "select", required: true, options: [
         "Payment", "Receipt", "Contra", "Journal", "Sales", "Purchase", "Credit Note", "Debit Note",
         "Stock Journal", "Physical Stock", "Delivery Note", "Receipt Note", "Sales Order",
-        "Purchase Order", "Quotation", "Memorandum", "Reversing Journal", "Payroll", "Attendance",
+        "Purchase Order", "Quotation", "Job Work", "Memorandum", "Reversing Journal", "Payroll", "Attendance",
       ] },
       { key: "numbering_method", label: "Numbering Method", type: "select", options: ["auto", "manual", "none"], default: "auto" },
       { key: "prefix", label: "Prefix", type: "text" },

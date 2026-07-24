@@ -63,6 +63,18 @@ export function CurrencyFields({ form, setForm }) {
 export async function downloadPdf(endpoint, filename, opts = {}) {
   const resp = await api.get(endpoint, { responseType: "blob" });
   const blob = new Blob([resp.data], { type: "application/pdf" });
+
+  // Desktop build: use the native Save dialog instead of the browser download
+  // tray, so it feels like a real desktop app. Falls through to the normal web
+  // path if the Electron bridge isn't present (plain web/PWA build).
+  if (typeof window !== "undefined" && window.ormodex?.saveFile) {
+    const base64 = await blobToBase64(blob);
+    const { saved } = await window.ormodex.saveFile(filename, base64);
+    if (saved) return;
+    // User cancelled the native dialog — nothing else to do.
+    if (saved === false) return;
+  }
+
   const url = URL.createObjectURL(blob);
   if (opts.newTab) {
     window.open(url, "_blank", "noopener,noreferrer");
@@ -76,6 +88,15 @@ export async function downloadPdf(endpoint, filename, opts = {}) {
   }
   // Give the tab/download time to consume the URL before revoking it.
   setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 }
 
 /** Open a PDF in a new tab. Thin wrapper over downloadPdf for readability. */

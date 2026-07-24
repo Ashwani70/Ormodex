@@ -13,6 +13,7 @@ import {
   NumericInput,
 } from "@/components/ui-kit";
 import Modal from "@/components/Modal";
+import BankEntryModal from "@/components/BankEntryModal";
 import { toast } from "sonner";
 import useEnterNavigation from "@/hooks/useEnterNavigation";
 import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
@@ -55,10 +56,9 @@ export default function Ledger() {
     party_name: "", amount: "", cheque_date: new Date().toISOString().split("T")[0],
     status: "PENDING", remarks: "",
   });
-  const [entryForm, setEntryForm] = useState({
-    bank_account_id: "", date: new Date().toISOString().split("T")[0],
-    entry_type: "CREDIT", amount: "", description: "", reference: "",
-  });
+  const [ledgers, setLedgers] = useState([]);
+  const [vendors, setVendors] = useState([]);
+  const [customers, setCustomers] = useState([]);
   const [stmtForm, setStmtForm] = useState({
     bank_account_code: "", transaction_date: new Date().toISOString().split("T")[0],
     description: "", debit: "", credit: "", ref_number: "",
@@ -125,7 +125,13 @@ export default function Ledger() {
 
   useEffect(() => {
     if (tab === "bank-accounts") loadBankAccounts();
-    if (tab === "bank-entries") { loadBankAccounts(); loadBankEntries(); }
+    if (tab === "bank-entries") {
+      loadBankAccounts();
+      loadBankEntries();
+      api.get("/masters/ledgers").then((r) => setLedgers(r.data?.items || r.data || [])).catch(() => setLedgers([]));
+      api.get("/purchase/v2/vendors").then((r) => setVendors(r.data?.items || r.data || [])).catch(() => setVendors([]));
+      api.get("/customers").then((r) => setCustomers(r.data?.items || r.data || [])).catch(() => setCustomers([]));
+    }
     if (tab === "party-ledger") loadPartyLedger();
     if (tab === "outstanding") loadOutstanding();
     if (tab === "ageing") loadAgeing();
@@ -170,28 +176,6 @@ export default function Ledger() {
   });
   useModuleShortcuts({
     onNew: () => { if (!showBankModal) setShowBankModal(true); },
-  });
-
-  const createBankEntry = async (e) => {
-    e.preventDefault();
-    try {
-      await api.post("/ledger/bank-entries", { ...entryForm, amount: parseFloat(entryForm.amount) });
-      toast.success("Bank entry recorded");
-      setShowEntryModal(false);
-      loadBankEntries();
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Failed");
-    }
-  };
-
-  // Secondary form (Add Entry) — Enter-as-Tab + Ctrl+Enter/Ctrl+S save + Esc
-  // cancel, no Ctrl+N wiring here (owned by the bank-account form above).
-  const entryFormRef = useRef(null);
-  useEnterNavigation(entryFormRef, {
-    enabled: showEntryModal,
-    autoFocus: true,
-    onSave: () => createBankEntry(new Event("submit", { cancelable: true })),
-    onCancel: () => setShowEntryModal(false),
   });
 
   const createStmt = async () => {
@@ -716,35 +700,17 @@ export default function Ledger() {
         </form>
       </Modal>
 
-      {/* Add Bank Entry Modal */}
-      <Modal open={showEntryModal} onClose={() => setShowEntryModal(false)} title="Record Bank Entry">
-        <form ref={entryFormRef} onSubmit={createBankEntry} className="space-y-4">
-          <Field label="Bank Account" required>
-            <Select value={entryForm.bank_account_id} onChange={e => setEntryForm(f => ({ ...f, bank_account_id: e.target.value }))} required>
-              <option value="">Select account...</option>
-              {bankAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </Select>
-          </Field>
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Date" required><Input type="date" value={entryForm.date} onChange={e => setEntryForm(f => ({ ...f, date: e.target.value }))} required /></Field>
-            <Field label="Entry Type">
-              <Select value={entryForm.entry_type} onChange={e => setEntryForm(f => ({ ...f, entry_type: e.target.value }))}>
-                <option value="CREDIT">CREDIT (Money In)</option>
-                <option value="DEBIT">DEBIT (Money Out)</option>
-              </Select>
-            </Field>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Amount (₹)" required><NumericInput value={entryForm.amount} onChange={v => setEntryForm(f => ({ ...f, amount: v }))} placeholder="0.00" align="left" /></Field>
-            <Field label="Reference No"><Input value={entryForm.reference} onChange={e => setEntryForm(f => ({ ...f, reference: e.target.value }))} placeholder="Cheque / UTR number" /></Field>
-          </div>
-          <Field label="Description"><Input value={entryForm.description} onChange={e => setEntryForm(f => ({ ...f, description: e.target.value }))} /></Field>
-          <div className="flex gap-2 justify-end pt-2">
-            <SecondaryButton onClick={() => setShowEntryModal(false)}>Cancel</SecondaryButton>
-            <PrimaryButton type="submit">Record</PrimaryButton>
-          </div>
-        </form>
-      </Modal>
+      {/* Record Bank Entry — enterprise modal (Basic Info / Accounting /
+          Reconciliation / Attachments / Audit) backed by the voucher engine. */}
+      <BankEntryModal
+        open={showEntryModal}
+        onClose={() => setShowEntryModal(false)}
+        bankAccounts={bankAccounts}
+        ledgers={ledgers}
+        vendors={vendors}
+        customers={customers}
+        onSaved={() => { loadBankAccounts(); loadBankEntries(); }}
+      />
     </div>
   );
 }

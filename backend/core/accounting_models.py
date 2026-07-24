@@ -143,6 +143,7 @@ class BankAccount(BaseModel):
     opening_balance: float = 0.0
     currency: str = "INR"
     is_active: bool = True
+    ledger_id: Optional[str] = None  # master_ledgers link; auto-created on create if omitted
 
 
 class BankEntry(BaseModel):

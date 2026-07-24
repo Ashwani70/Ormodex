@@ -55,6 +55,7 @@ import {
   DollarSign,
   ClipboardList,
   ArrowDownToLine,
+  Hash,
 } from "lucide-react";
 
 const ERP_NAV = [
@@ -116,6 +117,7 @@ const HR_NAV = [
   { to: "/hr", label: "HR Dashboard", icon: Briefcase, roles: ["admin", "hr", "accountant"] },
   { to: "/hr/employees", label: "Employees", icon: Users, roles: ["admin", "hr"] },
   { to: "/hr/attendance", label: "Attendance", icon: Clock, roles: ["admin", "hr"] },
+  { to: "/hr/biometric", label: "Biometric Attendance", icon: Fingerprint, roles: ["admin", "hr"] },
   { to: "/hr/leaves", label: "Leaves", icon: CalendarDays, roles: ["admin", "hr"] },
   { to: "/hr/payroll", label: "Payroll", icon: IndianRupee, roles: ["admin", "hr", "accountant"] },
   { to: "/hr/settings", label: "HR Settings", icon: Settings, roles: ["admin", "hr"] },
@@ -159,6 +161,7 @@ const SYSTEM_NAV = [
   { to: "/users", label: "Users", icon: Users, roles: ["admin"] },
   { to: "/admin/company-master", label: "Company Profile", icon: Building2, roles: ["admin"] },
   { to: "/admin/po-numbering", label: "PO Numbering", icon: FileText, roles: ["admin"] },
+  { to: "/admin/document-numbering", label: "Document Numbering", icon: Hash, roles: ["admin"] },
   { to: "/integration", label: "Data & Integration", icon: DatabaseZap, roles: ["admin"] },
   { to: "/branches", label: "Branches & Multi-location", icon: Network, roles: ["admin", "accountant"] },
   { to: "/design-system", label: "Design System", icon: Palette, roles: ["admin"] },

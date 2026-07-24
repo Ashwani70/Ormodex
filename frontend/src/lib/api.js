@@ -1,4 +1,5 @@
 import axios from "axios";
+import { getToken, setToken, clearToken } from "./tokenStore";
 
 // `window.__GRAVITYONE_BACKEND_URL__` lets the desktop (Electron) build override
 // the backend at runtime — the web build never sets it, so behaviour is unchanged.
@@ -31,7 +32,7 @@ function readCookie(name) {
 // CSRF cookie back as a header on state-changing requests (log-only enforced
 // server-side today — see server.py's csrf_check).
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("gew_access_token");
+  const token = getToken();
   if (token) {
     config.headers = config.headers || {};
     config.headers.Authorization = `Bearer ${token}`;
@@ -108,7 +109,7 @@ api.interceptors.response.use(
         );
         const newToken = data.access_token;
         if (newToken) {
-          localStorage.setItem("gew_access_token", newToken);
+          setToken(newToken);
         }
         processQueue(null, newToken);
 
@@ -116,7 +117,7 @@ api.interceptors.response.use(
         return api(originalRequest);
       } catch (refreshError) {
         processQueue(refreshError, null);
-        localStorage.removeItem("gew_access_token");
+        clearToken();
         if (window.location.pathname !== "/login") {
           window.location.href = "/login";
         }

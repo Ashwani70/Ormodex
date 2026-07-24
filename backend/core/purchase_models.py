@@ -38,6 +38,8 @@ class Vendor(BaseModel):
     pan_holder_name: Optional[str] = None
     pan_type: Optional[str] = None
     pan_status: Optional[str] = None
+    is_active: bool = True
+    ledger_id: Optional[str] = None  # master_ledgers link; auto-created on create if omitted
 
 
 class VendorUpdate(BaseModel):
@@ -65,6 +67,8 @@ class VendorUpdate(BaseModel):
     pan_holder_name: Optional[str] = None
     pan_type: Optional[str] = None
     pan_status: Optional[str] = None
+    is_active: Optional[bool] = None
+    ledger_id: Optional[str] = None
 
 
 # ───────────────────────── Purchase Order ─────────────────────────

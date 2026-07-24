@@ -22,6 +22,9 @@
     "dist:mac": "npm run build:frontend && electron-builder --mac",
     "dist:linux": "npm run build:frontend && electron-builder --linux"
   },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
   "devDependencies": {
     "electron": "^31.3.1",
     "electron-builder": "^24.13.3"
@@ -37,7 +40,11 @@
     "files": [
       "main.js",
       "preload.js",
+      "splash-preload.js",
+      "splash.html",
       "menu.js",
+      "logger.js",
+      "updater.js",
       "app/**/*",
       "build-resources/icon.*"
     ],
@@ -50,7 +57,8 @@
     ],
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] }
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "msi", "arch": ["x64"] }
       ],
       "icon": "build-resources/icon.ico",
       "artifactName": "Ormodex-ERP-Setup-${version}.${ext}"
@@ -61,6 +69,12 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
+      "shortcutName": "Ormodex ERP"
+    },
+    "msi": {
+      "oneClick": false,
+      "perMachine": false,
+      "createDesktopShortcut": true,
       "shortcutName": "Ormodex ERP"
     },
     "mac": {

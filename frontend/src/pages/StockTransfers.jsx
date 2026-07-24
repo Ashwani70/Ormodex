@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import {
@@ -7,6 +7,7 @@ import {
 import Modal from "@/components/Modal";
 import OfflineBanner from "@/components/OfflineBanner";
 import useOnline from "@/hooks/useOnline";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
 import { Plus, X, Trash2, RefreshCw, AlertTriangle } from "lucide-react";
 
 const blankLine = () => ({ stock_item_id: "", qty: 1 });
@@ -84,6 +85,17 @@ export default function StockTransfers() {
     }
   };
 
+  // Enter-as-Tab data entry (see useEnterNavigation): Enter/Tab moves through
+  // From/To/Date, each line's item+qty, and Remarks; Ctrl+Enter/Ctrl+S/Alt+S
+  // posts the transfer; Escape cancels. Auto-focuses From Warehouse on open.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: open,
+    autoFocus: true,
+    onSave: () => submit(new Event("submit", { cancelable: true })),
+    onCancel: () => setOpen(false),
+  });
+
   return (
     <div data-testid="stock-transfers-page">
       <PageHeader
@@ -149,7 +161,7 @@ export default function StockTransfers() {
             <PrimaryButton onClick={submit} testid="save-transfer" disabled={!online || saving}>{saving ? "Saving…" : "Post Transfer"}</PrimaryButton>
           </>
         }>
-        <form onSubmit={submit} className="space-y-4">
+        <form ref={formRef} onSubmit={submit} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <Field label="From Warehouse" required>
               <Select required value={form.from_godown_id} data-testid="transfer-from"

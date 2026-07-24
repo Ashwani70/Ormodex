@@ -58,7 +58,12 @@ export default function useBulkSelect(rows) {
   /**
    * Delete every selected row by calling `deleteOne(id)` for each, in parallel.
    * `deleteOne` should return a promise (typically `api.delete(...)`).
-   * Returns { ok, failed } counts. On completion, clears selection and calls reload().
+   * Returns { ok, failed, firstError, failedIds } — `firstError` is the
+   * rejection reason (e.g. an axios error) from the first failed call, so
+   * callers can surface the REAL cause instead of guessing at one;
+   * `failedIds` is every id that actually failed (e.g. to retry only those
+   * via a different action). Both undefined/empty when nothing failed.
+   * On completion, clears selection and calls reload().
    */
   const runDelete = useCallback(
     async (deleteOne, { reload } = {}) => {
@@ -67,11 +72,13 @@ export default function useBulkSelect(rows) {
       setDeleting(true);
       try {
         const results = await Promise.allSettled(targets.map((id) => deleteOne(id)));
-        const failed = results.filter((r) => r.status === "rejected").length;
+        const failedIds = targets.filter((_, i) => results[i].status === "rejected");
+        const failed = failedIds.length;
         const ok = results.length - failed;
+        const firstError = results.find((r) => r.status === "rejected")?.reason;
         clear();
         if (reload) await reload();
-        return { ok, failed };
+        return { ok, failed, firstError, failedIds };
       } finally {
         setDeleting(false);
       }

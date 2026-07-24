@@ -13,8 +13,10 @@ import { useNavigate } from "react-router-dom";
  */
 
 // Central asset path. Replace the file at this path to rebrand everywhere.
-export const LOGO_SRC = "/ormodex-logo.png";
-export const LOGO_MARK_SRC = "/ormodex-mark.png"; // square icon-only variant (favicon-style)
+// WebP re-encodes of the original oversized PNGs (2399×421 / 426×426) at 2x
+// the largest on-screen render size (xl = 72px) — see docs/BUILD_GUIDE.md.
+export const LOGO_SRC = "/ormodex-logo.webp";
+export const LOGO_MARK_SRC = "/ormodex-mark.webp"; // square icon-only variant (favicon-style)
 
 export const BRAND = {
   name: "ORMODEX",

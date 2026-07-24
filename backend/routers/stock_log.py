@@ -67,6 +67,18 @@ _DOC_TYPE_ROUTES: dict[str, str] = {
     "OPENING_STOCK": "/products",
 }
 
+# doc_type="PURCHASE" alone is too coarse to route correctly — a v2 GRN
+# (post_entry source_doc_type="grn"), a v1 GRN ("grn_v1"), and a plain PO
+# direct-receive ("purchase_order") all share that doc_type but live on
+# different pages. When the row's source_doc_type is known, this map takes
+# priority over _DOC_TYPE_ROUTES above. See migration 026 /
+# project-stocklog-grn-route-mislabel.md for the full trace.
+_SOURCE_DOC_TYPE_ROUTES: dict[str, str] = {
+    "grn": "/grns",
+    "grn_v1": "/grns",
+    "purchase_order": "/purchase-orders",
+}
+
 _DOC_TYPE_LABELS: dict[str, str] = {
     "PURCHASE": "Purchase",
     "MATERIAL_RECEIPT": "Material Receipt",
@@ -146,7 +158,7 @@ _SORTABLE_COLUMNS = {
 _BASE_SELECT = """
     SELECT
         t.id, t.product_id, t.product_name, t.godown_id, g.name AS godown_name,
-        t.batch_id, t.doc_type, t.voucher_no, t.source_doc_id,
+        t.batch_id, t.doc_type, t.source_doc_type, t.voucher_no, t.source_doc_id,
         t.qty, t.rate, t.value, t.delta, t.reason, t.user_id, t.user_name,
         t.created_at,
         SUM(t.delta) OVER (
@@ -276,6 +288,7 @@ async def list_entries(
             "userId": r["user_id"],
             "status": "IN" if (r["delta"] or 0) > 0 else "OUT",
             "sourceDocId": r["source_doc_id"],
+            "sourceDocType": r["source_doc_type"],
         })
 
     await log_audit(
@@ -433,7 +446,7 @@ async def filter_options(user: dict = Depends(get_current_user)) -> dict[str, An
 # such counterpart (v1-only postings, or orphaned rows).
 
 _DELETE_SELECT_SQL = text("""
-    SELECT t.id, t.product_id, t.delta, t.source_doc_id, t.doc_type, t.reason
+    SELECT t.id, t.product_id, t.delta, t.source_doc_id, t.doc_type, t.source_doc_type, t.voucher_no, t.reason
     FROM stock_transactions t
     WHERE t.id = ANY(:ids)
 """)
@@ -445,14 +458,52 @@ _HAS_LEDGER_COUNTERPART_SQL = text("""
 
 _REVERSE_QTY_BULK_SQL = text("""
     UPDATE products SET quantity = COALESCE(quantity, 0) - v.delta, updated_at = :now
-    FROM (SELECT unnest(:product_ids) AS product_id, unnest(:deltas) AS delta) AS v
+    FROM (SELECT unnest(CAST(:product_ids AS VARCHAR[])) AS product_id, unnest(CAST(:deltas AS NUMERIC[])) AS delta) AS v
     WHERE products.id = v.product_id
 """)
 
 _DELETE_ROWS_SQL = text("DELETE FROM stock_transactions WHERE id = ANY(:ids)")
 
+_DELETE_LEDGER_COUNTERPARTS_SQL = text("""
+    DELETE FROM stock_ledger_entries
+    WHERE source_doc_id IN (
+        SELECT source_doc_id
+        FROM stock_transactions
+        WHERE id = ANY(:ids) AND source_doc_id IS NOT NULL
+    )
+""")
 
-async def _delete_stock_log_rows(ids: list[str], user: dict) -> dict[str, Any]:
+_DOC_TYPE_TO_COLLECTION = {
+    "JOB_WORK": "job_work_challans",
+    "JOB_WORK_RECEIPT": "job_work_receipts",
+    "JOB_WORK_REVERSAL": "job_work_challans",
+    "STOCK_TRANSFER": "stock_transfers",
+    "PHYSICAL_STOCK": "physical_verifications",
+    "MANUFACTURING": "production_journals",
+    "PRODUCTION": "production_journals",
+}
+
+_SOURCE_DOC_TYPE_TO_COLLECTION = {
+    "job_work_challan": "job_work_challans",
+    "job_work_receipt": "job_work_receipts",
+    "job_work_challan_delete": "job_work_challans",
+    "job_work_receipt_reversal": "job_work_receipts",
+    "job_work_challan_cancel": "job_work_challans",
+    "job_work_challan_edit_reversal": "job_work_challans",
+    "grn": "grn_v2",
+    "grn_v1": "grn_v2",
+    "purchase_order": "purchase_orders_v2",
+    "purchase_bill": "purchase_bills",
+    "purchase_return": "purchase_returns",
+    "sales_order": "sales_orders",
+    "invoice": "invoices",
+    "credit_note": "credit_notes",
+    "dispatch": "dispatches",
+    "proforma_invoice": "proforma_invoices",
+}
+
+
+async def _delete_stock_log_rows(ids: list[str], user: dict, force: bool = False) -> dict[str, Any]:
     from core.utils import now_iso
 
     if not ids:
@@ -475,6 +526,22 @@ async def _delete_stock_log_rows(ids: list[str], user: dict) -> dict[str, Any]:
             )).scalars().all()
             has_counterpart = set(counterpart_rows)
 
+        # For rows with a ledger counterpart, check if the source voucher actually exists in the database.
+        # If it does not exist, we treat it as an orphan and allow deleting it.
+        real_counterparts = set()
+        from core.db import db
+        for r in rows:
+            sid = r["source_doc_id"]
+            if sid and sid in has_counterpart:
+                coll_name = _SOURCE_DOC_TYPE_TO_COLLECTION.get(r["source_doc_type"]) or _DOC_TYPE_TO_COLLECTION.get(r["doc_type"])
+                if coll_name:
+                    try:
+                        exists = await db[coll_name].find_one({"id": sid})
+                        if exists:
+                            real_counterparts.add(sid)
+                    except Exception:
+                        pass
+
         # Deletable rows are collected first (pure in-memory filtering, no DB
         # call), deltas summed per product (so two rows on the same product
         # still compose correctly — matches the old per-row sequential
@@ -486,9 +553,10 @@ async def _delete_stock_log_rows(ids: list[str], user: dict) -> dict[str, Any]:
         delta_by_product: dict[str, float] = {}
         now = now_iso()
         for r in rows:
-            if r["source_doc_id"] and r["source_doc_id"] in has_counterpart:
+            if not force and r["source_doc_id"] and r["source_doc_id"] in real_counterparts:
                 skipped.append({
-                    "id": r["id"], "docType": r["doc_type"],
+                    "id": r["id"], "docType": r["doc_type"], "sourceDocType": r["source_doc_type"],
+                    "sourceDocId": r["source_doc_id"], "voucherNo": r["voucher_no"],
                     "reason": "Posted via the v2 ledger — reverse the source voucher instead of deleting this row directly.",
                 })
                 continue
@@ -504,6 +572,7 @@ async def _delete_stock_log_rows(ids: list[str], user: dict) -> dict[str, Any]:
                 "now": now,
             })
         if to_delete_ids:
+            await session.execute(_DELETE_LEDGER_COUNTERPARTS_SQL, {"ids": to_delete_ids})
             await session.execute(_DELETE_ROWS_SQL, {"ids": to_delete_ids})
         deleted = len(to_delete_ids)
 
@@ -517,11 +586,11 @@ async def _delete_stock_log_rows(ids: list[str], user: dict) -> dict[str, Any]:
 
 
 @router.delete("/entries/{entry_id}")
-async def delete_entry(entry_id: str, user: dict = Depends(require_admin)) -> dict[str, Any]:
+async def delete_entry(entry_id: str, force: bool = False, user: dict = Depends(require_admin)) -> dict[str, Any]:
     """Delete one Stock Log row — admin only. Reverses products.quantity by
     the row's delta first; refused if the row has a live stock_ledger_entries
-    counterpart (see the module note above)."""
-    result = await _delete_stock_log_rows([entry_id], user)
+    counterpart (unless force=True is passed by admin)."""
+    result = await _delete_stock_log_rows([entry_id], user, force=force)
     if result["not_found"]:
         raise HTTPException(404, "Entry not found")
     if result["skipped"]:
@@ -531,6 +600,7 @@ async def delete_entry(entry_id: str, user: dict = Depends(require_admin)) -> di
 
 class BulkDeleteRequest(BaseModel):
     ids: list[str]
+    force: bool = False
 
 
 @router.post("/entries/bulk-delete")
@@ -543,7 +613,7 @@ async def bulk_delete_entries(payload: BulkDeleteRequest, user: dict = Depends(r
         raise HTTPException(400, "No entries selected")
     if len(payload.ids) > 500:
         raise HTTPException(400, "Cannot delete more than 500 entries at once")
-    result = await _delete_stock_log_rows(payload.ids, user)
+    result = await _delete_stock_log_rows(payload.ids, user, force=payload.force)
     return {
         "deleted": result["deleted"],
         "skipped": result["skipped"],
@@ -623,11 +693,20 @@ async def product_panel(product_id: str, user: dict = Depends(get_current_user))
 
 
 @router.get("/voucher/{doc_type}/{source_doc_id}")
-async def resolve_voucher(doc_type: str, source_doc_id: str, user: dict = Depends(get_current_user)) -> dict[str, Any]:
+async def resolve_voucher(
+    doc_type: str, source_doc_id: str,
+    source_doc_type: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
     """Voucher drill-down resolver: given a row's (doc_type, source_doc_id),
-    return the deep-link path into that voucher's own existing page/modal."""
+    return the deep-link path into that voucher's own existing page/modal.
+    `source_doc_type` (optional query param) disambiguates doc_types that
+    cover multiple real pages — e.g. "PURCHASE" alone can't tell a v2 GRN
+    from a plain PO receive, but source_doc_type can (see
+    _SOURCE_DOC_TYPE_ROUTES). Falls back to the coarse doc_type route for
+    rows written before source_doc_type existed, or callers that omit it."""
     _require_inventory(user)
-    route = _DOC_TYPE_ROUTES.get(doc_type)
+    route = (_SOURCE_DOC_TYPE_ROUTES.get(source_doc_type) if source_doc_type else None) or _DOC_TYPE_ROUTES.get(doc_type)
     if not route:
         raise HTTPException(404, f"No drill-down route for voucher type '{doc_type}'")
     path = route.format(id=source_doc_id) if "{id}" in route else f"{route}?detail={source_doc_id}"

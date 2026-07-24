@@ -172,7 +172,11 @@ export default function StockLog() {
   const openVoucher = useCallback(async (row) => {
     if (!row?.voucherType) return;
     try {
-      const { data } = await api.get(`/stock-log/voucher/${row.voucherType}/${row.sourceDocId || row.id}`);
+      // source_doc_type disambiguates voucherType="PURCHASE" rows that could
+      // be a v2 GRN, a v1 GRN, or a plain PO receive — each lives on a
+      // different page (see backend's _SOURCE_DOC_TYPE_ROUTES).
+      const params = row.sourceDocType ? { source_doc_type: row.sourceDocType } : undefined;
+      const { data } = await api.get(`/stock-log/voucher/${row.voucherType}/${row.sourceDocId || row.id}`, { params });
       navigate(data.path);
     } catch {
       // No drill-down route for this voucher type — nothing to open.
@@ -200,7 +204,25 @@ export default function StockLog() {
     try {
       const { data } = await api.post("/stock-log/entries/bulk-delete", { ids });
       if (data.skipped?.length) {
-        window.alert(`${data.deleted} deleted. ${data.skipped.length} skipped (posted via the v2 ledger — reverse the source voucher instead).`);
+        const names = data.skipped.slice(0, 5).map((s) => s.voucherNo || s.sourceDocId).filter(Boolean);
+        const more = data.skipped.length > 5 ? ` and ${data.skipped.length - 5} more` : "";
+        const forceDelete = window.confirm(
+          `${data.deleted} deleted. ${data.skipped.length} skipped — posted via active source voucher(s).\n\n` +
+          `Vouchers: ${names.join(", ")}${more}\n\n` +
+          `Click OK to FORCE DELETE these stock log entries as Admin anyway.\n` +
+          `Click Cancel to open the source voucher page instead.`
+        );
+        if (forceDelete) {
+          const forceRes = await api.post("/stock-log/entries/bulk-delete", { ids, force: true });
+          if (forceRes.data.deleted) {
+            window.alert(`Force deleted ${forceRes.data.deleted} entry/entries.`);
+          }
+        } else {
+          const first = data.skipped[0];
+          if (first?.sourceDocId) {
+            openVoucher({ voucherType: first.docType, sourceDocId: first.sourceDocId, sourceDocType: first.sourceDocType });
+          }
+        }
       }
       setSelectedIds(new Set());
       setSelectedIndex(-1);
@@ -211,7 +233,7 @@ export default function StockLog() {
     } finally {
       setDeleting(false);
     }
-  }, [isAdmin, selectedIds, deleting, fetchPage, fetchSummary]);
+  }, [isAdmin, selectedIds, deleting, fetchPage, fetchSummary, openVoucher]);
 
   const deleteRow = useCallback(async (row) => {
     if (!isAdmin || deleting) return;
@@ -223,7 +245,24 @@ export default function StockLog() {
       fetchPage(1, false);
       fetchSummary();
     } catch (err) {
-      window.alert(err?.response?.data?.detail || "Failed to delete entry");
+      const msg = err?.response?.data?.detail || "Failed to delete entry";
+      if (typeof msg === "string" && msg.includes("Posted via the v2 ledger")) {
+        const force = window.confirm(
+          `${msg}\n\nDo you want to FORCE DELETE this stock log entry as Admin anyway?\n(This reverses stock quantity and removes the log row)`
+        );
+        if (force) {
+          try {
+            await api.delete(`/stock-log/entries/${row.id}?force=true`);
+            setSelectedIds((prev) => { const next = new Set(prev); next.delete(row.id); return next; });
+            fetchPage(1, false);
+            fetchSummary();
+          } catch (forceErr) {
+            window.alert(forceErr?.response?.data?.detail || "Failed to force delete entry");
+          }
+        }
+      } else {
+        window.alert(msg);
+      }
     } finally {
       setDeleting(false);
     }

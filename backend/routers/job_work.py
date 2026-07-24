@@ -27,7 +27,7 @@ from sqlalchemy import select, delete as sa_delete
 from core.auth_utils import get_current_user, is_admin_role
 from core.db import db, get_session
 from core.models import JobWorkChallan, JobWorkReceipt
-from core.pdf import build_jobwork_pdf, build_jobwork_receipt_pdf, build_jobwork_report_pdf
+from core.pdf import build_jobwork_receipt_pdf, build_jobwork_report_pdf
 from core.product_stock_bridge import resolve_godown_id, resolve_stock_item_ids_for_products
 from core.schema import (
     JobWorkChallan as JobWorkChallanRow,
@@ -37,7 +37,7 @@ from core.schema import (
 )
 from core.stock_ledger import post_entry
 from core.tracking_validation import validate_tracking_fields
-from core.utils import now_iso, new_id, next_doc_number, get_active_company, log_audit
+from core.utils import now_iso, new_id, next_doc_number, get_active_company, log_audit, render_document_pdf
 
 log = logging.getLogger("job_work")
 router = APIRouter(prefix="/job-work", tags=["Job Work"])
@@ -135,7 +135,8 @@ async def _fetch_products_by_ids(items: list[dict]) -> dict[str, dict]:
 async def _post_job_work_movements(
     items: list[dict], user: dict, *, sign: int, movement_type: str,
     qty_field: str, source_doc_type: str, source_doc_id: str | None,
-) -> None:
+    best_effort: bool = False,
+) -> list[str]:
     """Post one signed stock_ledger_entries movement per catalog line item,
     replacing the old direct products.quantity + stock_transactions writes —
     every Job Work movement (issue, edit-reversal, receipt, receipt-reversal)
@@ -148,13 +149,37 @@ async def _post_job_work_movements(
     No godown is captured on a Job Work line today, so this resolves the
     tenant's default the same way manual adjustment/opening stock/physical
     verification do (core.product_stock_bridge.resolve_godown_id).
+
+    best_effort: when True (reversal call sites only — delete/cancel), a line
+    whose product has since been deleted from the catalog is SKIPPED with a
+    warning instead of raising and aborting every other line's reversal.
+    Creating a NEW movement must still fail loud on a missing product
+    (best_effort stays False there) — this only relaxes the already-posted
+    case, where the product's continued existence was never actually a
+    precondition for reversing a movement it made in the past. Returns the
+    product_ids of any skipped lines so the caller can surface them.
     """
     godown_id = await resolve_godown_id(None)
     product_ids = [item["product_id"] for item in items if not item.get("is_custom") and item.get("product_id")]
-    stock_item_by_product = await resolve_stock_item_ids_for_products(product_ids, user)
+    skipped: list[str] = []
+    if best_effort:
+        stock_item_by_product: dict[str, str] = {}
+        for pid in dict.fromkeys(product_ids):
+            try:
+                stock_item_by_product.update(await resolve_stock_item_ids_for_products([pid], user))
+            except HTTPException:
+                log.warning(
+                    "job_work: skipping stock reversal for deleted product %s (source=%s/%s)",
+                    pid, source_doc_type, source_doc_id,
+                )
+                skipped.append(pid)
+    else:
+        stock_item_by_product = await resolve_stock_item_ids_for_products(product_ids, user)
     for item in items:
         if item.get("is_custom") or not item.get("product_id"):
             continue
+        if item["product_id"] not in stock_item_by_product:
+            continue  # only reachable via best_effort's skip list above
         qty = float(item.get(qty_field, 0) or 0)
         if not qty:
             continue
@@ -167,6 +192,7 @@ async def _post_job_work_movements(
             source_doc_type=source_doc_type, source_doc_id=source_doc_id,
             user=user,
         )
+    return skipped
 
 
 # ── GST computation (reference only — no tax charged on a §143 challan) ───────
@@ -498,13 +524,24 @@ async def get_challan(item_id: str, user: dict = Depends(get_current_user)):
 
 @router.get("/challans/{item_id}/pdf")
 async def challan_pdf(item_id: str, user: dict = Depends(get_current_user)):
+    """Rendered through the same shared premium template as Purchase Orders
+    (rate/HSN/GST/taxable/amount columns + totals card) so job work challans
+    look consistent with every other document in the app. The values shown
+    are for ITC-04 valuation/reconciliation only — the §143 declaration below
+    the item table still makes clear no supply/tax event occurs."""
     _require_job_work(user)
     c = await db.job_work_challans.find_one({"id": item_id}, {"_id": 0})
     if not c:
         raise HTTPException(status_code=404, detail="Challan not found")
-    c["items"] = await _fetch_challan_items(item_id)
-    pdf_bytes = build_jobwork_pdf(c, company=await get_active_company())
+    items = await _fetch_challan_items(item_id)
+    for item in items:
+        item["unit"] = item.get("uom") or item.get("unit") or "pcs"
+    c["items"] = items
     number = c.get("challan_number") or item_id
+    pdf_bytes = await render_document_pdf(
+        "JOB WORK CHALLAN", number, c,
+        party_id=c.get("job_worker_id"), party_type="vendor",
+    )
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -709,50 +746,71 @@ async def update_challan(item_id: str, payload: JobWorkChallan, user: dict = Dep
     return data
 
 
-@router.delete("/challans/{item_id}", status_code=204)
+@router.delete("/challans/{item_id}")
 async def delete_challan(item_id: str, user: dict = Depends(get_current_user)):
-    """Delete a Draft/Pending challan with no receipts logged. Restores
-    inventory stock if the challan had actually moved any (Drafts never did)."""
+    """Delete a challan, in any status. Draft/Pending (no receipts) is a plain
+    delete with its own outward stock reversed. Partial/Completed cascades:
+    every receipt logged against it is deleted first (each reversing its own
+    inward return, same as delete_receipt), THEN the challan's full original
+    outward posting is reversed, THEN the challan itself is deleted — so
+    nothing is left orphaned and stock ends up exactly where it would be had
+    the challan never existed. Same permission bar as every other status
+    (_require_job_work) — user's explicit choice over restricting this
+    further to admin-only."""
     _require_job_work(user)
     existing = await db.job_work_challans.find_one({"id": item_id})
     if not existing:
         raise HTTPException(404, "Challan not found")
 
     current_status = _normalize_status(existing.get("status"))
-    if current_status not in ("DRAFT", "PENDING"):
-        raise HTTPException(
-            409,
-            f"Only Draft or Pending challans can be deleted. This challan is '{current_status}'. "
-            f"{'Mark it cancelled first, or contact admin.' if current_status in ('PARTIAL', 'COMPLETED') else ''}",
-        )
-
-    receipt_count = await db.job_work_receipts.count_documents({"challan_id": item_id})
-    if receipt_count > 0:
-        raise HTTPException(
-            409,
-            f"Cannot delete challan {existing.get('challan_number', item_id)}: "
-            f"{receipt_count} material receipt(s) have already been logged against it. "
-            f"Reverse the receipts first.",
-        )
+    if current_status == "CANCELLED":
+        raise HTTPException(409, "Challan is already cancelled — nothing to delete.")
 
     items = await _fetch_challan_items(item_id)
+    skipped_products: list[str] = []
+
+    # Cascade: delete every receipt against this challan first, each
+    # reversing its own inward return exactly as delete_receipt does alone —
+    # so a challan with receipts is never left with orphaned receipt rows
+    # pointing at a challan_id that no longer exists. best_effort=True: a
+    # line whose product was since deleted from the catalog must not abort
+    # the whole delete (see _post_job_work_movements) — old challans commonly
+    # outlive a product that's since been removed from the catalog.
+    receipts = await db.job_work_receipts.find({"challan_id": item_id}, {"_id": 0}).to_list(1000)
+    for receipt in receipts:
+        async with get_session() as session:
+            result = await session.execute(select(JobWorkReceiptItem).where(JobWorkReceiptItem.receipt_id == receipt["id"]))
+            receipt_items = [_row_dict(r) for r in result.scalars().all()]
+        skipped_products += await _reverse_receipt_inventory(
+            receipt_items, user, f"{receipt.get('receipt_number', '')} (deleted with challan)",
+            receipt_id=receipt["id"], receipt_number=receipt.get("receipt_number", ""),
+            best_effort=True,
+        )
+        async with get_session() as session:
+            await session.execute(sa_delete(JobWorkReceiptItem).where(JobWorkReceiptItem.receipt_id == receipt["id"]))
+            row = await session.get(JobWorkReceiptRow, receipt["id"])
+            if row:
+                await session.delete(row)
+        await log_audit("DELETE", "job_work_receipts", receipt["id"], user, old_values={**receipt, "items": receipt_items})
+
+    # Reverse the challan's own original outward posting — a Draft never
+    # posted any (per_post_job_work_movements's own "custom lines never moved
+    # stock" + Draft-status skip elsewhere), everything else did, for the
+    # FULL original quantity now that every receipt (which already reversed
+    # its own portion) has just been deleted above.
     if current_status != "DRAFT":
-        products_by_id = await _fetch_products_by_ids(items)
-        running_qty: dict[str, float] = {}
-        updates_by_id: dict = {}
-        for item in items:
-            if item.get("is_custom") or not item.get("product_id"):
-                continue
-            pid = item["product_id"]
-            if pid not in running_qty:
-                running_qty[pid] = float((products_by_id.get(pid) or {}).get("quantity", 0))
-            running_qty[pid] += float(item.get("quantity", 0))
-            restored_qty = running_qty[pid]
-            updates_by_id[pid] = {"$set": {"quantity": restored_qty, "updated_at": now_iso()}}
-        # Written in ONE bulk_update_by_id call instead of an update_one per
-        # product inside the loop.
-        if updates_by_id:
-            await db.products.bulk_update_by_id(updates_by_id)
+        skipped_products += await _post_job_work_movements(
+            items, user, sign=1, movement_type="JOB_WORK_REVERSAL",
+            qty_field="quantity", source_doc_type="job_work_challan_delete",
+            source_doc_id=item_id, best_effort=True,
+        )
+
+    if skipped_products:
+        log.warning(
+            "job_work: challan %s deleted with %d line(s) whose product no longer exists — "
+            "stock could not be reversed for: %s",
+            item_id, len(skipped_products), skipped_products,
+        )
 
     je_id = existing.get("journal_entry_id")
     if je_id:
@@ -768,6 +826,94 @@ async def delete_challan(item_id: str, user: dict = Depends(get_current_user)):
         row = await session.get(JobWorkChallanRow, item_id)
         if row:
             await session.delete(row)
+
+    return {"_stock_reversal_skipped": skipped_products}
+
+
+@router.post("/challans/{item_id}/cancel")
+async def cancel_challan(item_id: str, user: dict = Depends(get_current_user)):
+    """Cancel a challan that has already moved material — the path
+    delete_challan itself points a caller at once a challan is PARTIAL/
+    COMPLETED and can no longer be hard-deleted (delete would silently lose
+    track of the material that already left, or is still outstanding).
+
+    Only the portion still with the job worker (sent minus already-received)
+    is reversed back into stock — the received portion already cycled back
+    correctly through its own receipt/_apply_receipt_inventory, reversing it
+    again here would double-count. Existing receipts are left untouched (they
+    remain the true record of what actually came back); no further receipts
+    can be logged against a CANCELLED challan (see create_receipt's status
+    check)."""
+    _require_job_work(user)
+    existing = await db.job_work_challans.find_one({"id": item_id})
+    if not existing:
+        raise HTTPException(404, "Challan not found")
+
+    current_status = _normalize_status(existing.get("status"))
+    if current_status in _CLOSED_STATUSES:
+        raise HTTPException(409, f"Challan is already {current_status}.")
+
+    items = await _fetch_challan_items(item_id)
+    received_by_item = await _received_by_challan_item([item_id])
+    outstanding_items = []
+    for it in items:
+        sent = float(it.get("quantity") or 0)
+        recv = received_by_item.get(it["id"], 0.0)
+        outstanding = sent - recv
+        if outstanding > 1e-6:
+            outstanding_items.append({**it, "quantity": outstanding})
+
+    skipped_products: list[str] = []
+    if outstanding_items:
+        skipped_products = await _post_job_work_movements(
+            outstanding_items, user, sign=1, movement_type="JOB_WORK_REVERSAL",
+            qty_field="quantity", source_doc_type="job_work_challan_cancel",
+            source_doc_id=item_id, best_effort=True,
+        )
+
+    await db.job_work_challans.update_one(
+        {"id": item_id},
+        {"$set": {"status": "CANCELLED", "is_overdue": False, "deemed_supply": False,
+                   "cancelled_by": user["id"], "cancelled_at": now_iso(), "updated_at": now_iso()}},
+    )
+    new_values = await db.job_work_challans.find_one({"id": item_id}, {"_id": 0}) or {}
+    await log_audit("UPDATE", "job_work_challans", item_id, user, old_values=existing, new_values=new_values)
+    if skipped_products:
+        new_values["_stock_reversal_skipped"] = skipped_products
+    return new_values
+
+
+@router.post("/challans/{item_id}/attachments")
+async def add_challan_attachment(item_id: str, payload: dict, user: dict = Depends(get_current_user)):
+    """Attach an already-uploaded document (via /uploads/document) to a
+    challan — e.g. a scanned job worker acknowledgement copy."""
+    _require_job_work(user)
+    challan = await db.job_work_challans.find_one({"id": item_id})
+    if not challan:
+        raise HTTPException(404, "Challan not found")
+    attachment = {
+        "id": new_id(),
+        "name": payload.get("name") or "document",
+        "path": payload["path"],
+        "size": payload.get("size"),
+        "content_type": payload.get("content_type"),
+        "uploaded_by": user["id"],
+        "uploaded_at": now_iso(),
+    }
+    attachments = list(challan.get("attachments") or []) + [attachment]
+    await db.job_work_challans.update_one({"id": item_id}, {"$set": {"attachments": attachments, "updated_at": now_iso()}})
+    return attachment
+
+
+@router.delete("/challans/{item_id}/attachments/{attachment_id}")
+async def remove_challan_attachment(item_id: str, attachment_id: str, user: dict = Depends(get_current_user)):
+    _require_job_work(user)
+    challan = await db.job_work_challans.find_one({"id": item_id})
+    if not challan:
+        raise HTTPException(404, "Challan not found")
+    attachments = [a for a in (challan.get("attachments") or []) if a.get("id") != attachment_id]
+    await db.job_work_challans.update_one({"id": item_id}, {"$set": {"attachments": attachments, "updated_at": now_iso()}})
+    return {"ok": True}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -813,11 +959,12 @@ async def _resync_challan_status(challan_id: str) -> None:
 async def _reverse_receipt_inventory(
     receipt_items: list[dict], user: dict, reason_suffix: str,
     receipt_id: str | None = None, receipt_number: str | None = None,
-) -> None:
-    await _post_job_work_movements(
+    best_effort: bool = False,
+) -> list[str]:
+    return await _post_job_work_movements(
         receipt_items, user, sign=-1, movement_type="JOB_WORK_REVERSAL",
         qty_field="quantity_received", source_doc_type="job_work_receipt_reversal",
-        source_doc_id=receipt_id,
+        source_doc_id=receipt_id, best_effort=best_effort,
     )
 
 
@@ -856,6 +1003,9 @@ async def create_receipt(item_id: str, payload: JobWorkReceipt, user: dict = Dep
     challan = await db.job_work_challans.find_one({"id": item_id})
     if not challan:
         raise HTTPException(status_code=404, detail="Challan not found")
+    challan_status = _normalize_status(challan.get("status"))
+    if challan_status in _CLOSED_STATUSES:
+        raise HTTPException(409, f"Cannot log a receipt against a {challan_status} challan.")
 
     data = payload.model_dump()
     items = data.pop("items")
@@ -1062,7 +1212,7 @@ async def update_receipt(item_id: str, payload: JobWorkReceipt, user: dict = Dep
     return data
 
 
-@router.delete("/receipts/{item_id}", status_code=204)
+@router.delete("/receipts/{item_id}")
 async def delete_receipt(item_id: str, user: dict = Depends(get_current_user)):
     """Delete a logged receipt. Reverses its inventory return and re-syncs the
     parent challan's status/balance from the remaining receipts."""
@@ -1077,10 +1227,18 @@ async def delete_receipt(item_id: str, user: dict = Depends(get_current_user)):
         result = await session.execute(select(JobWorkReceiptItem).where(JobWorkReceiptItem.receipt_id == item_id))
         items = [_row_dict(r) for r in result.scalars().all()]
 
-    await _reverse_receipt_inventory(
+    skipped_products = await _reverse_receipt_inventory(
         items, user, f"{existing.get('receipt_number', '')} (deleted)",
         receipt_id=item_id, receipt_number=existing.get("receipt_number", ""),
+        best_effort=True,
     )
+
+    if skipped_products:
+        log.warning(
+            "job_work: receipt %s deleted with %d line(s) whose product no longer exists — "
+            "stock could not be reversed for: %s",
+            item_id, len(skipped_products), skipped_products,
+        )
 
     async with get_session() as session:
         await session.execute(sa_delete(JobWorkReceiptItem).where(JobWorkReceiptItem.receipt_id == item_id))
@@ -1091,6 +1249,41 @@ async def delete_receipt(item_id: str, user: dict = Depends(get_current_user)):
     await _resync_challan_status(challan_id)
 
     await log_audit("DELETE", "job_work_receipts", item_id, user, old_values={**existing, "items": items})
+
+    return {"_stock_reversal_skipped": skipped_products}
+
+
+@router.post("/receipts/{item_id}/attachments")
+async def add_receipt_attachment(item_id: str, payload: dict, user: dict = Depends(get_current_user)):
+    """Attach an already-uploaded document (via /uploads/document) to a
+    receipt — e.g. a scanned job worker acknowledgement copy."""
+    _require_job_work(user)
+    receipt = await db.job_work_receipts.find_one({"id": item_id})
+    if not receipt:
+        raise HTTPException(404, "Receipt not found")
+    attachment = {
+        "id": new_id(),
+        "name": payload.get("name") or "document",
+        "path": payload["path"],
+        "size": payload.get("size"),
+        "content_type": payload.get("content_type"),
+        "uploaded_by": user["id"],
+        "uploaded_at": now_iso(),
+    }
+    attachments = list(receipt.get("attachments") or []) + [attachment]
+    await db.job_work_receipts.update_one({"id": item_id}, {"$set": {"attachments": attachments, "updated_at": now_iso()}})
+    return attachment
+
+
+@router.delete("/receipts/{item_id}/attachments/{attachment_id}")
+async def remove_receipt_attachment(item_id: str, attachment_id: str, user: dict = Depends(get_current_user)):
+    _require_job_work(user)
+    receipt = await db.job_work_receipts.find_one({"id": item_id})
+    if not receipt:
+        raise HTTPException(404, "Receipt not found")
+    attachments = [a for a in (receipt.get("attachments") or []) if a.get("id") != attachment_id]
+    await db.job_work_receipts.update_one({"id": item_id}, {"$set": {"attachments": attachments, "updated_at": now_iso()}})
+    return {"ok": True}
 
 
 @router.get("/receipts/{item_id}/pdf")
@@ -1152,6 +1345,7 @@ async def _fetch_enriched_receipts(challan_id: Optional[str], q: Optional[str]) 
         c_id = r.get("challan_id")
         c = challan_map.get(c_id)
         r["challan_number"] = c.get("challan_number") if c else "—"
+        r["job_worker_id"] = c.get("job_worker_id") if c else None
         r["job_worker_name"] = c.get("job_worker_name") if c else "—"
 
         items = items_by_receipt.get(r["id"], [])
@@ -1160,6 +1354,7 @@ async def _fetch_enriched_receipts(challan_id: Optional[str], q: Optional[str]) 
             ci = challan_items_by_id.get(it.get("challan_item_id"), {})
             sent = float(ci.get("quantity", 0) or 0)
             it["quantity_sent"] = sent
+            it["rate"] = ci.get("rate", 0)
             it.setdefault("rejected_quantity", 0.0)
             it.setdefault("scrap_quantity", 0.0)
             if it.get("accepted_quantity") is None:
@@ -1352,6 +1547,7 @@ async def _pending_rows(status_filter: list[str] | None = None, overdue_only: bo
                 "is_overdue": is_overdue,
                 "overdue_status": "Overdue" if is_overdue else "Active",
                 "deemed_supply": is_overdue,
+                "job_worker_id": c.get("job_worker_id"),
                 "job_worker_name": c["job_worker_name"],
                 "product_id": item.get("product_id"),
                 "product_name": item.get("product_name"),
@@ -1360,6 +1556,7 @@ async def _pending_rows(status_filter: list[str] | None = None, overdue_only: bo
                 "quantity_received": received,
                 "quantity_pending": round(pending, 4),
                 "unit": item.get("uom", "pcs"),
+                "rate": item.get("rate", 0),
                 "taxable_value": item.get("taxable_value", 0),
             })
     return rows
@@ -1388,9 +1585,17 @@ async def get_completed_job_work(
             rng["$lte"] = date_to
         q["date"] = rng
     challans = await db.job_work_challans.find(q, {"_id": 0}).sort("date", -1).to_list(1000)
-    items_by_challan = await _fetch_challan_items_for_ids([c["id"] for c in challans])
+    challan_ids = [c["id"] for c in challans]
+    items_by_challan = await _fetch_challan_items_for_ids(challan_ids)
+    received_by_item = await _received_by_challan_item(challan_ids)
     for c in challans:
-        c["items"] = items_by_challan.get(c["id"], [])
+        items = items_by_challan.get(c["id"], [])
+        for item in items:
+            sent = float(item.get("quantity", 0) or 0)
+            recv = received_by_item.get(item["id"], 0.0)
+            item["quantity_received"] = recv
+            item["quantity_pending"] = max(0.0, sent - recv)
+        c["items"] = items
     return challans
 
 

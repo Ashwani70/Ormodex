@@ -90,6 +90,7 @@ async def _mirror_to_legacy_transaction(entry: dict) -> None:
             "godown_id": entry.get("godown_id"),
             "batch_id": entry.get("batch_id"),
             "doc_type": entry["doc_type"],
+            "source_doc_type": entry.get("source_doc_type"),
             "voucher_no": entry.get("source_doc_id"),
             "source_doc_id": entry.get("source_doc_id"),
             "qty": abs(qty),

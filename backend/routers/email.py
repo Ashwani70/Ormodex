@@ -11,7 +11,7 @@ from core.email import (
     render_doc_email_html,
     send_email_sync,
 )
-from core.pdf import build_jobwork_pdf, build_jobwork_receipt_pdf
+from core.pdf import build_jobwork_receipt_pdf
 from core.pi_pdf import build_pi_pdf
 from core.utils import get_active_company, now_iso, render_document_pdf
 
@@ -56,6 +56,7 @@ async def _load_doc_for_email(doc_type: str, doc_id: str) -> dict | None:
             sent = float(item.get("quantity", 0) or 0)
             item["quantity_received"] = received_by_item.get(item["id"], 0.0)
             item["quantity_pending"] = max(0.0, sent - item["quantity_received"])
+            item["unit"] = item.get("uom") or item.get("unit") or "pcs"
         doc["items"] = items
     elif doc_type == "job_work_receipt":
         from sqlalchemy import select
@@ -81,15 +82,17 @@ async def _resolve_customer_id(doc_type: str, doc: dict) -> str | None:
 async def _build_pdf(doc_type: str, doc: dict, doc_number: str, company: dict | None = None) -> bytes:
     if doc_type == "proforma":
         return build_pi_pdf(doc, company=company)
-    if doc_type == "job_work_challan":
-        return build_jobwork_pdf(doc, company=company)
     if doc_type == "job_work_receipt":
         return build_jobwork_receipt_pdf(doc, company=company)
-    # Quotation / Sales Order / Invoice / Dispatch — the same premium layout
-    # every download/view PDF endpoint uses, so the emailed attachment looks
-    # identical to what the customer sees in-app (and gets a live-resolved
-    # party box instead of whatever was baked into the doc at send time).
+    # Quotation / Sales Order / Invoice / Dispatch / Job Work Challan — the
+    # same premium layout every download/view PDF endpoint uses, so the
+    # emailed attachment looks identical to what's seen in-app (and gets a
+    # live-resolved party box instead of whatever was baked into the doc at
+    # send time).
     type_label = _DOC_TABLE[doc_type][2]
+    if doc_type == "job_work_challan":
+        return await render_document_pdf(type_label, doc_number, doc, party_id=doc.get("job_worker_id"),
+                                         party_type="vendor", company=company)
     customer_id = await _resolve_customer_id(doc_type, doc)
     return await render_document_pdf(type_label, doc_number, doc, party_id=customer_id,
                                      party_type="customer", company=company)

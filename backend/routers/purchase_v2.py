@@ -17,8 +17,10 @@ from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 from core.pdf import normalize_purchase_doc
 from core.ledger_posting import ChartOfAccountsNotSeededError, post_purchase_bill_journal, post_purchase_return_journal
+from core.party_ledger import auto_create_party_ledger
 from core.product_stock_bridge import resolve_line_stock_item
 from routers.debtors_creditors import DocPostIn, post_dc_document, _recalc_party_balance
+from core.tenant import resolve_tenant
 from core.tracking_validation import validate_tracking_fields
 from core.purchase_models import (
     GRNV2, PurchaseBill, PurchaseOrderV2, PurchaseReturn, Vendor, VendorUpdate,
@@ -26,6 +28,7 @@ from core.purchase_models import (
 from core.stock_ledger import post_entry
 from core.utils import crud_create, crud_delete, crud_get, crud_update, log_audit, next_doc_number, now_iso, paginated_list, render_document_pdf
 from core import po_numbering as pn
+from core.document_numbering import allocate_document_number
 from core import cache as _cache
 
 router = APIRouter(prefix="/purchase/v2", tags=["Purchase v2"])
@@ -71,6 +74,15 @@ async def create_vendor(payload: Vendor, user: dict = Depends(get_current_user))
     data = payload.model_dump()
     if not data.get("vendor_code"):
         data["vendor_code"] = await next_doc_number("VND", "vendors")
+    # Auto-link a Chart-of-Accounts ledger (Sundry Creditors) so this vendor
+    # can be selected as a Bank Entry party and post through the voucher
+    # engine — mirrors the bank-account auto-ledger, see core/party_ledger.py.
+    if not data.get("ledger_id"):
+        data["ledger_id"] = await auto_create_party_ledger(
+            "vendor", data["name"], resolve_tenant(user), user,
+            opening_balance=data.get("opening_balance", 0.0),
+            gstin=data.get("gstin"), pan=data.get("pan") or data.get("pan_number"),
+        )
     result = await crud_create("vendors", data, user=user)
     _cache.invalidate("vendors:all")
     return result
@@ -307,8 +319,9 @@ async def create_grn(payload: GRNV2, user: dict = Depends(get_current_user)):
     vendor = await crud_get("vendors", data["vendor_id"], label="Vendor")
     data["vendor_name"] = data.get("vendor_name") or vendor.get("company") or vendor.get("name")
     data["received_date"] = data.get("received_date") or date.today().isoformat()
-    if not data.get("grn_number"):
-        data["grn_number"] = await next_doc_number("GRN", "goods_receipt_notes_v2")
+    # AUTO/MANUAL + prefix/FY/branch template per Admin -> Document Numbering
+    # (core/document_numbering.py) — replaces the old fixed GRN00001 counter.
+    data["grn_number"] = await allocate_document_number("grn", data.get("grn_number"), user)
 
     # Resolve product_id → backing stock_item_id on every line up front, so the
     # over-receipt check, persisted GRN, and ledger postings all agree.
@@ -360,6 +373,71 @@ async def create_grn(payload: GRNV2, user: dict = Depends(get_current_user)):
     if po:
         await _recompute_po_receipt_status(po["id"], user)
     return grn
+
+
+@router.delete("/grns/{grn_id}")
+async def delete_grn(grn_id: str, user: dict = Depends(get_current_user)):
+    """Delete a GRN: reverses its inward stock movement (posts an equal
+    outward entry via the same valuation-aware post_entry, rather than
+    mutating/deleting the original ledger rows — same pattern as job-work
+    challan/receipt deletes) and rolls the linked PO's received_qty back down.
+    Blocked if a Purchase Bill already references this GRN (three-way match
+    integrity — the bill's Dr Inventory/Cr Vendor posting assumed this stock
+    receipt happened)."""
+    _require_purchase(user)
+    grn = await crud_get("goods_receipt_notes_v2", grn_id, label="GRN")
+
+    # grn_ids is a JSONB array column — {"grn_ids": grn_id} would compile to
+    # "grn_ids = '<id>'" (whole-array-equals-scalar, never true) via the Mongo
+    # compat shim's plain-value path (core/_mongo_compat.py _to_filter), not
+    # an array-contains check. Filter in Python instead, same approach
+    # _recompute_po_receipt_status already uses for GRNs-by-PO above.
+    all_bills = await db.purchase_bills.find({}, {"_id": 0, "id": 1, "bill_number": 1, "grn_ids": 1}).to_list(5000)
+    referencing_bill = next((b for b in all_bills if grn_id in (b.get("grn_ids") or [])), None)
+    if referencing_bill:
+        raise HTTPException(
+            409,
+            f"Cannot delete GRN {grn.get('grn_number', grn_id)}: "
+            f"Purchase Bill {referencing_bill.get('bill_number', referencing_bill['id'])} already references it. "
+            f"Delete or unlink that bill first.",
+        )
+
+    lines = grn.get("lines") or []
+    if isinstance(lines, str):
+        try:
+            import json
+            lines = json.loads(lines)
+        except Exception:
+            lines = []
+    if not isinstance(lines, list):
+        lines = []
+
+    for gl in lines:
+        if not isinstance(gl, dict) or not gl.get("stock_item_id"):
+            continue
+        godown_id = grn.get("godown_id") or gl.get("godown_id") or "MAIN"
+        raw_qty = gl.get("qty_received") if gl.get("qty_received") is not None else gl.get("qty", 0)
+        try:
+            qty_val = float(raw_qty or 0)
+        except (ValueError, TypeError):
+            qty_val = 0.0
+
+        if qty_val <= 0:
+            continue
+
+        await post_entry(
+            stock_item_id=gl["stock_item_id"], godown_id=godown_id,
+            qty=-abs(qty_val), movement_type="GRN_REVERSAL",
+            batch_id=gl.get("batch_id"), serial_id=gl.get("serial_id"),
+            source_doc_type="grn_reversal", source_doc_id=grn_id,
+            entry_date=date.today().isoformat(), user=user,
+        )
+
+    await crud_delete("goods_receipt_notes_v2", grn_id, user=user)
+
+    if grn.get("purchase_order_id"):
+        await _recompute_po_receipt_status(grn["purchase_order_id"], user)
+    return {"ok": True}
 
 
 # ───────────────────────── Purchase Bill ─────────────────────────

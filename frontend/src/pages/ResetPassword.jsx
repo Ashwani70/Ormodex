@@ -5,7 +5,7 @@ import { formatApiErrorDetail } from "@/lib/api";
 import { Hammer, ArrowRight, ShieldCheck, CheckCircle2, AlertTriangle, KeyRound } from "lucide-react";
 import { Input, Field, PrimaryButton } from "@/components/ui-kit";
 
-const HERO = "/login_hero.png";
+const HERO = "/login_hero.webp"; // WebP re-encode — see docs/BUILD_GUIDE.md
 
 export default function ResetPassword() {
   const [searchParams] = useSearchParams();

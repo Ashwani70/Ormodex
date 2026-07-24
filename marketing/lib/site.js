@@ -25,7 +25,7 @@ const ghAsset = (file) => `https://github.com/${GH_REPO}/releases/latest/downloa
 export const DOWNLOADS = {
   windows: {
     label: "Windows",
-    sub: "Windows 10/11 · 64-bit · .exe",
+    sub: "Windows 10/11 · 64-bit · .exe / .msi",
     icon: "windows",
     url: process.env.NEXT_PUBLIC_DOWNLOAD_WINDOWS || ghAsset("Ormodex-ERP-Setup.exe"),
   },
@@ -37,9 +37,38 @@ export const DOWNLOADS = {
   },
   linux: {
     label: "Linux",
-    sub: "Debian/Ubuntu & RPM · .AppImage",
+    sub: "Debian/Ubuntu & RPM · .AppImage / .deb",
     icon: "linux",
     url: process.env.NEXT_PUBLIC_DOWNLOAD_LINUX || ghAsset("Ormodex-ERP.AppImage"),
+  },
+};
+
+// Mobile/PWA row shown below the desktop cards. PWA is real and installable
+// today (see frontend/public/service-worker.js + manifest.json) — it links
+// straight into the hosted app, whose browser install prompt takes over.
+// Android/iOS are marked "coming soon" rather than linked to a store listing
+// that doesn't exist yet — see mobile app scope note in desktop/README.md.
+export const MOBILE_DOWNLOADS = {
+  pwa: {
+    label: "Install as App (PWA)",
+    sub: "Chrome, Edge or Safari · installs like a native app",
+    icon: "pwa",
+    url: ERP_APP_URL,
+    available: true,
+  },
+  android: {
+    label: "Android",
+    sub: "Google Play — coming soon",
+    icon: "android",
+    url: null,
+    available: false,
+  },
+  ios: {
+    label: "iOS",
+    sub: "App Store — coming soon",
+    icon: "apple",
+    url: null,
+    available: false,
   },
 };
 

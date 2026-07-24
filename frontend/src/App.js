@@ -41,6 +41,7 @@ const HrDashboard         = lazy_("HrDashboard");
 const Employees           = lazy_("Employees");
 const HrSettings          = lazy_("HrSettings");
 const Attendance          = lazy_("Attendance");
+const BiometricAttendance = lazy_("BiometricAttendance");
 const HrLeaves            = lazy_("HrLeaves");
 const Payroll             = lazy_("Payroll");
 const MyPortal            = lazy_("MyPortal");
@@ -55,6 +56,7 @@ const MisReports          = lazy_("MisReports");
 const AiAssistant         = lazy_("AiAssistant");
 const ThemeSettings       = lazy_("ThemeSettings");
 const PoNumberingSettings = lazy_("PoNumberingSettings");
+const DocumentNumberingSettings = lazy_("DocumentNumberingSettings");
 const CompanyMaster       = lazy_("CompanyMaster");
 const JobWork             = lazy_("JobWork");
 const JobWorkDashboard    = lazy_("JobWorkDashboard");
@@ -238,6 +240,14 @@ function App() {
                   }
                 />
                 <Route
+                  path="/hr/biometric"
+                  element={
+                    <ProtectedRoute allowedRoles={["admin", "hr"]} allowedPermission="hr">
+                      <BiometricAttendance />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
                   path="/hr/leaves"
                   element={
                     <ProtectedRoute allowedRoles={["admin", "hr"]} allowedPermission="hr">
@@ -299,6 +309,14 @@ function App() {
                   element={
                     <ProtectedRoute adminOnly>
                       <PoNumberingSettings />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/admin/document-numbering"
+                  element={
+                    <ProtectedRoute adminOnly>
+                      <DocumentNumberingSettings />
                     </ProtectedRoute>
                   }
                 />

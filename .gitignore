@@ -174,3 +174,8 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+# Templates are meant to be committed (no real secrets in them) — negation
+# must come after every exclusion pattern above to take effect.
+!.env.example
+!**/.env.example

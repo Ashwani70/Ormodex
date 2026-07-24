@@ -572,6 +572,43 @@ async def list_outstanding(
     return {"total": len(results), "page": page, "limit": limit, "items": paged}
 
 
+@router.get("/party-summary")
+async def party_summary(
+    party_type: Literal["customer", "vendor"],
+    party_id:   str,
+    user=Depends(get_current_user),
+):
+    """Autofill payload for the Bank Entry party picker: ledger_id, GST/PAN,
+    contact details, outstanding balance and credit limit — one read of the
+    party record + its cached dc_party_balances row (no recompute)."""
+    _require_dc(user)
+    tenant = user.get("tenant_id", "default")
+    coll = "customers" if party_type == "customer" else "vendors"
+    party = await db[coll].find_one({"id": party_id}, {"_id": 0})
+    if not party:
+        raise HTTPException(404, f"{party_type.capitalize()} not found")
+    balance = await db.dc_party_balances.find_one(
+        {"tenant_id": tenant, "party_type": party_type, "party_id": party_id}, {"_id": 0}
+    )
+    return {
+        "party_id": party_id,
+        "party_name": party.get("name", ""),
+        "ledger_id": party.get("ledger_id"),
+        "gstin": party.get("gstin", ""),
+        "pan": party.get("pan") or party.get("pan_number") or "",
+        "address": party.get("address") or party.get("billing_address") or "",
+        "state": party.get("state") or "",
+        "contact_person": party.get("contact_person") or "",
+        "mobile": party.get("mobile") or party.get("phone") or "",
+        "email": party.get("email") or "",
+        "outstanding_balance": _fmt_rupees((balance or {}).get("outstanding")),
+        "credit_limit": _fmt_rupees(party.get("credit_limit")),
+        "payment_terms": party.get("payment_terms") or "",
+        "tds_applicable": bool(party.get("tds_applicable")),
+        "is_active": party.get("is_active", True),
+    }
+
+
 # ─────────────────────────── Invoice Outstanding ───────────────────────────
 
 @router.get("/invoice-outstanding")

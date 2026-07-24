@@ -19,9 +19,12 @@ from core.models import (
     Quotation,
     SalesOrder,
 )
+from core.document_numbering import allocate_document_number
 from core.ledger_posting import post_credit_note_journal
+from core.party_ledger import auto_create_party_ledger
 from core.product_stock_bridge import resolve_godown_id, resolve_stock_item_id_for_product
 from core.stock_ledger import on_hand, post_entry
+from core.tenant import resolve_tenant
 from core.utils import (
     calc_totals,
     crud_create,
@@ -122,6 +125,14 @@ async def create_customer(payload: Customer, user: dict = Depends(get_current_us
     await check_gstin_before_save(data.get("gstin"), data)
     if not data.get("customer_code"):
         data["customer_code"] = await next_doc_number("CUST", "customers")
+    # Auto-link a Chart-of-Accounts ledger (Sundry Debtors) so this customer
+    # can be selected as a Bank Entry party and post through the voucher
+    # engine — mirrors the bank-account auto-ledger, see core/party_ledger.py.
+    if not data.get("ledger_id"):
+        data["ledger_id"] = await auto_create_party_ledger(
+            "customer", data["name"], resolve_tenant(user), user,
+            gstin=data.get("gstin"), pan=data.get("pan_number"),
+        )
     result = await crud_create("customers", data, user=user)
     _cache.invalidate("customers:all")
     return result
@@ -468,8 +479,9 @@ async def list_invoices(q: Optional[str] = None, _: dict = Depends(get_current_u
 @router.post("/invoices")
 async def create_invoice(payload: Invoice, user: dict = Depends(get_current_user)):
     data = payload.model_dump()
-    if not data.get("invoice_number"):
-        data["invoice_number"] = await next_doc_number("INV", "invoices")
+    # AUTO/MANUAL + prefix/FY/branch template per Admin -> Document Numbering
+    # (core/document_numbering.py) — replaces the old fixed INV00001 counter.
+    data["invoice_number"] = await allocate_document_number("invoice", data.get("invoice_number"), user)
     if data.get("customer_id"):
         cust = await db.customers.find_one({"id": data["customer_id"]}, {"_id": 0, "name": 1})
         if cust:

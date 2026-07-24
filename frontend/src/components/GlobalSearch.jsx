@@ -48,6 +48,17 @@ function saveRecent(term) {
   localStorage.setItem(RECENT_KEY, JSON.stringify(existing.slice(0, MAX_RECENT)));
 }
 
+function removeRecent(term) {
+  const next = loadList(RECENT_KEY).filter((t) => t.toLowerCase() !== term.toLowerCase());
+  localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+  return next;
+}
+
+function clearRecent() {
+  localStorage.removeItem(RECENT_KEY);
+  return [];
+}
+
 function toggleFavorite(term) {
   const trimmed = term.trim();
   if (!trimmed) return loadList(FAVORITES_KEY);
@@ -201,6 +212,16 @@ export default function GlobalSearch({ open, onClose }) {
     setFavorites(toggleFavorite(term));
   };
 
+  const handleRemoveRecent = (e, term) => {
+    e.stopPropagation();
+    setRecent(removeRecent(term));
+  };
+
+  const handleClearRecent = (e) => {
+    e.stopPropagation();
+    setRecent(clearRecent());
+  };
+
   const isFavorite = (term) => favorites.some((f) => f.toLowerCase() === term.toLowerCase());
 
   const groupEntries = Object.entries(groups);
@@ -260,6 +281,8 @@ export default function GlobalSearch({ open, onClose }) {
                     }}
                     onFavoriteClick={handleFavoriteClick}
                     isFavorite={isFavorite}
+                    onRemoveRecent={handleRemoveRecent}
+                    onClearRecent={handleClearRecent}
                   />
                 )}
 
@@ -378,7 +401,7 @@ function SkeletonRows() {
   );
 }
 
-function EmptyQueryState({ recent, favorites, onPick, onFavoriteClick, isFavorite }) {
+function EmptyQueryState({ recent, favorites, onPick, onFavoriteClick, isFavorite, onRemoveRecent, onClearRecent }) {
   if (recent.length === 0 && favorites.length === 0) {
     return (
       <div className="py-10 text-center text-xs text-muted-foreground">
@@ -407,8 +430,16 @@ function EmptyQueryState({ recent, favorites, onPick, onFavoriteClick, isFavorit
       )}
       {recent.length > 0 && (
         <div>
-          <div className="px-2 pb-1 text-[10px] font-mono uppercase text-muted-foreground tracking-widest">
-            Recent searches
+          <div className="px-2 pb-1 flex items-center justify-between">
+            <span className="text-[10px] font-mono uppercase text-muted-foreground tracking-widest">
+              Recent searches
+            </span>
+            <button
+              onClick={onClearRecent}
+              className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Clear all
+            </button>
           </div>
           {recent.map((term) => (
             <div
@@ -427,6 +458,13 @@ function EmptyQueryState({ recent, favorites, onPick, onFavoriteClick, isFavorit
                   className={`w-3 h-3 ${isFavorite(term) ? "text-amber-500" : "text-muted-foreground/50"}`}
                   fill={isFavorite(term) ? "currentColor" : "none"}
                 />
+              </button>
+              <button
+                onClick={(e) => onRemoveRecent(e, term)}
+                className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                aria-label={`Remove "${term}" from recent searches`}
+              >
+                <X className="w-3 h-3 text-muted-foreground/50 hover:text-destructive" />
               </button>
             </div>
           ))}

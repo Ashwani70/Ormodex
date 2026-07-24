@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useCallback } from "react";
-import portalApi, { setPortalToken, getPortalToken } from "@/lib/portalApi";
+import portalApi, { setPortalToken, getPortalTokenAsync } from "@/lib/portalApi";
 import { toast } from "sonner";
 import axios from "axios";
 
@@ -248,11 +248,16 @@ export default function Portal() {
   }, []);
 
   useEffect(() => {
-    if (!getPortalToken()) { setLoading(false); return; }
-    portalApi.get("/auth/me")
-      .then(({ data }) => setSession(data))
-      .catch(() => setPortalToken(null))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    getPortalTokenAsync().then((token) => {
+      if (cancelled) return;
+      if (!token) { setLoading(false); return; }
+      portalApi.get("/auth/me")
+        .then(({ data }) => setSession(data))
+        .catch(() => setPortalToken(null))
+        .finally(() => setLoading(false));
+    });
+    return () => { cancelled = true; };
   }, []);
 
   const logout = async () => {

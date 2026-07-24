@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
@@ -8,9 +8,10 @@ import {
 import ItemSearch from "@/components/ItemSearch";
 import SendEmailButton from "@/components/SendEmailButton";
 import useGridKeyNav from "@/hooks/useGridKeyNav";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
 import usePdfAction from "@/hooks/usePdfAction";
 import {
-  Plus, Trash2, Save, Printer, Eye, Download, MessageCircle, ArrowRightCircle, X,
+  Plus, Trash2, Save, Printer, Eye, Download, MessageCircle, ArrowRightCircle, X, Ban,
 } from "lucide-react";
 
 const inr = (n) => Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -202,10 +203,40 @@ export default function JobWorkChallan() {
     navigate(`/job-work/receipts/new?challan_id=${challanMeta.id}`);
   };
 
+  // A challan past Draft/Pending can no longer be edited or deleted (material
+  // has genuinely moved) — cancelling is the only way out, and reverses only
+  // the portion still outstanding with the job worker.
+  const cancelChallan = async () => {
+    if (!challanMeta) return;
+    if (!window.confirm(`Cancel challan ${challanMeta.challan_number}? This reverses the material still outstanding with the job worker back into stock.`)) return;
+    try {
+      const { data } = await api.post(`/job-work/challans/${challanMeta.id}/cancel`);
+      setChallanMeta({ id: data.id, challan_number: data.challan_number, status: data.status });
+      setForm((f) => ({ ...f, status: data.status }));
+      toast.success("Challan cancelled");
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Cancel failed");
+    }
+  };
+
+  // Enter-as-Tab data entry (see useEnterNavigation): Enter/Tab walks the
+  // header/job-worker/transport/sign-off fields, falling through to the
+  // Material Grid's own Enter/Arrow handling (useGridKeyNav, marked
+  // data-grid-managed below). Ctrl+Enter/Ctrl+S/Alt+S saves as PENDING,
+  // Escape cancels back to the list. Disabled once the challan is locked
+  // (non-draft/pending status) since fields are read-only at that point.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: !loading && !locked,
+    autoFocus: !isEdit,
+    onSave: () => save("PENDING"),
+    onCancel: () => navigate("/job-work"),
+  });
+
   if (loading) return <div className="p-6 text-muted-foreground font-mono text-sm">Loading…</div>;
 
   return (
-    <div data-testid="job-work-challan-page">
+    <div ref={formRef} data-testid="job-work-challan-page">
       <PageHeader
         eyebrow="Job Work · Outward"
         title={challanMeta ? `Challan ${challanMeta.challan_number}` : "New Job Work Challan"}
@@ -302,7 +333,7 @@ export default function JobWorkChallan() {
           )}
         </div>
         <div className="overflow-x-auto p-4">
-          <table className="w-full text-sm">
+          <table data-grid-managed className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-muted-foreground border-b border-border">
                 <th className="p-2 w-8">#</th>
@@ -465,7 +496,12 @@ export default function JobWorkChallan() {
             </PrimaryButton>
           </>
         )}
-        <SecondaryButton icon={X} onClick={() => navigate("/job-work")}>Cancel</SecondaryButton>
+        {locked && challanMeta && challanMeta.status !== "CANCELLED" && (
+          <SecondaryButton icon={Ban} danger onClick={cancelChallan}>
+            Cancel Challan
+          </SecondaryButton>
+        )}
+        <SecondaryButton icon={X} onClick={() => navigate("/job-work")}>Close</SecondaryButton>
       </div>
     </div>
   );

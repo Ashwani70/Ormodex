@@ -51,6 +51,7 @@ class AccountingLine(BaseModel):
     amount: float
     gst_details: Optional[GstDetails] = None
     narration: Optional[str] = None
+    cost_center_id: Optional[str] = None
 
 
 class InventoryLine(BaseModel):

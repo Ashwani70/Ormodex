@@ -160,6 +160,8 @@ class Customer(BaseModel):
     aadhaar_number: Optional[str] = None
     aadhaar_holder_name: Optional[str] = None
     aadhaar_status: Optional[str] = None
+    is_active: bool = True
+    ledger_id: Optional[str] = None  # master_ledgers link; auto-created on create if omitted
 
 
 

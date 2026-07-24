@@ -13,14 +13,56 @@ from datetime import datetime, date, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from core.accounting_models import (
     BankAccount, BankEntry, BankStatementLine, ReconcileMatch,
 )
 from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
+from core.party_ledger import auto_create_party_ledger
+from core.tenant import resolve_tenant
 
 router = APIRouter(prefix="/ledger", tags=["Ledger"])
+
+
+class QuickLedgerIn(BaseModel):
+    name: str
+
+
+@router.post("/quick-ledger")
+async def quick_create_ledger(payload: QuickLedgerIn, user=Depends(get_current_user)):
+    """Name-only ledger creation for the Bank Entry modal's "New Ledger"
+    quick-create — /masters/ledgers requires group_id + coa_account_id
+    (see [[project-gl-posting-audit-2026-07]]), which a one-field quick-create
+    popup can't ask the user for without breaking the "fast, no context
+    switch" point of quick-create. Auto-resolves both via a catch-all
+    "General Ledgers" group (kind="general" in core/party_ledger.py)."""
+    _require_ledger(user)
+    tenant_id = resolve_tenant(user)
+    ledger_id = await auto_create_party_ledger("general", payload.name, tenant_id, user)
+    ledger = await db.master_ledgers.find_one({"id": ledger_id}, {"_id": 0})
+    return ledger
+
+
+async def _auto_create_bank_ledger(bank_account_doc: dict, user: dict) -> str:
+    """Auto-create a master_ledgers row (with a dedicated CoA account, per the
+    voucher engine's hard requirement — see [[project-gl-posting-audit-2026-07]])
+    for a newly-created bank account, so entries can post through the real
+    accounting engine (GST/TDS/attachments/approval) without a manual setup
+    step. Returns the new ledger's id. See core/party_ledger.py — the same
+    helper backs vendor/customer auto-ledgers."""
+    return await auto_create_party_ledger(
+        "bank", bank_account_doc["name"], resolve_tenant(user), user,
+        opening_balance=bank_account_doc.get("opening_balance", 0.0),
+        bank_details={
+            "account_name": bank_account_doc["name"],
+            "account_number": bank_account_doc.get("account_number"),
+            "bank_name": bank_account_doc.get("bank_name"),
+            "ifsc": bank_account_doc.get("ifsc"),
+            "branch": bank_account_doc.get("branch"),
+        },
+    )
 
 
 def _require_ledger(user: dict):
@@ -47,6 +89,12 @@ async def create_bank_account(data: BankAccount, user=Depends(require_admin)):
     doc["id"] = str(uuid.uuid4())
     doc["created_at"] = datetime.now(timezone.utc).isoformat()
     doc["current_balance"] = data.opening_balance
+    # Auto-link a Chart-of-Accounts ledger so this account's entries can post
+    # through the voucher engine (GST/TDS/attachments/approval) with no manual
+    # setup step — see _auto_create_bank_ledger. Caller can still supply their
+    # own ledger_id (e.g. linking to an existing ledger) to skip this.
+    if not doc.get("ledger_id"):
+        doc["ledger_id"] = await _auto_create_bank_ledger(doc, user)
     await db.bank_accounts.insert_one(doc)
     doc.pop("_id", None)
     return doc
@@ -56,6 +104,65 @@ async def create_bank_account(data: BankAccount, user=Depends(require_admin)):
 async def update_bank_account(account_id: str, data: dict, user=Depends(require_admin)):
     await db.bank_accounts.update_one({"id": account_id}, {"$set": data})
     return {"ok": True}
+
+
+@router.get("/bank-accounts/{account_id}/today-summary")
+async def bank_account_today_summary(account_id: str, user=Depends(get_current_user)):
+    """Today's credit/debit totals for the Live Bank Summary sidebar. Reads
+    posted/approved vouchers whose ledger_id matches this account's linked
+    ledger — one query, aggregated in Python (a single day's vouchers is a
+    small set; avoids the shared-session asyncio.gather crash documented in
+    [[project-request-scoped-session-no-gather]])."""
+    _require_ledger(user)
+    account = await db.bank_accounts.find_one({"id": account_id}, {"_id": 0})
+    if not account:
+        raise HTTPException(404, "Bank account not found")
+    ledger_id = account.get("ledger_id")
+    today = date.today().isoformat()
+    credits = 0.0
+    debits = 0.0
+    if ledger_id:
+        vouchers = await db.vouchers_v2.find(
+            {"date": today, "status": {"$in": ["approved", "posted", "reconciled"]}},
+            {"_id": 0, "accounting_lines": 1},
+        ).to_list(500)
+        for v in vouchers:
+            for line in v.get("accounting_lines") or []:
+                if line.get("ledger_id") != ledger_id:
+                    continue
+                amt = float(line.get("amount") or 0)
+                # Bank ledgers are ASSET accounts: a Dr line increases the
+                # balance (money in = "credit" in everyday banking language,
+                # matching legacy BankEntry.entry_type="CREDIT"); a Cr line
+                # decreases it (money out). Opposite of double-entry's own
+                # Dr/Cr labels, which is why this isn't just `dr_cr == "Dr"`.
+                if line.get("dr_cr") == "Dr":
+                    credits += amt
+                else:
+                    debits += amt
+    return {
+        "current_balance": account.get("current_balance", 0.0),
+        "today_credits": round(credits, 2),
+        "today_debits": round(debits, 2),
+    }
+
+
+@router.get("/check-duplicate-reference")
+async def check_duplicate_reference(value: str, exclude_voucher_id: Optional[str] = None, user=Depends(get_current_user)):
+    """Warn (not block — banks legitimately reuse reference numbers across
+    different instruments/accounts sometimes) if a Cheque/UTR/Transaction
+    reference number already exists on another non-cancelled voucher."""
+    _require_ledger(user)
+    value = (value or "").strip()
+    if not value:
+        return {"duplicate": False}
+    q: dict = {"reference_no": value, "status": {"$ne": "cancelled"}}
+    if exclude_voucher_id:
+        q["id"] = {"$ne": exclude_voucher_id}
+    match = await db.vouchers_v2.find_one(q, {"_id": 0, "id": 1, "voucher_no": 1, "date": 1})
+    if not match:
+        return {"duplicate": False}
+    return {"duplicate": True, "voucher_id": match["id"], "voucher_no": match.get("voucher_no"), "date": match.get("date")}
 
 
 # ─────────────────────────── Bank Entries ───────────────────────────

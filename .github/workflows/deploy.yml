@@ -1,0 +1,166 @@
+name: Deploy Production
+
+# Tests → build → run DB migrations → deploy backend + frontend to Railway →
+# notify. Runs on every push to main; migrations run BEFORE the new backend
+# image goes live so a deploy never serves against a schema it doesn't expect.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions → Secrets):
+#   RAILWAY_TOKEN          — Railway account/project token (railway.app/account/tokens)
+#   DATABASE_URL           — same production Supabase pooler URL set in Railway's
+#                            backend service variables, used here ONLY to run
+#                            the migration step before the new image is live
+#   SLACK_WEBHOOK_URL       — optional; omit to skip the notify step silently
+#
+# Required repository variable (Settings → Secrets and variables → Actions → Variables):
+#   PRODUCTION_API_URL      — e.g. https://api.mycompany.com (no trailing slash).
+#                             Not a secret, but centralized here so it's a one-
+#                             line edit instead of hunting through the workflow.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Tests gate everything else — a failing suite never reaches deploy ────
+  test-backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run test suite
+        # NOTE: this repo's own audit notes document pre-existing order-
+        # dependent test pollution in the full suite (see project memory) —
+        # not a regression introduced by this workflow. If a flaky ordering
+        # failure blocks a real deploy, re-run this job before assuming the
+        # change under test is at fault.
+        run: pytest -q
+
+  test-frontend:
+    name: Frontend build check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Production build
+        run: npm run build
+        env:
+          CI: "false"
+          REACT_APP_BACKEND_URL: ${{ vars.PRODUCTION_API_URL }}
+      - name: Assert PWA assets exist
+        run: |
+          test -f build/service-worker.js
+          test -f build/manifest.json
+          node -e "JSON.parse(require('fs').readFileSync('build/manifest.json','utf8'))"
+
+  # ── Migrations run once, before either service redeploys ─────────────────
+  migrate:
+    name: Run database migrations
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Alembic upgrade head
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: alembic upgrade head
+
+  deploy-backend:
+    name: Deploy backend (Railway)
+    needs: migrate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+      - name: Deploy backend service
+        working-directory: backend
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --service backend --detach
+
+  deploy-frontend:
+    name: Deploy frontend (Railway)
+    needs: migrate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+      - name: Deploy frontend service
+        working-directory: frontend
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --service frontend --detach
+
+  # ── Post-deploy smoke check + notification ────────────────────────────────
+  verify-and-notify:
+    name: Verify deploy + notify
+    needs: [deploy-backend, deploy-frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for backend health check
+        env:
+          API_URL: ${{ vars.PRODUCTION_API_URL }}
+        run: |
+          for i in $(seq 1 20); do
+            if curl -sf "$API_URL/health" | grep -qi '"status":\s*"ok"'; then
+              echo "Backend healthy"
+              exit 0
+            fi
+            echo "Waiting for backend to come up ($i/20)…"
+            sleep 15
+          done
+          echo "::error::Backend did not report healthy within 5 minutes of deploy"
+          exit 1
+
+      - name: Notify Slack — success
+        if: success()
+        run: |
+          if [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
+            echo "No SLACK_WEBHOOK_URL configured — skipping notification."
+            exit 0
+          fi
+          curl -sf -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\"✅ Ormodex ERP deployed successfully — commit ${{ github.sha }} by ${{ github.actor }}\"}" \
+            "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+      - name: Notify Slack — failure
+        if: failure()
+        run: |
+          if [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
+            echo "No SLACK_WEBHOOK_URL configured — skipping notification."
+            exit 0
+          fi
+          curl -sf -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\"❌ Ormodex ERP deploy FAILED — commit ${{ github.sha }} by ${{ github.actor }}. Check the Actions run.\"}" \
+            "${{ secrets.SLACK_WEBHOOK_URL }}"

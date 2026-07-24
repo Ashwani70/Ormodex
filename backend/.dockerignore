@@ -1,0 +1,25 @@
+# Never bake real secrets into an image layer.
+.env
+.env.*
+!.env.example
+
+# Local dev artifacts — huge and irrelevant to the runtime image.
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Local uploads (dev data) — production uses the mounted Railway Volume,
+# not whatever happens to be in this directory at build time.
+uploads/
+
+# Editor/OS noise.
+.vscode/
+.idea/
+.DS_Store
+
+# Docs not needed inside the runtime image.
+*.md
+tests/

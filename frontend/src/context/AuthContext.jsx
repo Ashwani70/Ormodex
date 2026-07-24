@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback, useMemo } from "react";
 import api from "@/lib/api";
+import { setToken, clearToken } from "@/lib/tokenStore";
 
 const AuthContext = createContext(null);
 
@@ -41,7 +42,7 @@ export function AuthProvider({ children }) {
       return { mfaRequired: true, mfaToken: data.mfa_token };
     }
     if (data.access_token) {
-      localStorage.setItem("gew_access_token", data.access_token);
+      setToken(data.access_token);
     }
     setUser(data.user);
     return data.user;
@@ -53,7 +54,7 @@ export function AuthProvider({ children }) {
       code,
     });
     if (data.access_token) {
-      localStorage.setItem("gew_access_token", data.access_token);
+      setToken(data.access_token);
     }
     setUser(data.user);
     return data.user;
@@ -65,7 +66,7 @@ export function AuthProvider({ children }) {
       new_password: newPassword,
     });
     if (data.access_token) {
-      localStorage.setItem("gew_access_token", data.access_token);
+      setToken(data.access_token);
     }
     // The fresh user no longer carries the reset flag, so the app un-gates.
     setUser(data.user);
@@ -76,7 +77,7 @@ export function AuthProvider({ children }) {
     try {
       await api.post("/auth/logout");
     } catch {}
-    localStorage.removeItem("gew_access_token");
+    clearToken();
     setUser(false);
   }, []);
 
@@ -85,7 +86,7 @@ export function AuthProvider({ children }) {
     try {
       await api.post("/auth/logout-all");
     } catch {}
-    localStorage.removeItem("gew_access_token");
+    clearToken();
     setUser(false);
   }, []);
 

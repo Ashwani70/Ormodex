@@ -31,6 +31,7 @@ class Shift(BaseModel):
     late_grace_min: int = 10
     full_day_hours: float = 8
     half_day_hours: float = 4
+    crosses_midnight: bool = False  # night shift: end_time is on the following calendar day
 
 
 class Holiday(BaseModel):

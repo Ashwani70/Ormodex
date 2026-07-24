@@ -42,6 +42,11 @@ const FIELD_SPECS = {
     endpoint: "/purchase/v2/vendors",
     fields: [{ key: "name", label: "Vendor Name", required: true }],
   },
+  ledger: {
+    title: "Quick-Create Ledger",
+    endpoint: "/ledger/quick-ledger",
+    fields: [{ key: "name", label: "Ledger Name", required: true }],
+  },
   item: {
     title: "Quick-Create Product",
     endpoint: "/products",

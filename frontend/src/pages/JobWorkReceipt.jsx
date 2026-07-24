@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
@@ -6,6 +6,7 @@ import {
   PageHeader, Card, Field, Input, Textarea, Select, PrimaryButton, SecondaryButton, StatusBadge,
 } from "@/components/ui-kit";
 import SendEmailButton from "@/components/SendEmailButton";
+import useEnterNavigation from "@/hooks/useEnterNavigation";
 import usePdfAction from "@/hooks/usePdfAction";
 import { Save, Printer, Download, MessageCircle, X } from "lucide-react";
 
@@ -178,10 +179,23 @@ export default function JobWorkReceipt() {
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
   };
 
+  // Enter-as-Tab data entry (see useEnterNavigation): Enter/Tab walks
+  // Challan/Date, each line's Recv/Accepted/Rejected/Scrap/Remarks cells, and
+  // the Notes field. Ctrl+Enter/Ctrl+S/Alt+S saves, Escape cancels back to
+  // the list. No grid-nav here (plain field-by-field cells, unlike Challan's
+  // 5-column grid) so the hook covers the whole page uniformly.
+  const formRef = useRef(null);
+  useEnterNavigation(formRef, {
+    enabled: !loading,
+    autoFocus: !isEdit,
+    onSave: () => save(),
+    onCancel: () => navigate("/job-work"),
+  });
+
   if (loading) return <div className="p-6 text-muted-foreground font-mono text-sm">Loading…</div>;
 
   return (
-    <div data-testid="job-work-receipt-page">
+    <div ref={formRef} data-testid="job-work-receipt-page">
       <PageHeader
         eyebrow="Job Work · Inward"
         title={receiptMeta ? `Receipt ${receiptMeta.receipt_number}` : "New Job Work Receipt"}

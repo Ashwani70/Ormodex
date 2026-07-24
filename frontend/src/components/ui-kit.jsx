@@ -1,6 +1,7 @@
 import { Children, cloneElement, isValidElement, useId, useRef, useCallback, forwardRef } from "react";
 // Children.toArray, cloneElement, isValidElement, useId all used in Field()
-import { ChevronRight, Loader2, Paperclip, X, Clock } from "lucide-react";
+import { ChevronRight, ChevronDown, Loader2, Paperclip, X, Clock } from "lucide-react";
+import * as CollapsiblePrimitive from "@radix-ui/react-collapsible";
 import { cn } from "@/lib/utils";
 
 // ── Loading primitives ────────────────────────────────────────
@@ -136,6 +137,9 @@ const STATUS_TONE = {
   ACCEPTED: "success", REJECTED: "danger", PENDING: "warning", CONFIRMED: "info",
   DISPATCHED: "neutral", DELIVERED: "success", UNPAID: "danger", PARTIAL: "warning",
   PAID: "success", IN_TRANSIT: "info", COMPLETED: "success", OVERDUE: "danger",
+  // Voucher-engine lifecycle (draft→pending→approved→posted→reconciled/cancelled) —
+  // callers pass status.toUpperCase() since the backend stores it lowercase.
+  APPROVED: "success", POSTED: "success", RECONCILED: "success",
 };
 
 export function Badge({ tone = "neutral", children, className = "" }) {
@@ -524,6 +528,78 @@ export function FormSection({ title, description, icon: Icon, actions, children,
         {children}
       </div>
     </section>
+  );
+}
+
+// Same visual language as FormSection (icon badge, title/description, border/
+// radius/shadow tokens) but the body collapses — for long forms (Purchase
+// Order/Bill-style multi-section documents) where only one or two sections
+// need to be open at once. Built on Radix's unstyled Collapsible primitive
+// (components/ui/collapsible.jsx re-exports the same thing; imported
+// directly here since that file adds no styling of its own).
+//
+// Uncontrolled by default (`defaultOpen`); pass `open`/`onOpenChange` to
+// control it externally — e.g. a parent form that persists which sections
+// were last expanded (spec: "remember last expanded state") in localStorage
+// keyed per document type, or an "Expand All / Collapse All" toolbar action
+// that needs to flip every section at once.
+export function CollapsibleFormSection({
+  title, description, icon: Icon, actions, badge, children,
+  grid = true, cols = 2, className = "",
+  defaultOpen = false, open, onOpenChange,
+}) {
+  const colClass = { 1: "md:grid-cols-1", 2: "md:grid-cols-2", 3: "md:grid-cols-3", 4: "md:grid-cols-4" }[cols] || "md:grid-cols-2";
+  return (
+    <CollapsiblePrimitive.Root
+      defaultOpen={defaultOpen}
+      open={open}
+      onOpenChange={onOpenChange}
+      asChild
+    >
+      <section
+        className={cn("bg-card border border-border", className)}
+        style={{ borderRadius: "var(--radius-lg)", boxShadow: "var(--shadow-sm)" }}
+      >
+        <CollapsiblePrimitive.Trigger asChild>
+          <header
+            role="button"
+            tabIndex={0}
+            className="group flex w-full items-center justify-between gap-3 border-b border-border px-6 py-4 text-left cursor-pointer select-none hover:bg-muted/40 transition-colors"
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              {Icon && (
+                <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <Icon className="h-4 w-4" />
+                </span>
+              )}
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  {title && <h3 className="font-display font-semibold text-sm text-foreground truncate">{title}</h3>}
+                  {badge}
+                </div>
+                {description && <p className="text-xs text-muted-foreground truncate">{description}</p>}
+              </div>
+            </div>
+            <div className="flex flex-shrink-0 items-center gap-2">
+              {actions && (
+                // Stop clicks on header actions (e.g. "Add row") from also
+                // toggling collapse — actions live inside the trigger's
+                // hit-area since they're visually in the header row.
+                <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                  {actions}
+                </div>
+              )}
+              <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180" />
+            </div>
+          </header>
+        </CollapsiblePrimitive.Trigger>
+        <CollapsiblePrimitive.Content className="overflow-hidden data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down">
+          <div className={cn("p-6", grid && `grid grid-cols-1 ${colClass} gap-x-5 gap-y-4`)}>
+            {children}
+          </div>
+        </CollapsiblePrimitive.Content>
+      </section>
+    </CollapsiblePrimitive.Root>
   );
 }
 

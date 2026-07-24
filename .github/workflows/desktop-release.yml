@@ -14,7 +14,35 @@ permissions:
   contents: write # needed to create/upload the GitHub Release
 
 jobs:
+  # Fast fail-early check that never needs OS-specific runners: build the plain
+  # web bundle and assert the PWA files (service worker + manifest) came out
+  # intact. Runs on every trigger, before the three slow installer builds.
+  pwa-check:
+    name: PWA build check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build web bundle
+        working-directory: frontend
+        run: npm run build
+        env:
+          CI: "false"
+      - name: Assert PWA assets exist
+        shell: bash
+        run: |
+          test -f frontend/build/service-worker.js || (echo "::error::service-worker.js missing from build output" && exit 1)
+          test -f frontend/build/manifest.json || (echo "::error::manifest.json missing from build output" && exit 1)
+          node -e "JSON.parse(require('fs').readFileSync('frontend/build/manifest.json','utf8'))" || (echo "::error::manifest.json is not valid JSON" && exit 1)
+          echo "✓ service-worker.js and manifest.json present and valid"
+
   build:
+    needs: pwa-check
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -78,11 +106,12 @@ jobs:
           shopt -s nullglob
           declare -A STABLE=(
             [exe]="Ormodex-ERP-Setup.exe"
+            [msi]="Ormodex-ERP-Setup.msi"
             [dmg]="Ormodex-ERP.dmg"
             [AppImage]="Ormodex-ERP.AppImage"
             [deb]="Ormodex-ERP.deb"
           )
-          for ext in exe AppImage deb; do
+          for ext in exe msi AppImage deb; do
             for f in *."$ext"; do
               cp -f "$f" "${STABLE[$ext]}"
               echo "alias: $f -> ${STABLE[$ext]}"
@@ -103,21 +132,29 @@ jobs:
           name: installers-${{ matrix.target }}
           path: |
             desktop/release/*.exe
+            desktop/release/*.msi
             desktop/release/*.dmg
             desktop/release/*.AppImage
             desktop/release/*.deb
+            desktop/release/latest*.yml
           if-no-files-found: ignore
 
       # Upload versioned + stable-named installers to the Release for this tag.
+      # latest.yml / latest-mac.yml / latest-linux.yml are electron-builder's
+      # auto-update feed manifests — electron-updater (see desktop/updater.js)
+      # fetches these from the Release to learn a new version exists. Without
+      # them the in-app "Check for Updates" silently finds nothing, ever.
       - name: Publish to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             desktop/release/*.exe
+            desktop/release/*.msi
             desktop/release/*.dmg
             desktop/release/*.AppImage
             desktop/release/*.deb
+            desktop/release/latest*.yml
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

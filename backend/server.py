@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env", override=True)
 
+import asyncio
 import logging
 import os
 
@@ -38,6 +39,7 @@ from routers.reports import router as reports_router
 from routers.hr_setup import router as hr_setup_router
 from routers.hr_employees import router as hr_employees_router
 from routers.hr_attendance import router as hr_attendance_router
+from routers.biometric_attendance import router as biometric_attendance_router
 from routers.hr_payroll import router as hr_payroll_router
 from routers.accounting import router as accounting_router
 from routers.gst_accounting import router as gst_accounting_router
@@ -74,6 +76,7 @@ from routers.masters import router as masters_router
 from routers.voucher_engine_router import router as voucher_engine_router
 from routers.categories import router as categories_router
 from routers.po_numbering import router as po_numbering_router
+from routers.document_numbering import router as document_numbering_router
 from routers.cheque_printing import router as cheque_printing_router
 from routers.debtors_creditors import router as debtors_creditors_router
 from routers.letterhead_designer import router as letterhead_designer_router
@@ -374,6 +377,49 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         logger.warning("stock_ledger_entries schema fix skipped (non-fatal): %s", _e)
 
+    # stock_transactions (the legacy mirror Stock Log actually reads) never
+    # got source_doc_type even though stock_ledger_entries above did — so the
+    # "view voucher" drill-down couldn't tell a v2 GRN apart from a plain PO
+    # receive (both doc_type="PURCHASE") and always routed to /purchase-orders.
+    # Mirrors alembic migration 026. Idempotent — ADD COLUMN IF NOT EXISTS.
+    _stock_txn_source_type_fix = """
+        ALTER TABLE IF EXISTS stock_transactions ADD COLUMN IF NOT EXISTS source_doc_type TEXT DEFAULT NULL;
+        UPDATE stock_transactions SET source_doc_type = doc_type WHERE source_doc_type IS NULL AND doc_type IS NOT NULL;
+    """
+    try:
+        async with engine.begin() as conn:
+            for _stmt in [s.strip() for s in _stock_txn_source_type_fix.strip().split(";") if s.strip()]:
+                await conn.execute(text(_stmt))
+        logger.info("stock_transactions.source_doc_type ensured")
+    except Exception as _e:
+        logger.warning("stock_transactions source_doc_type fix skipped (non-fatal): %s", _e)
+
+    # document_numbering_settings — generalized AUTO/MANUAL numbering config
+    # for document types beyond Purchase Order (which keeps its own dedicated
+    # po_numbering_settings table) and Vouchers (own VoucherType-driven
+    # system). Mirrors alembic migration 027. Idempotent.
+    _document_numbering_ddl = """
+        CREATE TABLE IF NOT EXISTS document_numbering_settings (
+            id TEXT PRIMARY KEY,
+            mode TEXT DEFAULT 'AUTO',
+            prefix TEXT DEFAULT '',
+            fy_format TEXT DEFAULT '',
+            branch_code TEXT DEFAULT '',
+            separator TEXT DEFAULT '-',
+            start_sequence INTEGER DEFAULT 1,
+            sequence_length INTEGER DEFAULT 5,
+            updated_at TEXT,
+            updated_by TEXT
+        );
+    """
+    try:
+        async with engine.begin() as conn:
+            for _stmt in [s.strip() for s in _document_numbering_ddl.strip().split(";") if s.strip()]:
+                await conn.execute(text(_stmt))
+        logger.info("document_numbering_settings table ensured")
+    except Exception as _e:
+        logger.warning("document_numbering_settings table fix skipped (non-fatal): %s", _e)
+
     # Valuation-engine columns: standard_cost (per-unit std for STANDARD_COST
     # method) and extra (JSONB, back-compat home for standard_cost on old rows).
     # Idempotent — the valuation resolver reads these, so they must exist before
@@ -422,6 +468,110 @@ async def lifespan(app: FastAPI):
         logger.info("master_ledgers.coa_account_id ensured")
     except Exception as _e:
         logger.warning("ledger CoA link fix skipped (non-fatal): %s", _e)
+
+    # eSSL Biometric Attendance Integration: fixes attendance's silently-
+    # dropped columns (check_in/check_out/working_hours/overtime_hours/source
+    # had no matching ORM column and no extra/data catch-all, so the Mongo-
+    # compat shim's insert_one/update_one dropped them on every write) and
+    # adds the payroll-aggregate columns (period/paid_days/total_days) plus
+    # the new device/mapping/sync-run/rule tables. Mirrors alembic migration 024.
+    _biometric_attendance_fix = """
+        ALTER TABLE IF EXISTS attendance ADD COLUMN IF NOT EXISTS check_in TEXT;
+        ALTER TABLE IF EXISTS attendance ADD COLUMN IF NOT EXISTS check_out TEXT;
+        ALTER TABLE IF EXISTS attendance ADD COLUMN IF NOT EXISTS working_hours NUMERIC(18,4);
+        ALTER TABLE IF EXISTS attendance ADD COLUMN IF NOT EXISTS overtime_hours NUMERIC(18,4);
+        ALTER TABLE IF EXISTS attendance ADD COLUMN IF NOT EXISTS source TEXT;
+        ALTER TABLE IF EXISTS attendance ADD COLUMN IF NOT EXISTS late BOOLEAN;
+        ALTER TABLE IF EXISTS attendance ADD COLUMN IF NOT EXISTS early_leave BOOLEAN;
+        ALTER TABLE IF EXISTS attendance ADD COLUMN IF NOT EXISTS missing_punch BOOLEAN;
+        ALTER TABLE IF EXISTS attendance ADD COLUMN IF NOT EXISTS remarks TEXT;
+        ALTER TABLE IF EXISTS attendance ADD COLUMN IF NOT EXISTS period TEXT;
+        ALTER TABLE IF EXISTS attendance ADD COLUMN IF NOT EXISTS paid_days NUMERIC(18,4);
+        ALTER TABLE IF EXISTS attendance ADD COLUMN IF NOT EXISTS total_days INTEGER;
+        CREATE INDEX IF NOT EXISTS ix_attendance_employee_period ON attendance (employee_id, period);
+        ALTER TABLE IF EXISTS attendance_logs ADD COLUMN IF NOT EXISTS employee_code TEXT;
+        ALTER TABLE IF EXISTS attendance_logs ADD COLUMN IF NOT EXISTS dedup_key TEXT;
+        ALTER TABLE IF EXISTS attendance_logs ADD COLUMN IF NOT EXISTS sync_run_id TEXT;
+        ALTER TABLE IF EXISTS attendance_logs ADD COLUMN IF NOT EXISTS source TEXT;
+        ALTER TABLE IF EXISTS attendance_logs ADD COLUMN IF NOT EXISTS raw_payload JSONB;
+        ALTER TABLE IF EXISTS attendance_logs ADD COLUMN IF NOT EXISTS processed BOOLEAN DEFAULT FALSE;
+        ALTER TABLE IF EXISTS attendance_logs ADD COLUMN IF NOT EXISTS processed_at TEXT;
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_attendance_logs_dedup_key ON attendance_logs (dedup_key);
+        CREATE INDEX IF NOT EXISTS ix_attendance_logs_tenant_device ON attendance_logs (tenant_id, device_id);
+        CREATE INDEX IF NOT EXISTS ix_attendance_logs_tenant_time ON attendance_logs (tenant_id, log_time);
+        CREATE TABLE IF NOT EXISTS biometric_devices (
+            id TEXT PRIMARY KEY, tenant_id TEXT, name TEXT, serial_number TEXT,
+            branch_id TEXT, device_model TEXT, integration_mode TEXT, host TEXT,
+            port INTEGER DEFAULT 4370, api_path TEXT, push_secret TEXT,
+            poll_interval_seconds INTEGER DEFAULT 300, is_active BOOLEAN DEFAULT TRUE,
+            last_sync_at TEXT, last_sync_status TEXT, last_seen_at TEXT, notes TEXT,
+            is_deleted BOOLEAN DEFAULT FALSE, deleted_at TEXT, created_at TEXT, updated_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS ix_biometric_devices_tenant_id ON biometric_devices (tenant_id);
+        CREATE INDEX IF NOT EXISTS ix_biometric_devices_tenant_branch ON biometric_devices (tenant_id, branch_id);
+        CREATE TABLE IF NOT EXISTS employee_device_mappings (
+            id TEXT PRIMARY KEY, tenant_id TEXT, device_id TEXT, employee_id TEXT,
+            device_enrollment_id TEXT, is_active BOOLEAN DEFAULT TRUE, created_at TEXT, updated_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS ix_emp_device_map_tenant_id ON employee_device_mappings (tenant_id);
+        CREATE INDEX IF NOT EXISTS ix_emp_device_map_tenant_device ON employee_device_mappings (tenant_id, device_id);
+        CREATE INDEX IF NOT EXISTS ix_emp_device_map_tenant_employee ON employee_device_mappings (tenant_id, employee_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_emp_device_map_device_enrollment ON employee_device_mappings (device_id, device_enrollment_id);
+        CREATE TABLE IF NOT EXISTS attendance_sync_runs (
+            id TEXT PRIMARY KEY, tenant_id TEXT, device_id TEXT, trigger TEXT, status TEXT,
+            started_at TEXT, finished_at TEXT, punches_fetched INTEGER DEFAULT 0,
+            punches_new INTEGER DEFAULT 0, punches_duplicate INTEGER DEFAULT 0,
+            error_message TEXT, attempt INTEGER DEFAULT 1, next_attempt_at TEXT,
+            triggered_by TEXT, created_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS ix_att_sync_runs_tenant_id ON attendance_sync_runs (tenant_id);
+        CREATE INDEX IF NOT EXISTS ix_att_sync_runs_tenant_device ON attendance_sync_runs (tenant_id, device_id);
+        CREATE INDEX IF NOT EXISTS ix_att_sync_runs_status ON attendance_sync_runs (tenant_id, status);
+        CREATE TABLE IF NOT EXISTS attendance_rules (
+            id TEXT PRIMARY KEY, tenant_id TEXT, shift_id TEXT,
+            late_grace_minutes INTEGER DEFAULT 10, early_leave_grace_minutes INTEGER DEFAULT 10,
+            half_day_threshold_hours NUMERIC(18,4), full_day_threshold_hours NUMERIC(18,4),
+            overtime_after_hours NUMERIC(18,4), missing_punch_action TEXT,
+            is_active BOOLEAN DEFAULT TRUE, created_at TEXT, updated_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS ix_attendance_rules_tenant_id ON attendance_rules (tenant_id);
+    """
+    try:
+        async with engine.begin() as conn:
+            for _stmt in [s.strip() for s in _biometric_attendance_fix.strip().split(";") if s.strip()]:
+                await conn.execute(text(_stmt))
+        logger.info("Biometric attendance schema ensured")
+    except Exception as _e:
+        logger.warning("Biometric attendance schema fix skipped (non-fatal): %s", _e)
+
+    # Shift's silently-dropped columns (weekly_off_days/late_grace_min/
+    # full_day_hours/half_day_hours/crosses_midnight had no matching ORM
+    # column and no extra/data catch-all, so every shift save dropped them)
+    # + attendance_corrections for the correction/approval workflow.
+    # Mirrors alembic migration 025.
+    _shift_and_correction_fix = """
+        ALTER TABLE IF EXISTS shifts ADD COLUMN IF NOT EXISTS weekly_off_days JSONB;
+        ALTER TABLE IF EXISTS shifts ADD COLUMN IF NOT EXISTS late_grace_min INTEGER DEFAULT 10;
+        ALTER TABLE IF EXISTS shifts ADD COLUMN IF NOT EXISTS full_day_hours NUMERIC(18,4);
+        ALTER TABLE IF EXISTS shifts ADD COLUMN IF NOT EXISTS half_day_hours NUMERIC(18,4);
+        ALTER TABLE IF EXISTS shifts ADD COLUMN IF NOT EXISTS crosses_midnight BOOLEAN DEFAULT FALSE;
+        CREATE TABLE IF NOT EXISTS attendance_corrections (
+            id TEXT PRIMARY KEY, tenant_id TEXT, employee_id TEXT, attendance_date TEXT,
+            requested_check_in TEXT, requested_check_out TEXT, requested_status TEXT,
+            reason TEXT, status TEXT, requested_by TEXT, requested_at TEXT,
+            decided_by TEXT, decided_at TEXT, rejection_reason TEXT, created_at TEXT, updated_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS ix_att_corrections_tenant_id ON attendance_corrections (tenant_id);
+        CREATE INDEX IF NOT EXISTS ix_att_corrections_tenant_employee ON attendance_corrections (tenant_id, employee_id);
+        CREATE INDEX IF NOT EXISTS ix_att_corrections_status ON attendance_corrections (tenant_id, status);
+    """
+    try:
+        async with engine.begin() as conn:
+            for _stmt in [s.strip() for s in _shift_and_correction_fix.strip().split(";") if s.strip()]:
+                await conn.execute(text(_stmt))
+        logger.info("Shift columns + attendance corrections schema ensured")
+    except Exception as _e:
+        logger.warning("Shift/correction schema fix skipped (non-fatal): %s", _e)
 
     # Database indexes for inventory query optimization
     _inventory_performance_indexes = """
@@ -478,7 +628,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Object storage init failed (uploads disabled): {e}")
 
+    from core.biometric_sync import scheduler_loop
+    from core.db import db as _db
+    biometric_scheduler_task = asyncio.create_task(scheduler_loop(_db))
+    logger.info("Biometric attendance scheduler started")
+
     yield
+
+    biometric_scheduler_task.cancel()
+    try:
+        await biometric_scheduler_task
+    except asyncio.CancelledError:
+        pass
 
     await close_db()
 
@@ -721,6 +882,7 @@ api_router.include_router(reports_router)
 api_router.include_router(hr_setup_router)
 api_router.include_router(hr_employees_router)
 api_router.include_router(hr_attendance_router)
+api_router.include_router(biometric_attendance_router)
 api_router.include_router(hr_payroll_router)
 api_router.include_router(accounting_router)
 api_router.include_router(gst_accounting_router)
@@ -757,6 +919,7 @@ api_router.include_router(masters_router)
 api_router.include_router(voucher_engine_router)
 api_router.include_router(categories_router)
 api_router.include_router(po_numbering_router)
+api_router.include_router(document_numbering_router)
 api_router.include_router(cheque_printing_router)
 api_router.include_router(debtors_creditors_router)
 api_router.include_router(letterhead_designer_router)
@@ -771,6 +934,7 @@ v1_router.include_router(masters_router)
 v1_router.include_router(voucher_engine_router)
 v1_router.include_router(categories_router)
 v1_router.include_router(po_numbering_router)
+v1_router.include_router(document_numbering_router)
 v1_router.include_router(accounting_router)
 v1_router.include_router(gst_accounting_router)
 v1_router.include_router(ledger_router)
@@ -784,6 +948,7 @@ v1_router.include_router(expense_mgmt_router)
 v1_router.include_router(hr_setup_router)
 v1_router.include_router(hr_employees_router)
 v1_router.include_router(hr_attendance_router)
+v1_router.include_router(biometric_attendance_router)
 v1_router.include_router(hr_payroll_router)
 v1_router.include_router(payroll_router)
 v1_router.include_router(manufacturing_router)

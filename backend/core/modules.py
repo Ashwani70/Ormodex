@@ -25,6 +25,7 @@ MODULES: list[tuple[str, str]] = [
     ("cheque_cancel", "Cheque Cancellation"),
     ("payroll", "Payroll"),
     ("hr", "HR & Employees"),
+    ("biometric", "Biometric Attendance"),
     ("manufacturing", "Manufacturing"),
     ("pricing", "Pricing"),
     ("pos", "Point of Sale"),

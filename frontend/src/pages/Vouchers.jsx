@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import api from "@/lib/api";
+import api, { formatApiErrorDetail } from "@/lib/api";
 import {
   PageHeader,
   StatTile,
@@ -188,15 +188,23 @@ export default function Vouchers() {
     onNew: () => { if (!showModal) openNew(); },
   });
 
-  const deleteVoucher = async (id) => {
-    if (!window.confirm("Delete / cancel this voucher? This cannot be undone.")) return;
+  // DRAFT vouchers (never posted a journal entry) are hard-deleted by the
+  // backend; anything already APPROVED is cancelled in place instead — it
+  // already has a real journal_entries row, so hard-deleting it would orphan
+  // the books. The confirm prompt and toast reflect whichever actually
+  // happens rather than always claiming "deleted".
+  const deleteVoucher = async (v) => {
+    const isDraft = v.status === "DRAFT";
+    const verb = isDraft ? "Delete" : "Cancel";
+    if (!window.confirm(`${verb} voucher ${v.voucher_number}? This cannot be undone.`)) return;
     try {
-      await api.delete(`/vouchers/${id}`);
-      toast.success("Voucher deleted");
+      const { data } = await api.delete(`/vouchers/${v.id}`);
+      toast.success(data.action === "deleted" ? "Voucher deleted" : "Voucher cancelled");
       loadVouchers();
       loadStats();
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Failed");
+      console.error("Voucher delete/cancel failure:", err);
+      toast.error(formatApiErrorDetail(null, err));
     }
   };
 
@@ -307,13 +315,15 @@ export default function Vouchers() {
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
                     )}
-                    <button
-                      onClick={() => deleteVoucher(v.id)}
-                      title="Delete"
-                      className="w-7 h-7 border border-zinc-700 hover:border-red-500 hover:text-red-400 text-zinc-500 flex items-center justify-center transition-colors"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {v.status !== "CANCELLED" && (
+                      <button
+                        onClick={() => deleteVoucher(v)}
+                        title={v.status === "DRAFT" ? "Delete" : "Cancel — already posted, cannot be hard-deleted"}
+                        className="w-7 h-7 border border-zinc-700 hover:border-red-500 hover:text-red-400 text-zinc-500 flex items-center justify-center transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>

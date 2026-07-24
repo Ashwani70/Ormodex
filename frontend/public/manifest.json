@@ -1,4 +1,5 @@
 {
+  "id": "/",
   "short_name": "ORMODEX",
   "name": "ORMODEX — Tech & Software Solutions",
   "description": "Integrated ERP: CRM, HRM, Payroll, Inventory, GST, Accounting and AI automation.",
@@ -7,11 +8,20 @@
     { "src": "favicon-16x16.png", "type": "image/png", "sizes": "16x16" },
     { "src": "favicon-32x32.png", "type": "image/png", "sizes": "32x32" },
     { "src": "apple-touch-icon.png", "type": "image/png", "sizes": "180x180" },
-    { "src": "android-chrome-192x192.png", "type": "image/png", "sizes": "192x192", "purpose": "any maskable" },
-    { "src": "android-chrome-512x512.png", "type": "image/png", "sizes": "512x512", "purpose": "any maskable" }
+    { "src": "android-chrome-192x192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
+    { "src": "android-chrome-512x512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" }
   ],
   "start_url": ".",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
   "theme_color": "#0f1e3d",
-  "background_color": "#ffffff"
+  "background_color": "#ffffff",
+  "categories": ["business", "productivity", "finance"],
+  "shortcuts": [
+    { "name": "Dashboard", "url": "/", "icons": [{ "src": "android-chrome-192x192.png", "sizes": "192x192" }] },
+    { "name": "Point of Sale", "url": "/pos", "icons": [{ "src": "android-chrome-192x192.png", "sizes": "192x192" }] },
+    { "name": "Invoices", "url": "/invoices", "icons": [{ "src": "android-chrome-192x192.png", "sizes": "192x192" }] }
+  ]
 }
