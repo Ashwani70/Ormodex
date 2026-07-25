@@ -632,7 +632,7 @@ async def create_credit_note(payload: CreditNote, user: dict = Depends(get_curre
         journal = await post_credit_note_journal(
             db, credit_note_id=note["id"], credit_note_number=note["credit_note_number"],
             customer_id=note.get("customer_id"), customer_name=note.get("customer_name") or "Customer",
-            items=note.get("items", []), user=user, entry_date=note.get("date"),
+            items=note.get("items") or note.get("lines") or [], user=user, entry_date=note.get("date"),
         )
         if journal:
             await crud_update("credit_notes", note["id"], {"journal_entry_id": journal["id"]}, user=user)
@@ -660,7 +660,7 @@ async def update_credit_note(item_id: str, payload: CreditNote, user: dict = Dep
         journal = await post_credit_note_journal(
             db, credit_note_id=item_id, credit_note_number=note["credit_note_number"],
             customer_id=note.get("customer_id"), customer_name=note.get("customer_name") or "Customer",
-            items=note.get("items", []), user=user, entry_date=note.get("date"),
+            items=note.get("items") or note.get("lines") or [], user=user, entry_date=note.get("date"),
         )
         if journal:
             await crud_update("credit_notes", item_id, {"journal_entry_id": journal["id"]}, user=user)

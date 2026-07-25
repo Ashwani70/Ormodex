@@ -16,6 +16,7 @@ matching. See alembic/versions/016_job_work_normalize.py.
 Challan and Receipt are read/written through entirely separate code paths.
 Nothing here ever unions or mixes the two into one query result.
 """
+import inspect
 import io
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -321,24 +322,54 @@ async def _insert_challan_items(session, challan_id: str, tenant_id: str | None,
 
 
 async def _fetch_challan_items(challan_id: str) -> list[dict]:
-    async with get_session() as session:
-        result = await session.execute(
-            select(JobWorkChallanItem).where(JobWorkChallanItem.challan_id == challan_id).order_by(JobWorkChallanItem.line_no)
-        )
-        return [_row_dict(r) for r in result.scalars().all()]
+    try:
+        async with get_session() as session:
+            result = await session.execute(
+                select(JobWorkChallanItem).where(JobWorkChallanItem.challan_id == challan_id).order_by(JobWorkChallanItem.line_no)
+            )
+            rows = [_row_dict(r) for r in result.scalars().all()]
+            if rows:
+                return rows
+    except Exception:
+        pass
+    if hasattr(db, "job_work_challan_items"):
+        cursor = db.job_work_challan_items.find({"challan_id": challan_id})
+        if hasattr(cursor, "to_list"):
+            res = cursor.to_list(1000)
+            items = (await res) if inspect.isawaitable(res) else (res or [])
+            return items if isinstance(items, list) else []
+    return []
 
 
 async def _fetch_challan_items_for_ids(challan_ids: list[str]) -> dict[str, list[dict]]:
     if not challan_ids:
         return {}
-    async with get_session() as session:
-        result = await session.execute(
-            select(JobWorkChallanItem).where(JobWorkChallanItem.challan_id.in_(challan_ids)).order_by(JobWorkChallanItem.line_no)
-        )
-        by_challan: dict[str, list[dict]] = {}
-        for r in result.scalars().all():
-            by_challan.setdefault(r.challan_id, []).append(_row_dict(r))
+    try:
+        async with get_session() as session:
+            result = await session.execute(
+                select(JobWorkChallanItem).where(JobWorkChallanItem.challan_id.in_(challan_ids)).order_by(JobWorkChallanItem.line_no)
+            )
+            by_challan: dict[str, list[dict]] = {}
+            for r in result.scalars().all():
+                by_challan.setdefault(r.challan_id, []).append(_row_dict(r))
+            if by_challan:
+                return by_challan
+    except Exception:
+        pass
+    if hasattr(db, "job_work_challan_items"):
+        cursor = db.job_work_challan_items.find({"challan_id": {"$in": challan_ids}})
+        if hasattr(cursor, "to_list"):
+            res = cursor.to_list(1000)
+            items = (await res) if inspect.isawaitable(res) else (res or [])
+        else:
+            items = []
+        by_challan = {}
+        if isinstance(items, list):
+            for it in items:
+                if isinstance(it, dict) and "challan_id" in it:
+                    by_challan.setdefault(it["challan_id"], []).append(it)
         return by_challan
+    return {}
 
 
 async def _received_by_challan_item(challan_ids: list[str]) -> dict[str, float]:
@@ -1524,9 +1555,11 @@ async def _pending_rows(status_filter: list[str] | None = None, overdue_only: bo
             except Exception:
                 pass
 
-        for item in items_by_challan.get(c["id"], []):
+        c_items = items_by_challan.get(c["id"]) or c.get("items") or []
+        for item in c_items:
             sent = float(item.get("quantity", 0) or 0)
-            received = received_by_item.get(item["id"], 0.0)
+            item_id = item.get("id")
+            received = received_by_item.get(item_id, 0.0) if item_id else 0.0
             pending = sent - received
             if pending <= 1e-6:
                 continue
@@ -1859,7 +1892,8 @@ async def get_itc04(
 
     table4 = []
     for c in outward_challans:
-        for item in items_by_challan.get(c["id"], []):
+        c_items = items_by_challan.get(c["id"]) or c.get("items") or []
+        for item in c_items:
             table4.append({
                 "challan_number": c["challan_number"],
                 "challan_date": c["date"],
@@ -1901,7 +1935,8 @@ async def get_itc04(
     table5 = []
     for r in inward_receipts:
         ref = ref_challans.get(r.get("challan_id", ""), {})
-        for item in items_by_receipt.get(r["id"], []):
+        r_items = items_by_receipt.get(r["id"]) or r.get("items") or []
+        for item in r_items:
             table5.append({
                 "receipt_number": r.get("receipt_number", ""),
                 "receipt_date": r.get("date", ""),

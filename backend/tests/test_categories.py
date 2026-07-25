@@ -343,7 +343,7 @@ def test_product_create_links_category_by_id():
     c = asyncio.run(cat.create_category(_make_payload(cat, name="Cuplock"), user=USER))
     from core.models import Product
     p = Product(name="Vertical", sku="V1", category="ignored", category_id=c["id"])
-    created = asyncio.run(inv.create_product(p, _=USER))
+    created = asyncio.run(inv.create_product(p, user=USER))
     assert created["category_id"] == c["id"]
     assert created["category"] == "Cuplock"  # canonical name copied from master
 
@@ -353,7 +353,7 @@ def test_product_create_links_category_by_name():
     c = asyncio.run(cat.create_category(_make_payload(cat, name="Frame"), user=USER))
     from core.models import Product
     p = Product(name="Frame Panel", sku="FP1", category="frame")  # case-insensitive
-    created = asyncio.run(inv.create_product(p, _=USER))
+    created = asyncio.run(inv.create_product(p, user=USER))
     assert created["category_id"] == c["id"]
 
 
@@ -362,7 +362,7 @@ def test_product_create_unknown_category_id_rejected():
     from core.models import Product
     p = Product(name="X", sku="X1", category="X", category_id="missing")
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(inv.create_product(p, _=USER))
+        asyncio.run(inv.create_product(p, user=USER))
     assert exc.value.status_code == 400
 
 

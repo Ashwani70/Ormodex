@@ -495,6 +495,14 @@ class CreditNote(Base):
     total_amount = _num(); notes = _text(); cn_date = _ts()
     created_at = _ts(); updated_at = _ts()
 
+    @property
+    def items(self):
+        return self.lines
+
+    @items.setter
+    def items(self, value):
+        self.lines = value
+
 
 class Dispatch(Base):
     __tablename__ = "dispatches"

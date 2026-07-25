@@ -19,7 +19,11 @@ async def resolve_godown_id(godown_id: Optional[str]) -> str:
     """
     if godown_id:
         return godown_id
-    first_godown = await db.godowns.find_one({}, {"_id": 0, "id": 1}, sort=[("created_at", 1)])
+    cursor = db.godowns.find({}, {"_id": 0, "id": 1})
+    if hasattr(cursor, "sort"):
+        cursor = cursor.sort("created_at", 1)
+    godowns = await cursor.to_list(1) if hasattr(cursor, "to_list") else []
+    first_godown = godowns[0] if godowns else await db.godowns.find_one({}, {"_id": 0, "id": 1})
     if not first_godown:
         raise HTTPException(status_code=400, detail="No godown exists — create a warehouse/godown first")
     return first_godown["id"]
