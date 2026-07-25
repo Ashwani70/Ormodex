@@ -742,23 +742,23 @@ async def request_db_session(request: Request, call_next):
     return response
 
 
-frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+raw_frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+frontend_origins = [u.strip() for u in raw_frontend_url.split(",") if u.strip()]
+origins = list(set(frontend_origins + [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+]))
+allow_vercel_regex = os.environ.get("ALLOW_VERCEL_REGEX", "true").lower() in ("1", "true", "yes")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        frontend_url,
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-    ],
+    allow_origins=origins,
+    allow_origin_regex=r"https://.*\.vercel\.app" if allow_vercel_regex else None,
     allow_credentials=True,
-    # Narrowed from "*" to the methods/headers the app actually sends. A
-    # wildcard here combined with allow_credentials=True is broader than
-    # needed; X-CSRF-Token is the new double-submit header (see csrf_check
-    # middleware below).
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-CSRF-Token"],
+    allow_headers=["Content-Type", "Authorization", "X-CSRF-Token", "X-Requested-With"],
 )
 
 

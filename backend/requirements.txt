@@ -1,4 +1,4 @@
-fastapi==0.110.1
+fastapi>=0.116.2
 uvicorn==0.25.0
 gunicorn==22.0.0
 boto3>=1.34.129
@@ -20,16 +20,15 @@ tzdata>=2024.2
 # Kept here (commented) only so the move is documented and reversible.
 # motor==3.3.1
 pytest>=8.0.0
+pytest-asyncio>=0.24.0
 black>=24.1.1
 isort>=5.13.2
 flake8>=7.0.0
 mypy>=1.8.0
-python-jose>=3.3.0
 requests>=2.31.0
 pandas>=2.2.0
 numpy>=1.26.0
 python-multipart>=0.0.9
-jq>=1.6.0
 typer>=0.9.0
 reportlab>=4.5.0
 resend>=2.30.0
