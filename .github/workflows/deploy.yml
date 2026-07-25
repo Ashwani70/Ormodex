@@ -46,6 +46,10 @@ jobs:
         # not a regression introduced by this workflow. If a flaky ordering
         # failure blocks a real deploy, re-run this job before assuming the
         # change under test is at fault.
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          JWT_SECRET: "cmTIQGVgKtDWRF00t6qgtQPYjAeCV2GKCTEGJSjxN7T"
+          BYPASS_RATE_LIMIT: "true"
         run: pytest -q
 
   test-frontend:
