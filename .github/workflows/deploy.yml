@@ -28,6 +28,20 @@ jobs:
   test-backend:
     name: Backend tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gravity_erp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     defaults:
       run:
         working-directory: backend
@@ -40,6 +54,10 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Run database migrations
+        env:
+          DATABASE_URL: "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/gravity_erp"
+        run: alembic upgrade head
       - name: Run test suite
         # NOTE: this repo's own audit notes document pre-existing order-
         # dependent test pollution in the full suite (see project memory) —
@@ -47,7 +65,7 @@ jobs:
         # failure blocks a real deploy, re-run this job before assuming the
         # change under test is at fault.
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/gravity_erp"
           JWT_SECRET: "cmTIQGVgKtDWRF00t6qgtQPYjAeCV2GKCTEGJSjxN7T"
           BYPASS_RATE_LIMIT: "true"
         run: pytest -q
