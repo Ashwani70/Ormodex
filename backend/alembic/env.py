@@ -104,24 +104,31 @@ async def run_async_migrations() -> None:
     db_url = _db_url()
     eng = create_async_engine(db_url, poolclass=pool.NullPool)
     try:
-        async with eng.connect() as connection:
-            # Cheap round-trip before handing off to Alembic's own migration
-            # transaction — turns "asyncpg.exceptions/OSError deep inside
-            # run_migrations_online()" into one readable line naming the
-            # actual cause (auth, DNS/host, wrong port, SSL, etc.).
-            try:
-                await connection.execute(text("SELECT 1"))
-            except SQLAlchemyError as exc:
-                masked = db_url.split("@")[-1] if "@" in db_url else db_url
-                raise RuntimeError(
-                    "\n\nALEMBIC CONFIG ERROR: could not connect to the database "
-                    f"at '{masked}'.\n"
-                    "Check that DATABASE_URL is correct and reachable from this "
-                    "runner (Supabase: use the pooler host on port 6543, not the "
-                    "direct db.<ref>.supabase.co:5432 host — the latter is "
-                    "IPv6-only and unreachable from most CI/PaaS networks).\n"
-                    f"Underlying error: {exc}"
-                ) from exc
+        # Establish + round-trip the connection before handing off to Alembic's
+        # own migration transaction — turns "asyncpg.exceptions/OSError deep
+        # inside run_migrations_online()" into one readable line naming the
+        # actual cause. The connect itself must be INSIDE this try: an
+        # IPv6-only direct Supabase host fails right here with a bare
+        # "OSError: [Errno 101] Network is unreachable" (seen live from a
+        # GitHub runner), never reaching a SELECT.
+        try:
+            connection = await eng.connect()
+            await connection.execute(text("SELECT 1"))
+        except (SQLAlchemyError, OSError) as exc:
+            masked = db_url.split("@")[-1] if "@" in db_url else db_url
+            raise RuntimeError(
+                "\n\nALEMBIC CONFIG ERROR: could not connect to the database "
+                f"at '{masked}'.\n"
+                "Check that DATABASE_URL is correct and reachable from this "
+                "runner. Supabase: use the TRANSACTION POOLER connection "
+                "string — postgresql://postgres.<ref>:<password>@aws-0-"
+                "<region>.pooler.supabase.com:6543/postgres — NOT the direct "
+                "db.<ref>.supabase.co:5432 host; the direct host is IPv6-only "
+                "and GitHub-hosted runners have no IPv6 route ('[Errno 101] "
+                "Network is unreachable').\n"
+                f"Underlying error: {exc}"
+            ) from exc
+        try:
             # The SELECT 1 autobegins a transaction on this connection. Close it
             # before handing off, or Alembic sees a transaction it doesn't own,
             # leaves its own transaction management disengaged, and
@@ -129,6 +136,8 @@ async def run_async_migrations() -> None:
             # 003/005/018/019/021/022) fails its internal assertion.
             await connection.rollback()
             await connection.run_sync(do_run_migrations)
+        finally:
+            await connection.close()
     finally:
         await eng.dispose()
 
