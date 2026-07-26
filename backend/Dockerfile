@@ -55,13 +55,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 # --workers is overridable via WEB_CONCURRENCY; 2 is a safe default for a
 # small Railway instance (CPU-bound work here is minimal — most latency is
 # I/O-bound DB round-trips, so more workers than cores is fine).
-CMD gunicorn server:app \
-    --worker-class uvicorn.workers.UvicornWorker \
-    --workers ${WEB_CONCURRENCY:-2} \
-    --bind 0.0.0.0:${PORT:-8000} \
-    --timeout 60 \
-    --graceful-timeout 30 \
-    --keep-alive 5 \
-    --access-logfile - \
-    --error-logfile - \
-    --log-level info
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

@@ -742,7 +742,13 @@ async def request_db_session(request: Request, call_next):
     return response
 
 
-raw_frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+raw_frontend_url = ",".join([
+    os.environ.get("FRONTEND_URL", "http://localhost:3000"),
+    os.environ.get("ALLOWED_ORIGINS", ""),
+    os.environ.get("CORS_ORIGINS", ""),
+    f"https://{os.environ['RAILWAY_STATIC_URL']}" if "RAILWAY_STATIC_URL" in os.environ else "",
+    f"https://{os.environ['RAILWAY_PUBLIC_DOMAIN']}" if "RAILWAY_PUBLIC_DOMAIN" in os.environ else "",
+])
 frontend_origins = [u.strip() for u in raw_frontend_url.split(",") if u.strip()]
 origins = list(set(frontend_origins + [
     "http://localhost:3000",
@@ -750,12 +756,22 @@ origins = list(set(frontend_origins + [
     "http://127.0.0.1:3000",
     "http://127.0.0.1:3001",
 ]))
+allow_all_cors = os.environ.get("CORS_ALLOW_ALL", "false").lower() in ("1", "true", "yes", "*")
 allow_vercel_regex = os.environ.get("ALLOW_VERCEL_REGEX", "true").lower() in ("1", "true", "yes")
+allow_railway_regex = os.environ.get("ALLOW_RAILWAY_REGEX", "true").lower() in ("1", "true", "yes")
+
+cors_regex = None
+if allow_vercel_regex and allow_railway_regex:
+    cors_regex = r"https://.*\.(vercel\.app|railway\.app|up\.railway\.app)"
+elif allow_vercel_regex:
+    cors_regex = r"https://.*\.vercel\.app"
+elif allow_railway_regex:
+    cors_regex = r"https://.*\.(railway\.app|up\.railway\.app)"
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_origin_regex=r"https://.*\.vercel\.app" if allow_vercel_regex else None,
+    allow_origins=["*"] if allow_all_cors else origins,
+    allow_origin_regex=cors_regex,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-CSRF-Token", "X-Requested-With"],

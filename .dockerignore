@@ -1,0 +1,16 @@
+node_modules/
+build/
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.env
+.env.*
+!.env.example
+.git/
+.vscode/
+.idea/
+.DS_Store
+uploads/
