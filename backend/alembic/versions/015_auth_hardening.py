@@ -43,9 +43,14 @@ _USER_COLUMNS = [
 
 
 def _try(sql: str) -> None:
-    """Execute SQL; swallow errors so one bad statement doesn't abort the migration."""
+    """Execute SQL; swallow errors so one bad statement doesn't abort the migration.
+
+    Runs on a SAVEPOINT — without it a failed statement aborts the migration
+    transaction and every later statement dies with InFailedSQLTransaction.
+    """
     try:
-        op.execute(sql)
+        with op.get_bind().begin_nested():
+            op.execute(sql)
     except Exception as exc:
         print(f"[015 migration] non-fatal: {exc}")
 

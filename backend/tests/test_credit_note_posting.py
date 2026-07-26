@@ -13,6 +13,7 @@ import asyncio
 import core.db
 import core.utils as utils
 import core.ledger_posting as lp
+import core.product_stock_bridge as psb
 import routers.sales
 from tests.test_purchase_bill_posting import _DB
 
@@ -23,8 +24,15 @@ def _setup(company_state="27"):
     core.db.db = db
     utils.db = db
     routers.sales.db = db
+    # product_stock_bridge holds its own import-time `db` reference — the
+    # ISSUED path's stock return calls its resolve_godown_id(), which must see
+    # the fake (against the real DB it either finds a production godown and
+    # passes by accident, or finds an empty fresh DB and 400s).
+    psb.db = db
     utils._txn_supported = False
     asyncio.run(db.companies.insert_one({"id": "c1", "state_code": company_state}))
+    # resolve_godown_id falls back to the oldest godown and raises without one.
+    asyncio.run(db.godowns.insert_one({"id": "g1", "name": "Main", "created_at": "2026-01-01"}))
     asyncio.run(db.fiscal_years.insert_one({"id": "fy", "name": "2026-27", "is_active": True}))
     for code, name in [("1100", "Accounts Receivable"), ("4001", "Sales Revenue"),
                        ("2003", "CGST Payable"), ("2004", "SGST Payable"),

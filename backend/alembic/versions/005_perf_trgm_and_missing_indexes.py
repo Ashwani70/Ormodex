@@ -9,8 +9,9 @@ WHY:
   which appear in ORDER BY and WHERE clauses without tenant_id prefixes.
 
   All created CONCURRENTLY + IF NOT EXISTS — zero table lock, safe to re-run.
-  CREATE INDEX CONCURRENTLY cannot run inside a transaction, so this migration
-  disables the per-migration transaction wrapper.
+  CREATE INDEX CONCURRENTLY cannot run inside a transaction, so each statement
+  runs inside Alembic's autocommit_block() (commits the migration transaction,
+  executes in autocommit, then resumes).
 """
 from alembic import op
 
@@ -19,11 +20,17 @@ down_revision = "004"
 branch_labels = None
 depends_on = None
 
-transaction_per_migration = False   # required for CONCURRENTLY
-
 
 def _concurrent(sql: str):
-    op.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {sql}")
+    # Non-fatal per statement (matching 018/019/021/022): on a fresh database
+    # migration 001 creates the CURRENT schema, so a column this historical
+    # migration indexes may have been renamed/dropped since — skip it rather
+    # than fail the whole chain.
+    try:
+        with op.get_context().autocommit_block():
+            op.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {sql}")
+    except Exception as exc:
+        print(f"[005 migration] non-fatal: {exc}")
 
 
 def upgrade():

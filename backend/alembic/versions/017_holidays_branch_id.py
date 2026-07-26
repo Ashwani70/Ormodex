@@ -18,8 +18,9 @@ depends_on = None
 
 def upgrade():
     try:
-        op.execute("ALTER TABLE holidays ADD COLUMN IF NOT EXISTS branch_id TEXT")
-        op.execute("CREATE INDEX IF NOT EXISTS ix_holidays_branch_id ON holidays (branch_id)")
+        with op.get_bind().begin_nested():
+            op.execute("ALTER TABLE holidays ADD COLUMN IF NOT EXISTS branch_id TEXT")
+            op.execute("CREATE INDEX IF NOT EXISTS ix_holidays_branch_id ON holidays (branch_id)")
     except Exception as exc:
         print(f"[017 migration] non-fatal: {exc}")
 

@@ -19,14 +19,13 @@ depends_on = None
 
 def upgrade():
     # ── job_work_challans ────────────────────────────────────────────────────
-    # Drop old columns that don't match what the router stores
-    with op.batch_alter_table("job_work_challans") as batch_op:
-        # Remove old mismatched columns (ignore if already absent)
-        for col in ("challan_no", "vendor_id", "lines", "dispatch_date", "expected_return_date"):
-            try:
-                batch_op.drop_column(col)
-            except Exception:
-                pass
+    # Drop old columns that don't match what the router stores. DROP COLUMN
+    # IF EXISTS, not batch_alter_table + try/except: batch ops only RECORD the
+    # drop inside the with-block and emit the real (unguarded) ALTER TABLE at
+    # __exit__, so the try/except never catches a missing column and a fresh
+    # database (where 001 already created the current schema) fails here.
+    for col in ("challan_no", "vendor_id", "lines", "dispatch_date", "expected_return_date"):
+        op.execute(f"ALTER TABLE job_work_challans DROP COLUMN IF EXISTS {col}")
 
     # Add the columns the router actually writes
     op.execute("""
@@ -54,12 +53,8 @@ def upgrade():
     """)
 
     # ── job_work_receipts ────────────────────────────────────────────────────
-    with op.batch_alter_table("job_work_receipts") as batch_op:
-        for col in ("receipt_no", "lines", "receipt_date"):
-            try:
-                batch_op.drop_column(col)
-            except Exception:
-                pass
+    for col in ("receipt_no", "lines", "receipt_date"):
+        op.execute(f"ALTER TABLE job_work_receipts DROP COLUMN IF EXISTS {col}")
 
     op.execute("""
         ALTER TABLE job_work_receipts

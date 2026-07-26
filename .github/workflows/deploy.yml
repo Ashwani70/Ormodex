@@ -5,11 +5,27 @@ name: Deploy Production
 # image goes live so a deploy never serves against a schema it doesn't expect.
 #
 # Required repository secrets (Settings → Secrets and variables → Actions → Secrets):
-#   RAILWAY_TOKEN          — Railway account/project token (railway.app/account/tokens)
-#   DATABASE_URL           — same production Supabase pooler URL set in Railway's
-#                            backend service variables, used here ONLY to run
-#                            the migration step before the new image is live
-#   SLACK_WEBHOOK_URL       — optional; omit to skip the notify step silently
+#   DATABASE_URL           — REQUIRED. Same production Supabase pooler URL set in
+#                            Railway's backend service variables, used here ONLY to
+#                            run the migration step before the new image is live.
+#                            Without this secret the `migrate` job fails fast (see
+#                            its "Verify required secrets are configured" step)
+#                            instead of falling through to alembic/env.py, which
+#                            itself also refuses to guess a database — no secret,
+#                            no migration, ever.
+#                            Format: postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres
+#                            Get it from: Supabase dashboard → Project Settings →
+#                            Database → Connection string → URI (choose "Transaction
+#                            pooler", port 6543 — NOT the direct :5432 host, which is
+#                            IPv6-only and unreachable from GitHub-hosted runners).
+#   RAILWAY_TOKEN          — REQUIRED for deploy-backend/deploy-frontend. Railway
+#                            account/project token: railway.app/account/tokens.
+#   SLACK_WEBHOOK_URL       — optional; omit to skip the notify step silently.
+#
+# No other secrets are read by this workflow. SUPABASE_ANON_KEY,
+# SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY, etc. are runtime app config
+# (Railway service variables, see backend/.env.example) — CI never touches
+# them because it only runs schema migrations, not the app itself.
 #
 # Required repository variable (Settings → Secrets and variables → Actions → Variables):
 #   PRODUCTION_API_URL      — e.g. https://api.mycompany.com (no trailing slash).
@@ -105,10 +121,21 @@ jobs:
       run:
         working-directory: backend
     steps:
+      - name: Verify required secrets are configured
+        run: |
+          if [ -z "${{ secrets.DATABASE_URL }}" ]; then
+            echo "::error::DATABASE_URL repository secret is not set."
+            echo "Add it under Settings -> Secrets and variables -> Actions -> Secrets."
+            echo "Use the Supabase TRANSACTION POOLER connection string (port 6543,"
+            echo "host aws-*.pooler.supabase.com) — see backend/.env.example for the format."
+            exit 1
+          fi
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Alembic upgrade head

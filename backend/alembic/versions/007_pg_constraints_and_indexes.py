@@ -22,9 +22,16 @@ depends_on = None
 
 
 def _try(sql: str) -> None:
-    """Execute SQL; swallow errors so one bad statement doesn't abort the whole migration."""
+    """Execute SQL; swallow errors so one bad statement doesn't abort the whole migration.
+
+    Runs on a SAVEPOINT (begin_nested): in Postgres a failed statement aborts
+    the surrounding transaction, so a bare try/except would leave every later
+    statement failing with InFailedSQLTransaction and the migration unable to
+    commit. Rolling back to the savepoint keeps the transaction healthy.
+    """
     try:
-        op.execute(sql)
+        with op.get_bind().begin_nested():
+            op.execute(sql)
     except Exception as exc:
         print(f"[007 migration] non-fatal: {exc}")
 
@@ -88,68 +95,27 @@ def upgrade():
         WHERE key_value IS NOT NULL;
     """)
 
-    # ── 2. CHECK constraints on status / enum TEXT columns ────────────────────
-
-    # invoices.status
-    _try("""
-        ALTER TABLE invoices
-        ADD CONSTRAINT chk_invoices_status
-        CHECK (status IN ('DRAFT','PENDING','APPROVED','PAID','PARTIALLY_PAID',
-                          'OVERDUE','CANCELLED','VOID'));
-    """)
-
-    # purchase_orders.status
-    _try("""
-        ALTER TABLE purchase_orders
-        ADD CONSTRAINT chk_purchase_orders_status
-        CHECK (status IN ('DRAFT','PENDING','APPROVED','PARTIALLY_RECEIVED',
-                          'RECEIVED','CANCELLED','CLOSED'));
-    """)
-
-    # purchase_orders_v2.status
-    _try("""
-        ALTER TABLE purchase_orders_v2
-        ADD CONSTRAINT chk_purchase_orders_v2_status
-        CHECK (status IN ('DRAFT','PENDING','APPROVED','PARTIALLY_RECEIVED',
-                          'RECEIVED','CANCELLED','CLOSED'));
-    """)
-
-    # grn_v2.status
-    _try("""
-        ALTER TABLE grn_v2
-        ADD CONSTRAINT chk_grn_v2_status
-        CHECK (status IN ('DRAFT','PENDING','APPROVED','RECEIVED','CANCELLED'));
-    """)
-
-    # sales_orders.status
-    _try("""
-        ALTER TABLE sales_orders
-        ADD CONSTRAINT chk_sales_orders_status
-        CHECK (status IN ('DRAFT','CONFIRMED','PARTIALLY_DELIVERED',
-                          'DELIVERED','CANCELLED','CLOSED'));
-    """)
-
-    # payroll_runs.status
-    _try("""
-        ALTER TABLE payroll_runs
-        ADD CONSTRAINT chk_payroll_runs_status
-        CHECK (status IN ('DRAFT','PROCESSING','COMPLETED','CANCELLED'));
-    """)
-
-    # audit_logs.action — only valid values
-    _try("""
-        ALTER TABLE audit_logs
-        ADD CONSTRAINT chk_audit_logs_action
-        CHECK (action IN ('CREATE','UPDATE','DELETE'));
-    """)
-
-    # users.role
-    _try("""
-        ALTER TABLE users
-        ADD CONSTRAINT chk_users_role
-        CHECK (role IN ('admin','accountant','employee','auditor','manager',
-                        'viewer','sales','purchase','hr','custom'));
-    """)
+    # ── 2. CHECK constraints on status / enum TEXT columns — REMOVED ──────────
+    # These constraints listed value sets that were never validated against
+    # what the app actually writes: purchase_v2 sets PO status 'SENT'/'PARTIAL',
+    # core/utils.py audits lowercase 'create'/'update'/'delete', auth/approvals
+    # audit 'LOGIN_SUCCESS'/'SUBMIT'/'APPROVE_FINAL'/…, and 015 later drops
+    # chk_users_role because roles are user-definable. None of them ever
+    # applied in production (before the SAVEPOINT fix, 007's first failed
+    # statement silently aborted the whole migration) — but on a fresh database
+    # they DID apply and instantly rejected legitimate app writes. Drop them
+    # anywhere they may have landed instead.
+    for tbl, chk in [
+        ("invoices", "chk_invoices_status"),
+        ("purchase_orders", "chk_purchase_orders_status"),
+        ("purchase_orders_v2", "chk_purchase_orders_v2_status"),
+        ("grn_v2", "chk_grn_v2_status"),
+        ("sales_orders", "chk_sales_orders_status"),
+        ("payroll_runs", "chk_payroll_runs_status"),
+        ("audit_logs", "chk_audit_logs_action"),
+        ("users", "chk_users_role"),
+    ]:
+        _try(f"ALTER TABLE {tbl} DROP CONSTRAINT IF EXISTS {chk};")
 
     # ── 3. GIN indexes for JSONB columns ─────────────────────────────────────
 

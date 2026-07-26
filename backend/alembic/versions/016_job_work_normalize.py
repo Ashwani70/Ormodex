@@ -40,8 +40,11 @@ _CHALLAN_COLUMNS = [
 
 
 def _try(sql: str) -> None:
+    # SAVEPOINT per statement — a failure otherwise aborts the surrounding
+    # migration transaction (see 007's _try for the full note).
     try:
-        op.execute(sql)
+        with op.get_bind().begin_nested():
+            op.execute(sql)
     except Exception as exc:
         print(f"[016 migration] non-fatal: {exc}")
 

@@ -43,8 +43,12 @@ depends_on = None
 
 
 def _try(sql: str) -> None:
+    # SAVEPOINT per statement — a failure otherwise aborts the surrounding
+    # migration transaction and every later statement dies with
+    # InFailedSQLTransaction (see 007's _try for the full note).
     try:
-        op.execute(sql)
+        with op.get_bind().begin_nested():
+            op.execute(sql)
     except Exception as exc:
         print(f"[009 perf] non-fatal: {exc}")
 

@@ -81,52 +81,73 @@ _TABLES = [
 ]
 
 
+def _upgrade_table(table: str) -> None:
+    # Enable RLS
+    op.execute(f'ALTER TABLE IF EXISTS "{table}" ENABLE ROW LEVEL SECURITY;')
+    # Force RLS even for table owner (belt-and-suspenders)
+    op.execute(f'ALTER TABLE IF EXISTS "{table}" FORCE ROW LEVEL SECURITY;')
+    # Grant full access to service_role (the backend's DB role).
+    # Guarded on pg_roles: service_role only exists on Supabase — on a
+    # vanilla Postgres (CI service container, local dev) CREATE POLICY
+    # ... TO service_role would raise "role does not exist" and poison
+    # the surrounding migration transaction, so skip it cleanly there.
+    op.execute(f"""
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role')
+            AND NOT EXISTS (
+                SELECT 1 FROM pg_policies
+                WHERE schemaname = 'public'
+                  AND tablename = '{table}'
+                  AND policyname = 'service_role_full_access'
+            ) THEN
+                EXECUTE $policy$
+                    CREATE POLICY service_role_full_access
+                    ON public."{table}"
+                    AS PERMISSIVE
+                    FOR ALL
+                    TO service_role
+                    USING (true)
+                    WITH CHECK (true)
+                $policy$;
+            END IF;
+        END $$;
+    """)
+
+
 def upgrade():
     for table in _TABLES:
         try:
-            # Enable RLS
-            op.execute(f'ALTER TABLE IF EXISTS "{table}" ENABLE ROW LEVEL SECURITY;')
-            # Force RLS even for table owner (belt-and-suspenders)
-            op.execute(f'ALTER TABLE IF EXISTS "{table}" FORCE ROW LEVEL SECURITY;')
-            # Grant full access to service_role (the backend's DB role)
-            op.execute(f"""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_policies
-                        WHERE schemaname = 'public'
-                          AND tablename = '{table}'
-                          AND policyname = 'service_role_full_access'
-                    ) THEN
-                        EXECUTE $policy$
-                            CREATE POLICY service_role_full_access
-                            ON public."{table}"
-                            AS PERMISSIVE
-                            FOR ALL
-                            TO service_role
-                            USING (true)
-                            WITH CHECK (true)
-                        $policy$;
-                    END IF;
-                END $$;
-            """)
+            # SAVEPOINT per table: without it one failed statement aborts the
+            # whole migration transaction and every later table's statements
+            # die with InFailedSQLTransaction despite the try/except.
+            with op.get_bind().begin_nested():
+                _upgrade_table(table)
         except Exception as exc:
             # Non-fatal: table may not exist yet in this environment
             print(f"[008 RLS] skipped {table}: {exc}")
 
     # Revoke direct access from anon and authenticated roles for all public tables.
     # The backend never uses these roles — only service_role goes through the pooler.
-    try:
-        op.execute("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon;")
-        op.execute("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM authenticated;")
-    except Exception as exc:
-        print(f"[008 RLS] REVOKE skipped: {exc}")
+    # Guarded on pg_roles: these roles exist only on Supabase (see note above).
+    op.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+                REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon;
+            END IF;
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+                REVOKE ALL ON ALL TABLES IN SCHEMA public FROM authenticated;
+            END IF;
+        END $$;
+    """)
 
 
 def downgrade():
     for table in _TABLES:
         try:
-            op.execute(f'DROP POLICY IF EXISTS service_role_full_access ON public."{table}";')
-            op.execute(f'ALTER TABLE IF EXISTS "{table}" DISABLE ROW LEVEL SECURITY;')
+            with op.get_bind().begin_nested():
+                op.execute(f'DROP POLICY IF EXISTS service_role_full_access ON public."{table}";')
+                op.execute(f'ALTER TABLE IF EXISTS "{table}" DISABLE ROW LEVEL SECURITY;')
         except Exception:
             pass

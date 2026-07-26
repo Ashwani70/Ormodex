@@ -12,7 +12,8 @@ rows. These single-column indexes keep those lookups index-served at scale.
 
 Created CONCURRENTLY + IF NOT EXISTS so applying this never locks a table and is
 safe to re-run. Because CREATE INDEX CONCURRENTLY cannot run inside a
-transaction, this migration disables the per-migration transaction.
+transaction, the statements execute inside Alembic's autocommit_block(), which
+commits the migration transaction, runs them in autocommit, then resumes.
 
 NOTE: at the time of writing this does not change observed latency — the app's
 bottleneck is cross-region network round-trips, not query execution (EXPLAIN
@@ -44,21 +45,31 @@ _INDEXES = (
     ("ix_refresh_tokens_active", "refresh_tokens", "active"),
 )
 
-# CREATE INDEX CONCURRENTLY must run outside a transaction.
-def _autocommit():
-    op.get_bind().execution_options(isolation_level="AUTOCOMMIT")
-
-
 def upgrade() -> None:
-    _autocommit()
+    # CREATE INDEX CONCURRENTLY must run outside a transaction. Flipping the
+    # live connection to AUTOCOMMIT via execution_options() raises
+    # InvalidRequestError under SQLAlchemy 2.x once Alembic has begun its
+    # migration transaction — autocommit_block() is the supported way.
+    #
+    # Per-statement block + non-fatal catch (matching 018/019/021/022): on a
+    # fresh database, migration 001 creates the CURRENT schema, so columns
+    # this historical migration indexes may no longer exist (e.g.
+    # theme_settings.user_id) — skip those instead of failing the chain.
     for name, table, column in _INDEXES:
-        op.execute(
-            f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} "
-            f"ON {table} ({column})"
-        )
+        try:
+            with op.get_context().autocommit_block():
+                op.execute(
+                    f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} "
+                    f"ON {table} ({column})"
+                )
+        except Exception as exc:
+            print(f"[003 migration] non-fatal: {exc}")
 
 
 def downgrade() -> None:
-    _autocommit()
     for name, _table, _column in _INDEXES:
-        op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {name}")
+        try:
+            with op.get_context().autocommit_block():
+                op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {name}")
+        except Exception as exc:
+            print(f"[003 migration] non-fatal: {exc}")

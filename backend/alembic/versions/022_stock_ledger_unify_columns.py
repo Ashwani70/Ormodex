@@ -31,12 +31,10 @@ down_revision = "021"
 branch_labels = None
 depends_on = None
 
-transaction_per_migration = False   # required for CONCURRENTLY
-
-
 def _concurrent(sql: str):
     try:
-        op.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {sql}")
+        with op.get_context().autocommit_block():
+            op.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {sql}")
     except Exception as exc:
         print(f"[022 migration] non-fatal: {exc}")
 

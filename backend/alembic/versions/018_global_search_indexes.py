@@ -13,7 +13,7 @@ WHY:
 
   All created CONCURRENTLY + IF NOT EXISTS — zero table lock, safe to re-run.
   CREATE INDEX CONCURRENTLY cannot run inside a transaction, so (matching 005)
-  this migration disables the per-migration transaction wrapper.
+  each statement runs inside Alembic's autocommit_block().
 """
 from alembic import op
 
@@ -22,12 +22,11 @@ down_revision = "017"
 branch_labels = None
 depends_on = None
 
-transaction_per_migration = False   # required for CONCURRENTLY
-
 
 def _concurrent(sql: str):
     try:
-        op.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {sql}")
+        with op.get_context().autocommit_block():
+            op.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {sql}")
     except Exception as exc:
         print(f"[018 migration] non-fatal: {exc}")
 
