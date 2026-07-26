@@ -121,6 +121,10 @@ jobs:
       run:
         working-directory: backend
     steps:
+      # Checkout must come first: this job defaults working-directory to
+      # backend/, which doesn't exist until checkout — a step running before
+      # it dies with "No such file or directory" instead of its real message.
+      - uses: actions/checkout@v4
       - name: Verify required secrets are configured
         run: |
           if [ -z "${{ secrets.DATABASE_URL }}" ]; then
@@ -130,7 +134,6 @@ jobs:
             echo "host aws-*.pooler.supabase.com) — see backend/.env.example for the format."
             exit 1
           fi
-      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
