@@ -88,8 +88,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+# Handles for tasks the app must cancel on shutdown (startup init, schedulers).
+_background_tasks: list = []
+
+
+async def _startup_init() -> None:
     # Bootstrap schema (idempotent — IF NOT EXISTS semantics).
     #
     # `create_all` runs a per-table reflection check before issuing any DDL, so
@@ -631,15 +634,54 @@ async def lifespan(app: FastAPI):
     from core.biometric_sync import scheduler_loop
     from core.db import db as _db
     biometric_scheduler_task = asyncio.create_task(scheduler_loop(_db))
+    _background_tasks.append(biometric_scheduler_task)
     logger.info("Biometric attendance scheduler started")
+
+
+async def _run_startup_init() -> None:
+    """Run _startup_init as a background task, logging failure loudly.
+
+    Launched from lifespan (not awaited there) so uvicorn binds the port —
+    and /health answers platform healthchecks — IMMEDIATELY. Previously the
+    lifespan awaited every drift-ensure/warm_pool/seed round-trip to Supabase
+    before yielding, so a slow cold start blew Railway's healthcheck window
+    and a missing/unreachable DATABASE_URL meant the app NEVER started
+    listening (healthcheck failure with an empty-looking log). Every step in
+    _startup_init is idempotent, so it is safe to run while the first
+    requests are already being served.
+    """
+    import time as _t
+    t0 = _t.monotonic()
+    logger.info("Startup initialization running in background…")
+    try:
+        await _startup_init()
+        logger.info("Startup initialization complete in %.1fs", _t.monotonic() - t0)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(
+            "Startup initialization FAILED after %.1fs — serving in degraded "
+            "mode. Check DATABASE_URL and the other service variables "
+            "(see backend/.env.example).",
+            _t.monotonic() - t0,
+        )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _background_tasks.append(asyncio.create_task(_run_startup_init()))
 
     yield
 
-    biometric_scheduler_task.cancel()
-    try:
-        await biometric_scheduler_task
-    except asyncio.CancelledError:
-        pass
+    for _task in _background_tasks:
+        _task.cancel()
+    for _task in _background_tasks:
+        try:
+            await _task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
 
     await close_db()
 
