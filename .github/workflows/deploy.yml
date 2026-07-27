@@ -1,36 +1,38 @@
 name: Deploy Production
 
-# Tests → build → run DB migrations → deploy backend + frontend to Railway →
-# notify. Runs on every push to main; migrations run BEFORE the new backend
-# image goes live so a deploy never serves against a schema it doesn't expect.
+# Tests → build check → run DB migrations → verify deployed backend health →
+# notify. Runs on every push to main.
+#
+# DEPLOYS ARE NOT DONE HERE: Render (backend, via render.yaml Blueprint) and
+# Vercel (frontend + marketing, via their Git integrations) each auto-deploy
+# on push to main. This workflow's job is everything the platforms don't do:
+# gate on the test suite, apply Alembic migrations to Supabase, then smoke-
+# check the deployed backend's health endpoint.
 #
 # Required repository secrets (Settings → Secrets and variables → Actions → Secrets):
 #   DATABASE_URL           — REQUIRED. Same production Supabase pooler URL set in
-#                            Railway's backend service variables, used here ONLY to
-#                            run the migration step before the new image is live.
-#                            Without this secret the `migrate` job fails fast (see
-#                            its "Verify required secrets are configured" step)
-#                            instead of falling through to alembic/env.py, which
-#                            itself also refuses to guess a database — no secret,
-#                            no migration, ever.
-#                            Format: postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres
-#                            Get it from: Supabase dashboard → Project Settings →
-#                            Database → Connection string → URI (choose "Transaction
-#                            pooler", port 6543 — NOT the direct :5432 host, which is
-#                            IPv6-only and unreachable from GitHub-hosted runners).
-#   RAILWAY_TOKEN          — REQUIRED for deploy-backend/deploy-frontend. Railway
-#                            account/project token: railway.app/account/tokens.
+#                            Render's service env vars, used here ONLY to run
+#                            the migration step. Without this secret the
+#                            `migrate` job fails fast (see its "Verify required
+#                            secrets are configured" step) instead of falling
+#                            through to alembic/env.py, which itself also
+#                            refuses to guess a database — no secret, no
+#                            migration, ever.
+#                            Format: postgresql://postgres.<ref>:<password>@aws-1-<region>.pooler.supabase.com:6543/postgres
+#                            Get it from: Supabase dashboard → Connect →
+#                            "Transaction pooler", port 6543 — NOT the direct
+#                            :5432 host, which is IPv6-only and unreachable
+#                            from GitHub-hosted runners.
 #   SLACK_WEBHOOK_URL       — optional; omit to skip the notify step silently.
 #
-# No other secrets are read by this workflow. SUPABASE_ANON_KEY,
-# SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY, etc. are runtime app config
-# (Railway service variables, see backend/.env.example) — CI never touches
-# them because it only runs schema migrations, not the app itself.
+# No other secrets are read by this workflow. SUPABASE_*, OPENAI_API_KEY, etc.
+# are runtime app config (Render service env vars, see backend/.env.example) —
+# CI never touches them because it only runs schema migrations, not the app.
 #
 # Required repository variable (Settings → Secrets and variables → Actions → Variables):
-#   PRODUCTION_API_URL      — e.g. https://api.mycompany.com (no trailing slash).
-#                             Not a secret, but centralized here so it's a one-
-#                             line edit instead of hunting through the workflow.
+#   PRODUCTION_API_URL      — the Render backend's public URL, e.g.
+#                             https://gravity-erp-backend.onrender.com or your
+#                             custom API domain (no trailing slash).
 on:
   push:
     branches: [main]
@@ -146,53 +148,35 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: alembic upgrade head
 
-  deploy-backend:
-    name: Deploy backend (Railway)
-    needs: migrate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli
-      - name: Deploy backend service
-        working-directory: backend
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: railway up --service backend --detach
-
-  deploy-frontend:
-    name: Deploy frontend (Railway)
-    needs: migrate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli
-      - name: Deploy frontend service
-        working-directory: frontend
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: railway up --service frontend --detach
-
   # ── Post-deploy smoke check + notification ────────────────────────────────
+  # Render deploys the backend in parallel with this workflow (both trigger on
+  # the same push), so this job waits until the DEPLOYED service is up AND its
+  # database round-trip works (/health/ready — stricter than the liveness
+  # probe Render itself gates on).
   verify-and-notify:
     name: Verify deploy + notify
-    needs: [deploy-backend, deploy-frontend]
+    needs: migrate
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for backend health check
+      - name: Wait for backend readiness
         env:
           API_URL: ${{ vars.PRODUCTION_API_URL }}
         run: |
-          for i in $(seq 1 20); do
-            if curl -sf "$API_URL/health" | grep -qi '"status":\s*"ok"'; then
-              echo "Backend healthy"
+          if [ -z "$API_URL" ]; then
+            echo "::error::PRODUCTION_API_URL repository variable is not set."
+            echo "Add it under Settings -> Secrets and variables -> Actions -> Variables"
+            echo "(the Render backend URL, e.g. https://gravity-erp-backend.onrender.com)."
+            exit 1
+          fi
+          for i in $(seq 1 40); do
+            if curl -sf "$API_URL/health/ready" | grep -qi '"status":\s*"ok"'; then
+              echo "Backend ready (DB round-trip ok)"
               exit 0
             fi
-            echo "Waiting for backend to come up ($i/20)…"
+            echo "Waiting for backend readiness ($i/40)…"
             sleep 15
           done
-          echo "::error::Backend did not report healthy within 5 minutes of deploy"
+          echo "::error::Backend did not report ready within 10 minutes of push"
           exit 1
 
       - name: Notify Slack — success

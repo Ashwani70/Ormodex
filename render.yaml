@@ -1,17 +1,56 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Architecture:
+#   Backend  : this file → Render web service (FastAPI, gunicorn + uvicorn workers)
+#   Frontend : Vercel project with Root Directory = frontend  (CRA; frontend/vercel.json)
+#   Marketing: Vercel project with Root Directory = marketing (Next.js)
+#   Database : Supabase PostgreSQL — NOT provisioned here. Use the transaction
+#              pooler URI (aws-1-<region>.pooler.supabase.com:6543); the direct
+#              db.<ref>.supabase.co:5432 host is IPv6-only and unreachable from
+#              most PaaS networks.
+#
+# First-time setup: Render dashboard → New → Blueprint → point at this repo.
+# Every envVar marked `sync: false` must be filled in on the dashboard —
+# values live only there, never in git (see backend/.env.example for the
+# format of each).
+#
+# Migrations: run by GitHub Actions (.github/workflows/deploy.yml `migrate`
+# job) on every push to main. Alternatively uncomment preDeployCommand below
+# (paid instance types only) to run them inside Render's deploy instead.
 services:
   - type: web
     name: gravity-erp-backend
-    env: python
+    runtime: python
     region: singapore
     plan: starter
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    startCommand: >-
+      gunicorn -k uvicorn.workers.UvicornWorker main:app
+      --bind 0.0.0.0:$PORT
+      --workers ${WEB_CONCURRENCY:-2}
+      --timeout 120
+      --graceful-timeout 30
+      --keep-alive 5
+      --access-logfile -
+      --error-logfile -
+    # /health answers immediately (startup init runs in the background — see
+    # server.py lifespan); /health/ready is the DB-gated readiness probe used
+    # by the post-deploy smoke check, not by this platform healthcheck.
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    # preDeployCommand: alembic upgrade head
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
       - key: ENV
         value: production
+      - key: WEB_CONCURRENCY
+        value: "2"
+      # ── Database (Supabase transaction pooler URI) ──
       - key: DATABASE_URL
         sync: false
+      # ── Supabase project API config (see backend/.env.example) ──
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_PUBLISHABLE_KEY
@@ -20,13 +59,42 @@ services:
         sync: false
       - key: SUPABASE_JWKS_URL
         sync: false
+      # ── Auth / crypto ──
+      # sync: false (NOT generateValue) so the value is set explicitly and
+      # matches every other environment that must verify the same tokens.
       - key: JWT_SECRET
-        generateValue: true
-      - key: FRONTEND_URL
+        sync: false
+      - key: SETTINGS_ENCRYPTION_KEY
         sync: false
       - key: ADMIN_EMAIL
-        value: admin@ormodex.com
+        sync: false
       - key: ADMIN_PASSWORD
         sync: false
-      - key: BYPASS_RATE_LIMIT
-        value: "true"
+      # ── CORS / frontend origins ──
+      # FRONTEND_URL: the production Vercel URL or custom domain.
+      # CORS_ORIGINS: extra comma-separated origins (Vercel previews are
+      # already covered by the built-in https://*.vercel.app regex).
+      - key: FRONTEND_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      # ── Email (optional — Resend) ──
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM
+        sync: false
+      # ── AI providers (optional; set the ones the app actually uses) ──
+      - key: AI_PROVIDER
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+    # Uploaded files live on disk under backend/uploads (see core/storage.py;
+    # override with LOCAL_STORAGE_DIR). Render's filesystem is EPHEMERAL —
+    # uploads vanish on every deploy unless you attach a persistent disk
+    # (paid instance types) and point the mount at the uploads dir:
+    # disk:
+    #   name: uploads
+    #   mountPath: /opt/render/project/src/backend/uploads
+    #   sizeGB: 1

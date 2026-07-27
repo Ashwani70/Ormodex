@@ -1,6 +1,8 @@
 """
-Ormodex ERP - Main FastAPI entry point for Uvicorn / Railway.
-Re-exports `app` from `server.py` to support `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+Ormodex ERP - Main FastAPI entry point (Render/any PaaS or local uvicorn).
+Re-exports `app` from `server.py` so both of these work:
+    uvicorn main:app --host 0.0.0.0 --port $PORT
+    gunicorn -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:$PORT
 """
 import os
 import uvicorn
