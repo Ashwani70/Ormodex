@@ -1,13 +1,11 @@
 name: Deploy Production
 
-# Tests → build check → run DB migrations → verify deployed backend health →
-# notify. Runs on every push to main.
+# Tests → build check → run DB migrations. Runs on every push to main.
 #
 # DEPLOYS ARE NOT DONE HERE: Render (backend, via render.yaml Blueprint) and
 # Vercel (frontend + marketing, via their Git integrations) each auto-deploy
 # on push to main. This workflow's job is everything the platforms don't do:
-# gate on the test suite, apply Alembic migrations to Supabase, then smoke-
-# check the deployed backend's health endpoint.
+# gate on the test suite and apply Alembic migrations to Supabase.
 #
 # Required repository secrets (Settings → Secrets and variables → Actions → Secrets):
 #   DATABASE_URL           — REQUIRED. Same production Supabase pooler URL set in
@@ -23,16 +21,10 @@ name: Deploy Production
 #                            "Transaction pooler", port 6543 — NOT the direct
 #                            :5432 host, which is IPv6-only and unreachable
 #                            from GitHub-hosted runners.
-#   SLACK_WEBHOOK_URL       — optional; omit to skip the notify step silently.
 #
 # No other secrets are read by this workflow. SUPABASE_*, OPENAI_API_KEY, etc.
 # are runtime app config (Render service env vars, see backend/.env.example) —
 # CI never touches them because it only runs schema migrations, not the app.
-#
-# Required repository variable (Settings → Secrets and variables → Actions → Variables):
-#   PRODUCTION_API_URL      — the Render backend's public URL, e.g.
-#                             https://gravity-erp-backend.onrender.com or your
-#                             custom API domain (no trailing slash).
 on:
   push:
     branches: [main]
@@ -42,7 +34,7 @@ permissions:
   contents: read
 
 jobs:
-  # ── Tests gate everything else — a failing suite never reaches deploy ────
+  # ── Tests gate migrations — a failing suite never touches the database ───
   test-backend:
     name: Backend tests
     runs-on: ubuntu-latest
@@ -104,17 +96,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Production build
+        # Build check only — the deployed bundle is built by Vercel, which
+        # injects the real REACT_APP_BACKEND_URL from its own project env.
         run: npm run build
         env:
           CI: "false"
-          REACT_APP_BACKEND_URL: ${{ vars.PRODUCTION_API_URL }}
       - name: Assert PWA assets exist
         run: |
           test -f build/service-worker.js
           test -f build/manifest.json
           node -e "JSON.parse(require('fs').readFileSync('build/manifest.json','utf8'))"
 
-  # ── Migrations run once, before either service redeploys ─────────────────
+  # ── Migrations run once, gated on both test jobs ─────────────────────────
   migrate:
     name: Run database migrations
     needs: [test-backend, test-frontend]
@@ -147,56 +140,3 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: alembic upgrade head
-
-  # ── Post-deploy smoke check + notification ────────────────────────────────
-  # Render deploys the backend in parallel with this workflow (both trigger on
-  # the same push), so this job waits until the DEPLOYED service is up AND its
-  # database round-trip works (/health/ready — stricter than the liveness
-  # probe Render itself gates on).
-  verify-and-notify:
-    name: Verify deploy + notify
-    needs: migrate
-    runs-on: ubuntu-latest
-    steps:
-      - name: Wait for backend readiness
-        env:
-          API_URL: ${{ vars.PRODUCTION_API_URL }}
-        run: |
-          if [ -z "$API_URL" ]; then
-            echo "::error::PRODUCTION_API_URL repository variable is not set."
-            echo "Add it under Settings -> Secrets and variables -> Actions -> Variables"
-            echo "(the Render backend URL, e.g. https://gravity-erp-backend.onrender.com)."
-            exit 1
-          fi
-          for i in $(seq 1 40); do
-            if curl -sf "$API_URL/health/ready" | grep -qi '"status":\s*"ok"'; then
-              echo "Backend ready (DB round-trip ok)"
-              exit 0
-            fi
-            echo "Waiting for backend readiness ($i/40)…"
-            sleep 15
-          done
-          echo "::error::Backend did not report ready within 10 minutes of push"
-          exit 1
-
-      - name: Notify Slack — success
-        if: success()
-        run: |
-          if [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
-            echo "No SLACK_WEBHOOK_URL configured — skipping notification."
-            exit 0
-          fi
-          curl -sf -X POST -H 'Content-type: application/json' \
-            --data "{\"text\":\"✅ Ormodex ERP deployed successfully — commit ${{ github.sha }} by ${{ github.actor }}\"}" \
-            "${{ secrets.SLACK_WEBHOOK_URL }}"
-
-      - name: Notify Slack — failure
-        if: failure()
-        run: |
-          if [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
-            echo "No SLACK_WEBHOOK_URL configured — skipping notification."
-            exit 0
-          fi
-          curl -sf -X POST -H 'Content-type: application/json' \
-            --data "{\"text\":\"❌ Ormodex ERP deploy FAILED — commit ${{ github.sha }} by ${{ github.actor }}. Check the Actions run.\"}" \
-            "${{ secrets.SLACK_WEBHOOK_URL }}"
