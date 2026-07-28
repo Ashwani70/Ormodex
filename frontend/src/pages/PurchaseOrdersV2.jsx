@@ -13,6 +13,7 @@ import usePdfAction from "@/hooks/usePdfAction";
 import useAccordionState from "@/hooks/useAccordionState";
 import BulkDeleteBar, { SelectCheckbox } from "@/components/BulkDeleteBar";
 import useBulkSelect from "@/hooks/useBulkSelect";
+import { STANDARD_UOMS, DEFAULT_UOM } from "@/config/uom";
 import useGridKeyNav from "@/hooks/useGridKeyNav";
 import useEnterNavigation from "@/hooks/useEnterNavigation";
 import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
@@ -50,10 +51,7 @@ function InvKpi({ tone, icon: Icon, label, value, unit }) {
 
 const STATUSES = ["DRAFT", "SENT", "PARTIALLY_RECEIVED", "RECEIVED", "CLOSED", "CANCELLED"];
 const STATUS_TONE = { DRAFT: "neutral", SENT: "info", PARTIALLY_RECEIVED: "warning", RECEIVED: "success", CLOSED: "success", CANCELLED: "danger" };
-const UOM_OPTIONS = ["pcs", "nos", "kg", "g", "mg", "l", "ml", "m", "cm", "mm", "ft", "inch", "box", "pair", "set", "bag", "roll", "sheet", "mtr", "sqft", "sqm", "hr", "day"];
-const UOM_LABELS = { pcs: "Pcs", nos: "Nos", mtr: "Mtr" };
-const uomLabel = (u) => UOM_LABELS[u] || u;
-const blankLine = () => ({ product_id: "", product_name: "", hsn_code: "", unit: "pcs", qty: "", rate: "", gst_rate: "", _manual: false, _gst_type: "GST", _cgst: "", _sgst: "", _igst: "" });
+const blankLine = () => ({ product_id: "", product_name: "", hsn_code: "", unit: DEFAULT_UOM, qty: "", rate: "", gst_rate: "", _manual: false, _gst_type: "GST", _cgst: "", _sgst: "", _igst: "" });
 const blank = () => ({ vendor_id: "", expected_date: "", status: "DRAFT", notes: "", lines: [blankLine()], po_number: "", po_number_reason: "" });
 
 const lineBase = (l) => (parseFloat(l.qty) || 0) * (parseFloat(l.rate) || 0);
@@ -174,7 +172,7 @@ export default function PurchaseOrdersV2() {
       product_id: pid,
       ...(p ? {
         hsn_code: p.hsn_code || "",
-        unit: p.unit || "pcs",
+        unit: p.unit || DEFAULT_UOM,
         rate,
         gst_rate: gst,
         _cgst: half,
@@ -251,7 +249,7 @@ export default function PurchaseOrdersV2() {
           product_id: l.product_id || "",
           product_name: l.product_name || "",
           hsn_code: l.hsn_code || "",
-          unit: l.unit || "pcs",
+          unit: l.unit || DEFAULT_UOM,
           qty: l.qty != null && l.qty !== 0 ? l.qty : "",
           rate: l.rate != null && l.rate !== 0 ? l.rate : "",
           gst_rate: gst !== "" ? gst : "",
@@ -280,7 +278,7 @@ export default function PurchaseOrdersV2() {
         product_id: l._manual ? null : l.product_id,
         product_name: l._manual ? l.product_name : items.find((i) => i.id === l.product_id)?.name,
         hsn_code: l.hsn_code || null,
-        unit: l.unit || "pcs",
+        unit: l.unit || DEFAULT_UOM,
         qty: parseFloat(l.qty), rate: parseFloat(l.rate) || 0, gst_rate: parseFloat(l.gst_rate) || 0,
         gst_type: l._gst_type || "GST",
         cgst_rate: l._gst_type === "CGST_SGST" ? parseFloat(l._cgst) || 0 : null,
@@ -771,10 +769,10 @@ export default function PurchaseOrdersV2() {
                               className="h-9 w-full" />
                           </td>
                           <td className="px-1.5 py-1.5">
-                            <Select value={l.unit || "pcs"} onChange={(e) => setLine(idx, { unit: e.target.value })}
+                            <Select value={l.unit || DEFAULT_UOM} onChange={(e) => setLine(idx, { unit: e.target.value })}
                               ref={gridNav.registerCell(idx, 4)} onKeyDown={gridNav.handleKeyDown(idx, 4)}
                               className="h-9 px-1.5">
-                              {UOM_OPTIONS.map((u) => <option key={u} value={u}>{uomLabel(u)}</option>)}
+                              {STANDARD_UOMS.map((u) => <option key={u} value={u}>{u}</option>)}
                             </Select>
                           </td>
                           <td className="px-1.5 py-1.5">

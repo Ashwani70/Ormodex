@@ -159,8 +159,7 @@ async def create_godown(payload: Godown, user: dict = Depends(get_current_user))
 
 
 @router.put("/godowns/{item_id}")
-async def update_godown(item_id: str, payload: Godown, user: dict = Depends(get_current_user)):
-    _require_inventory(user)
+async def update_godown(item_id: str, payload: Godown, user: dict = Depends(require_admin)):
     if payload.parent_godown_id == item_id:
         raise HTTPException(400, "A warehouse cannot be its own parent")
     data = payload.model_dump()

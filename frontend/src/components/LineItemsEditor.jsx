@@ -1,17 +1,15 @@
 import { Plus, Trash2, PenLine, Package } from "lucide-react";
 import { NumericInput } from "@/components/ui-kit";
 import useGridKeyNav from "@/hooks/useGridKeyNav";
+import { STANDARD_UOMS, DEFAULT_UOM } from "@/config/uom";
 
-const UOM_OPTIONS = ["pcs", "nos", "kg", "g", "mg", "l", "ml", "m", "cm", "mm", "ft", "inch", "box", "pair", "set", "bag", "roll", "sheet", "mtr", "sqft", "sqm", "hr", "day"];
-const UOM_LABELS = { pcs: "Pcs", nos: "Nos", mtr: "Mtr" };
-const uomLabel = (u) => UOM_LABELS[u] || u;
 
 const blankRow = () => ({
   product_id: "",
   product_name: "",
   sku: "",
   hsn_code: "",
-  unit: "pcs",
+  unit: DEFAULT_UOM,
   quantity: "",
   unit_price: "",
   gst_rate: "",
@@ -36,7 +34,7 @@ export default function LineItemsEditor({ items, setItems, products }) {
         copy[idx].product_name = p.name;
         copy[idx].sku = p.sku;
         copy[idx].hsn_code = p.hsn_code || "";
-        copy[idx].unit = p.unit || "pcs";
+        copy[idx].unit = p.unit || DEFAULT_UOM;
         // Pre-fill from catalog but keep as numbers (not strings) so they
         // display immediately — NumericInput handles display conversion.
         copy[idx].unit_price = p.selling_price != null ? Number(p.selling_price) : "";
@@ -205,13 +203,13 @@ export default function LineItemsEditor({ items, setItems, products }) {
                     </td>
                     <td className="px-2 py-1.5">
                       <select
-                        value={it.unit || "pcs"}
+                        value={it.unit || DEFAULT_UOM}
                         onChange={(e) => updateRow(idx, { unit: e.target.value })}
                         ref={gridNav.registerCell(idx, col(idx, "unit"))}
                         onKeyDown={gridNav.handleKeyDown(idx, col(idx, "unit"))}
                         className="w-full bg-background border border-input text-foreground text-sm px-2 py-1 focus:border-primary focus:outline-none transition-colors"
                       >
-                        {UOM_OPTIONS.map((u) => <option key={u} value={u}>{uomLabel(u)}</option>)}
+                        {STANDARD_UOMS.map((u) => <option key={u} value={u}>{u}</option>)}
                       </select>
                     </td>
                     <td className="px-2 py-1.5">

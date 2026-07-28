@@ -54,6 +54,7 @@ async def resolve_stock_item_id_for_product(product_id: str, user: Optional[dict
         "valuation_method": "WEIGHTED_AVG",
         "sku": sku or None,
         "product_id": product_id,
+        "uom": product.get("unit") or "Nos",
     }, user=user)
     return stock_item["id"]
 

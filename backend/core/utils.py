@@ -95,6 +95,7 @@ def _build_collection_map() -> dict:
         "suppliers": _s.Vendor,
         "products": _s.Product,
         "product_categories": _s.ProductCategory,
+        "uoms": _s.UOM,
         "warehouses": _s.Warehouse,
         "godowns": _s.Godown,
         "stock_items": _s.StockItem,

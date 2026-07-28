@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
+import { STANDARD_UOMS, DEFAULT_UOM } from "@/config/uom";
 import {
   PageHeader, PrimaryButton, SecondaryButton, Input, Field, Select, EmptyState,
   FormSection, SummaryCard, Badge, NumericInput,
@@ -21,13 +22,10 @@ import {
 } from "lucide-react";
 
 const inr = (n) => Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const UOM_OPTIONS = ["pcs", "nos", "kg", "g", "mg", "l", "ml", "m", "cm", "mm", "ft", "inch", "box", "pair", "set", "bag", "roll", "sheet", "mtr", "sqft", "sqm", "hr", "day"];
-const UOM_LABELS = { pcs: "Pcs", nos: "Nos", mtr: "Mtr" };
-const uomLabel = (u) => UOM_LABELS[u] || u;
 const CN_STATUSES = ["DRAFT", "ISSUED", "CANCELLED"];
 const STATUS_TONE = { DRAFT: "neutral", ISSUED: "success", CANCELLED: "danger" };
 
-const blankLine = () => ({ product_id: "", product_name: "", hsn_code: "", unit: "pcs", quantity: "", unit_price: "", discount: "", gst_rate: "", _manual: false, _gst_type: "GST", _cgst: "", _sgst: "", _igst: "" });
+const blankLine = () => ({ product_id: "", product_name: "", hsn_code: "", unit: DEFAULT_UOM, quantity: "", unit_price: "", discount: "", gst_rate: "", _manual: false, _gst_type: "GST", _cgst: "", _sgst: "", _igst: "" });
 const blank = () => ({
   customer_id: "", original_invoice_id: "", date: "", reason: "",
   items: [blankLine()], status: "DRAFT", notes: "", currency: "INR", exchange_rate: 1,
@@ -159,7 +157,7 @@ export default function CreditNotes() {
       product_id: pid,
       product_name: p?.name || "",
       hsn_code: p?.hsn_code || "",
-      unit: p?.unit || "pcs",
+      unit: p?.unit || DEFAULT_UOM,
       unit_price: price,
       gst_rate: gst,
       _cgst: half,
@@ -599,9 +597,9 @@ export default function CreditNotes() {
                             ref={gridNav.registerCell(idx, 1)} onKeyDown={gridNav.handleKeyDown(idx, 1)} className="h-10 w-full" />
                         </td>
                         <td className="px-2 py-2">
-                          <Select value={l.unit || "pcs"} onChange={(e) => setLine(idx, { unit: e.target.value })}
+                          <Select value={l.unit || DEFAULT_UOM} onChange={(e) => setLine(idx, { unit: e.target.value })}
                             ref={gridNav.registerCell(idx, 2)} onKeyDown={gridNav.handleKeyDown(idx, 2)} className="h-10">
-                            {UOM_OPTIONS.map((u) => <option key={u} value={u}>{uomLabel(u)}</option>)}
+                            {STANDARD_UOMS.map((u) => <option key={u} value={u}>{u}</option>)}
                           </Select>
                         </td>
                         <td className="px-2 py-2">

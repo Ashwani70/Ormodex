@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
+import { STANDARD_UOMS, DEFAULT_UOM } from "@/config/uom";
 import {
   PageHeader, Card, Field, Input, Textarea, Select, PrimaryButton, SecondaryButton, StatusBadge,
 } from "@/components/ui-kit";
@@ -15,14 +16,11 @@ import {
 } from "lucide-react";
 
 const inr = (n) => Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const UOM_OPTIONS = ["pcs", "nos", "kg", "g", "mtr", "sqft", "sqm", "box", "set", "roll", "sheet"];
-const UOM_LABELS = { pcs: "Pcs", nos: "Nos", mtr: "Mtr" };
-const uomLabel = (u) => UOM_LABELS[u] || u;
 const COLS_PER_ROW = 5; // item search, HSN, qty, rate, remarks — the keyboard-nav columns
 
 const blankLine = () => ({
   product_id: null, product_name: "", sku: "", description: "", hsn_code: "",
-  unit: "pcs", quantity: "", rate: "", remarks: "", is_custom: false,
+  unit: DEFAULT_UOM, quantity: "", rate: "", remarks: "", is_custom: false,
 });
 
 export default function JobWorkChallan() {
@@ -84,7 +82,7 @@ export default function JobWorkChallan() {
         setItems((c.items || []).map((it) => ({
           product_id: it.product_id, product_name: it.product_name, sku: it.sku || "",
           description: it.description || "", hsn_code: it.hsn_code || "",
-          unit: it.uom || "pcs", quantity: it.quantity, rate: it.rate ?? "",
+          unit: it.uom || DEFAULT_UOM, quantity: it.quantity, rate: it.rate ?? "",
           remarks: it.remarks || "", is_custom: !!it.is_custom,
         })));
       })
@@ -117,7 +115,7 @@ export default function JobWorkChallan() {
 
   const pickProduct = (idx, productId, product) => {
     if (!product) {
-      setLine(idx, { product_id: null, product_name: "", sku: "", unit: "pcs", is_custom: false });
+      setLine(idx, { product_id: null, product_name: "", sku: "", unit: DEFAULT_UOM, is_custom: false });
       return;
     }
     if (product.is_custom) {
@@ -126,7 +124,7 @@ export default function JobWorkChallan() {
     }
     setLine(idx, {
       product_id: product.id, product_name: product.name, sku: product.sku || "",
-      unit: product.unit || "pcs", hsn_code: product.hsn_code || "",
+      unit: product.unit || DEFAULT_UOM, hsn_code: product.hsn_code || "",
       rate: product.cost_price ?? "",
     });
   };
@@ -379,7 +377,7 @@ export default function JobWorkChallan() {
                         onChange={(e) => setLine(idx, { unit: e.target.value })}
                         className="h-10 w-full rounded-[var(--radius-md)] bg-surface border border-input text-foreground text-sm px-1 focus:border-primary focus:outline-none"
                       >
-                        {UOM_OPTIONS.map((u) => <option key={u} value={u}>{uomLabel(u)}</option>)}
+                        {STANDARD_UOMS.map((u) => <option key={u} value={u}>{u}</option>)}
                       </select>
                     </td>
                     <td className="p-2">

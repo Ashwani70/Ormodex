@@ -635,7 +635,7 @@ def _build_item_rows(items: list[dict], currency: str, doc: dict) -> tuple[list[
             "sno": str(i),
             "description": C.table_cell_paragraph(it.get("product_name", "")),
             "hsn": str(hsn),
-            "unit": it.get("unit") or "pcs",
+            "unit": it.get("unit") or "Nos",
             "qty": f"{qty:g}",
             "rate": _money(rate, currency),
             "discount": _money(discount, currency) if discount else "—",

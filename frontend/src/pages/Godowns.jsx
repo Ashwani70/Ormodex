@@ -7,6 +7,8 @@ import {
 } from "@/components/ui-kit";
 import OfflineBanner from "@/components/OfflineBanner";
 import useOnline from "@/hooks/useOnline";
+import { useAuth } from "@/context/AuthContext";
+import { isAdminRole } from "@/lib/navItems";
 import WarehouseForm from "@/components/warehouse/WarehouseForm";
 import { FixedSizeList } from "react-window";
 import {
@@ -43,6 +45,8 @@ function useDebounced(value, delay = 300) {
 
 export default function Godowns() {
   const online = useOnline();
+  const { user } = useAuth();
+  const isAdmin = isAdminRole(user?.role);
   const [searchParams, setSearchParams] = useSearchParams();
   const [items, setItems] = useState([]);
   const [dash, setDash] = useState(null);
@@ -248,11 +252,12 @@ export default function Godowns() {
           action={items.length ? undefined : <PrimaryButton icon={Plus} onClick={openNew}>New Warehouse</PrimaryButton>} />
       ) : (
         <WarehouseTable rows={filtered} valueById={valueById} nameById={nameById}
-          onEdit={openEdit} onDelete={onDelete} />
+          onEdit={openEdit} onDelete={onDelete} isAdmin={isAdmin} />
       )}
 
       <WarehouseForm
         open={formOpen}
+        isAdmin={isAdmin}
         warehouseId={editId}
         warehouses={items}
         onClose={() => setFormOpen(false)}
@@ -374,7 +379,7 @@ function Kpi({ label, value, icon: Icon, sub, accent, tone }) {
 
 // ── Virtualized table ─────────────────────────────────────────────────
 const ROW_H = 56;
-function WarehouseTable({ rows, valueById, nameById, onEdit, onDelete }) {
+function WarehouseTable({ rows, valueById, nameById, onEdit, onDelete, isAdmin }) {
   const listRef = useRef(null);
   // Virtualize only when the list is long; short lists render normally so the
   // page prints and flows naturally.
@@ -412,8 +417,10 @@ function WarehouseTable({ rows, valueById, nameById, onEdit, onDelete }) {
           {low && <span className="ml-1 text-[10px] text-amber-600">⚠</span>}
         </div>
         <div className="flex justify-end gap-1">
-          <IconBtn title="View / Edit" onClick={() => onEdit(w.id)}><Pencil className="h-3.5 w-3.5" /></IconBtn>
-          <IconBtn title="Delete" danger onClick={() => onDelete(w)}><Trash2 className="h-3.5 w-3.5" /></IconBtn>
+          <IconBtn title={isAdmin ? "Edit" : "View"} onClick={() => onEdit(w.id)}><Pencil className="h-3.5 w-3.5" /></IconBtn>
+          {isAdmin && (
+            <IconBtn title="Delete" danger onClick={() => onDelete(w)}><Trash2 className="h-3.5 w-3.5" /></IconBtn>
+          )}
         </div>
       </div>
     );

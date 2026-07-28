@@ -139,7 +139,7 @@ function DocUploader({ accept, onUploaded, label = "Upload", disabled }) {
 }
 
 // ── Main component ────────────────────────────────────────────────────
-export default function WarehouseForm({ open, warehouseId, warehouses = [], roles = [], onClose, onSaved }) {
+export default function WarehouseForm({ open, warehouseId, warehouses = [], roles = [], isAdmin = true, onClose, onSaved }) {
   const [form, setForm] = useState(blank);
   const [tab, setTab] = useState("general");
   const [saving, setSaving] = useState(false);
@@ -235,6 +235,10 @@ export default function WarehouseForm({ open, warehouseId, warehouses = [], role
   const toNum = (v) => (v === "" || v == null ? null : Number(v));
 
   const doSave = useCallback(async (andNew) => {
+    if (isEdit && !isAdmin) {
+      toast.error("Only admins can edit an existing warehouse.");
+      return;
+    }
     const e = validate();
     if (Object.keys(e).length) {
       // Jump to the tab with the first error.
@@ -273,7 +277,7 @@ export default function WarehouseForm({ open, warehouseId, warehouses = [], role
     } finally {
       setSaving(false);
     }
-  }, [form, isEdit, warehouseId, validate, onSaved, onClose, set, focusFirst]);
+  }, [form, isEdit, isAdmin, warehouseId, validate, onSaved, onClose, set, focusFirst]);
 
   // Keyboard shortcuts: Ctrl+S save, Ctrl+Shift+S save & new. (Esc handled by SlideOver.)
   useEffect(() => {
@@ -310,7 +314,7 @@ export default function WarehouseForm({ open, warehouseId, warehouses = [], role
     <SlideOver
       open={open}
       onClose={onClose}
-      title={isEdit ? form.name || "Edit Warehouse" : "New Warehouse"}
+      title={isEdit ? form.name || (isAdmin ? "Edit Warehouse" : "View Warehouse") : "New Warehouse"}
       subtitle={form.code ? `Code ${form.code}` : "Enterprise warehouse master"}
       icon={WarehouseIcon}
       headerExtra={statusBadge}
@@ -321,17 +325,29 @@ export default function WarehouseForm({ open, warehouseId, warehouses = [], role
       footer={
         <>
           <span className="mr-auto hidden text-xs text-muted-foreground sm:block">
-            <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono">Ctrl+S</kbd> Save ·{" "}
-            <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono">Ctrl+Shift+S</kbd> Save &amp; New ·{" "}
+            {(!isEdit || isAdmin) && (
+              <>
+                <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono">Ctrl+S</kbd> Save ·{" "}
+              </>
+            )}
+            {!isEdit && (
+              <>
+                <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono">Ctrl+Shift+S</kbd> Save &amp; New ·{" "}
+              </>
+            )}
             <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono">Esc</kbd> Close
           </span>
-          <SecondaryButton onClick={onClose} disabled={saving}>Cancel</SecondaryButton>
+          <SecondaryButton onClick={onClose} disabled={saving}>
+            {isEdit && !isAdmin ? "Close" : "Cancel"}
+          </SecondaryButton>
           {!isEdit && (
             <SecondaryButton onClick={() => doSave(true)} disabled={saving} icon={Plus}>Save &amp; New</SecondaryButton>
           )}
-          <PrimaryButton onClick={() => doSave(false)} loading={saving} icon={Save} testid="save-warehouse">
-            {saving ? "Saving…" : "Save"}
-          </PrimaryButton>
+          {(!isEdit || isAdmin) && (
+            <PrimaryButton onClick={() => doSave(false)} loading={saving} icon={Save} testid="save-warehouse">
+              {saving ? "Saving…" : "Save"}
+            </PrimaryButton>
+          )}
         </>
       }
     >

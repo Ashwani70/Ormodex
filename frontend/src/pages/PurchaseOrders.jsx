@@ -119,7 +119,7 @@ export default function PurchaseOrders() {
       sku: item.sku || "",
       quantity_ordered: item.quantity,
       quantity_received: item.quantity,
-      unit: item.unit || "pcs",
+      unit: item.unit || "Nos",
       unit_cost: item.unit_price,
     }));
     setGrnForm({

@@ -151,7 +151,7 @@ class GRNItem(BaseModel):
     sku: str
     quantity_ordered: float
     quantity_received: float
-    unit: str = "pcs"
+    unit: str = "Nos"
     unit_cost: float = 0.0
 
 

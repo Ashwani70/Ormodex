@@ -200,6 +200,13 @@ class ProductCategory(Base):
     is_deleted = _bool(); deleted_at = _ts(); created_at = _ts(); updated_at = _ts()
 
 
+class UOM(Base):
+    __tablename__ = "uoms"
+    __table_args__ = (Index("ix_uoms_tenant_id", "tenant_id"),)
+    id = _pk(); tenant_id = _text(); name = _text(); symbol = _text(); description = _text()
+    is_deleted = _bool(); deleted_at = _ts(); created_at = _ts(); updated_at = _ts()
+
+
 class Warehouse(Base):
     __tablename__ = "warehouses"
     __table_args__ = (Index("ix_warehouses_tenant_id", "tenant_id"),)
@@ -261,6 +268,9 @@ class StockLedgerEntry(Base):
     # reason. See alembic/versions/022_stock_ledger_unify_columns.py.
     product_id = _text(); product_name = _text()
     user_id = _text(); user_name = _text(); reason = _text()
+    # UOM (2026-07-28): denormalized from stock_items.uom at post time so every
+    # ledger row is self-describing for display (qty + unit) without a join.
+    uom = _text()
 
 
 class StockTransaction(Base):
@@ -284,6 +294,9 @@ class StockTransaction(Base):
     # receive (both "PURCHASE") — needed so the drill-down knows which page to
     # open. See migration 026 / project-stocklog-grn-route-mislabel.md.
     source_doc_type = _text()
+    # UOM (2026-07-28): mirrored from the stock_ledger_entries row so Stock Log
+    # can show "qty + unit" without joining back to stock_items.
+    uom = _text()
 
 
 class StockTransfer(Base):

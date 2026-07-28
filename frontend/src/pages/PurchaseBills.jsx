@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
+import { STANDARD_UOMS, DEFAULT_UOM } from "@/config/uom";
 import {
   PageHeader, PrimaryButton, SecondaryButton, Input, Field, Select, EmptyState,
   FormSection, CollapsibleFormSection, SummaryCard, Badge, NumericInput,
@@ -32,12 +33,9 @@ const BILL_SECTION_DEFAULTS = { vendor: true, details: true, grnMatch: false };
 
 const inr = (n) => Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const qtyFmt = (n) => Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
-const UOM_OPTIONS = ["pcs", "nos", "kg", "g", "mg", "l", "ml", "m", "cm", "mm", "ft", "inch", "box", "pair", "set", "bag", "roll", "sheet", "mtr", "sqft", "sqm", "hr", "day"];
-const UOM_LABELS = { pcs: "Pcs", nos: "Nos", mtr: "Mtr" };
-const uomLabel = (u) => UOM_LABELS[u] || u;
 
 const blankLine = () => ({
-  product_id: "", item_name: "", hsn_code: "", unit: "pcs", qty: "", rate: "",
+  product_id: "", item_name: "", hsn_code: "", unit: DEFAULT_UOM, qty: "", rate: "",
   discount: "", gst_rate: "", _gst_type: "GST", _cgst: "", _sgst: "", _igst: "",
 });
 const blank = () => ({
@@ -177,7 +175,7 @@ export default function PurchaseBills() {
       product_id: id,
       item_name: it?.name || "",
       hsn_code: it?.hsn_code || "",
-      unit: it?.unit || it?.uom || "pcs",
+      unit: it?.unit || it?.uom || DEFAULT_UOM,
       rate: it?.cost_price != null ? Number(it.cost_price) : "",
       gst_rate: it?.gst_rate ?? 18,
       _cgst: (it?.gst_rate ?? 18) / 2,
@@ -204,7 +202,7 @@ export default function PurchaseBills() {
         product_id: productId,
         item_name: l.item_name || l.product_name || product?.name || "",
         hsn_code: l.hsn_code || product?.hsn_code || "",
-        unit: l.unit || "pcs",
+        unit: l.unit || DEFAULT_UOM,
         qty: l.qty || "",
         rate: l.rate || "",
         discount: "",
@@ -266,7 +264,7 @@ export default function PurchaseBills() {
         product_id: l.product_id,
         item_name: items.find((i) => i.id === l.product_id)?.name || l.item_name,
         hsn_code: l.hsn_code || null,
-        unit: l.unit || "pcs",
+        unit: l.unit || DEFAULT_UOM,
         qty: parseFloat(l.qty),
         rate: parseFloat(l.rate) || 0,
         discount: parseFloat(l.discount) || 0,
@@ -350,7 +348,7 @@ export default function PurchaseBills() {
           product_id: l.product_id || l.stock_item_id || "",
           item_name: l.item_name || "",
           hsn_code: l.hsn_code || "",
-          unit: l.unit || "pcs",
+          unit: l.unit || DEFAULT_UOM,
           qty: l.qty != null && l.qty !== 0 ? l.qty : "",
           rate: l.rate != null && l.rate !== 0 ? l.rate : "",
           discount: l.discount != null && l.discount !== 0 ? l.discount : "",
@@ -732,9 +730,9 @@ export default function PurchaseBills() {
                             ref={gridNav.registerCell(idx, 1)} onKeyDown={gridNav.handleKeyDown(idx, 1)} className="h-9 w-full" />
                         </td>
                         <td className="px-1.5 py-1.5">
-                          <Select value={l.unit || "pcs"} onChange={(e) => setLine(idx, { unit: e.target.value })}
+                          <Select value={l.unit || DEFAULT_UOM} onChange={(e) => setLine(idx, { unit: e.target.value })}
                             ref={gridNav.registerCell(idx, 2)} onKeyDown={gridNav.handleKeyDown(idx, 2)} className="h-9 px-1.5">
-                            {UOM_OPTIONS.map((u) => <option key={u} value={u}>{uomLabel(u)}</option>)}
+                            {STANDARD_UOMS.map((u) => <option key={u} value={u}>{u}</option>)}
                           </Select>
                         </td>
                         <td className="px-1.5 py-1.5">

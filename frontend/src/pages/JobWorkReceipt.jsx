@@ -18,7 +18,7 @@ const lineFromChallan = (l) => ({
   product_name: l.product_name,
   sku: l.sku || "",
   is_custom: !!l.is_custom,
-  uom: l.uom || "pcs",
+  uom: l.uom || "Nos",
   quantity_sent: l.quantity_sent,
   quantity_already_received: l.quantity_already_received,
   quantity_pending: l.quantity_pending,
@@ -87,7 +87,7 @@ export default function JobWorkReceipt() {
         });
         setLines((found.items || []).map((it) => ({
           challan_item_id: it.challan_item_id, product_id: it.product_id, product_name: it.product_name,
-          sku: it.sku || "", is_custom: !!it.is_custom, uom: it.uom || "pcs",
+          sku: it.sku || "", is_custom: !!it.is_custom, uom: it.uom || "Nos",
           quantity_sent: it.quantity_sent, quantity_already_received: Math.max(0, (it.quantity_sent || 0) - (it.quantity_pending || 0) - num(it.quantity_received)),
           quantity_pending: it.quantity_pending,
           quantity_received: it.quantity_received ?? "", accepted_quantity: it.accepted_quantity ?? "",

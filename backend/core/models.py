@@ -74,7 +74,7 @@ class Product(BaseModel):
     category: str
     category_id: Optional[str] = None
     description: Optional[str] = None
-    unit: str = "pcs"
+    unit: str = "Nos"
     cost_price: float = 0
     selling_price: float = 0
     quantity: float = 0
@@ -118,7 +118,7 @@ class POItem(BaseModel):
     product_name: str
     sku: Optional[str] = ""
     quantity: float
-    unit: str = "pcs"
+    unit: str = "Nos"
     unit_price: float
     gst_rate: float = 18.0
     hsn_code: Optional[str] = None
@@ -188,7 +188,7 @@ class SalesItem(BaseModel):
     product_name: str
     sku: Optional[str] = ""
     quantity: float
-    unit: str = "pcs"
+    unit: str = "Nos"
     unit_price: float
     gst_rate: float = 18.0
     hsn_code: Optional[str] = None
@@ -359,7 +359,7 @@ class JobWorkChallanItem(BaseModel):
     product_name: str
     sku: Optional[str] = ""
     quantity: float
-    unit: str = "pcs"
+    unit: str = "Nos"
     description: Optional[str] = None
     remarks: Optional[str] = None
     is_custom: bool = False

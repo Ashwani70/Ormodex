@@ -444,6 +444,36 @@ async def _startup_init() -> None:
     except Exception as _e:
         logger.warning("stock_items valuation schema fix skipped (non-fatal): %s", _e)
 
+    # UOM (Unit of Measure) master table + denormalized uom column on the
+    # stock ledger tables, so a posted movement is self-describing for
+    # display ("qty + unit") without a join. Mirrors alembic migration 030.
+    _uom_fix = """
+        CREATE TABLE IF NOT EXISTS uoms (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT,
+            name TEXT,
+            symbol TEXT,
+            description TEXT,
+            is_deleted BOOLEAN DEFAULT false,
+            deleted_at TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS ix_uoms_tenant_id ON uoms (tenant_id);
+        ALTER TABLE IF EXISTS stock_ledger_entries ADD COLUMN IF NOT EXISTS uom TEXT DEFAULT NULL;
+        ALTER TABLE IF EXISTS stock_transactions ADD COLUMN IF NOT EXISTS uom TEXT DEFAULT NULL;
+        ALTER TABLE IF EXISTS uoms ALTER COLUMN deleted_at TYPE TEXT USING deleted_at::TEXT;
+        ALTER TABLE IF EXISTS uoms ALTER COLUMN created_at TYPE TEXT USING created_at::TEXT;
+        ALTER TABLE IF EXISTS uoms ALTER COLUMN updated_at TYPE TEXT USING updated_at::TEXT;
+    """
+    try:
+        async with engine.begin() as conn:
+            for _stmt in [s.strip() for s in _uom_fix.strip().split(";") if s.strip()]:
+                await conn.execute(text(_stmt))
+        logger.info("UOM master table + stock ledger uom columns ensured")
+    except Exception as _e:
+        logger.warning("UOM schema fix skipped (non-fatal): %s", _e)
+
     # Stock Log fix: source_doc_id index for voucher drill-down/backfill lookups
     # on both tables. Mirrors alembic migration 021 (plain CREATE INDEX here,
     # not CONCURRENTLY, since this runs inside the same transaction as the

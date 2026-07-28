@@ -96,6 +96,7 @@ async def _mirror_to_legacy_transaction(entry: dict) -> None:
             "qty": abs(qty),
             "rate": entry.get("rate"),
             "value": entry.get("value"),
+            "uom": entry.get("uom"),
             "delta": qty,
             "balance": None,  # Stock Log computes running balance at read time
             "reason": entry["reason"],
@@ -278,7 +279,7 @@ async def post_entry(
     # its own — see migration 022) and by the stock_transactions mirror
     # below, so this is a single stock_items lookup, not two.
     item = await db.stock_items.find_one(
-        {"id": stock_item_id}, {"_id": 0, "id": 1, "name": 1, "product_id": 1}
+        {"id": stock_item_id}, {"_id": 0, "id": 1, "name": 1, "product_id": 1, "uom": 1}
     ) or {}
     linked_product_id = item.get("product_id")
     doc_type = _MOVEMENT_TO_DOC_TYPE.get(movement_type, movement_type)
@@ -299,6 +300,7 @@ async def post_entry(
         "created_at": now_iso(),
         "product_id": linked_product_id or stock_item_id,
         "product_name": item.get("name") or stock_item_id,
+        "uom": item.get("uom") or "Nos",
         "doc_type": doc_type,
         "voucher_no": source_doc_id,
         "user_id": (user or {}).get("id"),

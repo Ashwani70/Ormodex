@@ -23,6 +23,7 @@ import useBulkSelect from "@/hooks/useBulkSelect";
 import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import useEnterNavigation from "@/hooks/useEnterNavigation";
 import { Plus, Search, Pencil, Trash2, QrCode, AlertTriangle, RefreshCw, CheckCircle, Calendar, Eye } from "lucide-react";
+import { STANDARD_UOMS, DEFAULT_UOM } from "@/config/uom";
 
 const TABS = [
   { id: "catalog", label: "Catalog" },
@@ -39,7 +40,7 @@ const blank = {
   category: "",
   category_id: "",
   description: "",
-  unit: "pcs",
+  unit: DEFAULT_UOM,
   cost_price: 0,
   selling_price: 0,
   quantity: 0,
@@ -77,6 +78,12 @@ export default function Products() {
   const [qrItem, setQrItem] = useState(null);
   const [form, setForm] = useState(blank);
   const [editingId, setEditingId] = useState(null);
+
+  // UOM master & quick-add popup
+  const [uoms, setUoms] = useState(STANDARD_UOMS);
+  const [uomModal, setUomModal] = useState(false);
+  const [uomForm, setUomForm] = useState({ name: "", description: "" });
+  const [savingUom, setSavingUom] = useState(false);
 
   // Category master + quick-add popup (create a category without leaving this page).
   const [categories, setCategories] = useState([]);
@@ -147,6 +154,17 @@ export default function Products() {
     }
   };
 
+  const loadUoms = async () => {
+    try {
+      const r = await api.get("/inventory/uoms");
+      if (Array.isArray(r.data) && r.data.length > 0) {
+        setUoms(r.data);
+      }
+    } catch {
+      setUoms(STANDARD_UOMS);
+    }
+  };
+
   const loadAging = async () => {
     try {
       const r = await api.get("/stock/aging", { params: { days_threshold: agingDays } });
@@ -204,6 +222,7 @@ export default function Products() {
   useEffect(() => {
     loadWh();
     loadCategories();
+    loadUoms();
   }, []);
 
   // Auto-open detail modal when navigated here via ?detail=<id> (e.g. from Ctrl+K search).
@@ -307,6 +326,32 @@ export default function Products() {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
     } finally {
       setSavingCat(false);
+    }
+  };
+
+  // Quick-add a UOM from the product form, then auto-select it.
+  const openUomModal = () => {
+    if (!open) return;
+    setUomForm({ name: "", description: "" });
+    setUomModal(true);
+  };
+  const saveUom = async () => {
+    const name = uomForm.name.trim();
+    if (!name) return toast.warning("UOM name is required.");
+    setSavingUom(true);
+    try {
+      const { data } = await api.post("/inventory/uoms", {
+        name, description: uomForm.description.trim() || null,
+      });
+      await loadUoms();
+      const createdName = data.name || name;
+      setForm((f) => ({ ...f, unit: createdName }));
+      setUomModal(false);
+      toast.success(`Unit of Measure "${createdName}" added`);
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    } finally {
+      setSavingUom(false);
     }
   };
 
@@ -610,6 +655,7 @@ export default function Products() {
                     <th className="px-3 py-2.5">Category</th>
                     <th className="px-3 py-2.5">HSN</th>
                     <th className="px-3 py-2.5">Warehouse</th>
+                    <th className="px-3 py-2.5 text-right">Stock Qty</th>
                     <th className="px-3 py-2.5 text-right">Actions</th>
                   </tr>
                 </thead>
@@ -645,6 +691,9 @@ export default function Products() {
                         </td>
                         <td className="px-3 py-2.5 text-muted-foreground">
                           {p.warehouse_name || "-"}
+                        </td>
+                        <td className="px-3 py-2.5 text-right font-mono text-xs text-foreground font-medium">
+                          {p.quantity ?? 0} {p.unit || DEFAULT_UOM}
                         </td>
                         <td className="px-3 py-2.5 text-right">
                           <div className="inline-flex gap-1">
@@ -1045,7 +1094,7 @@ export default function Products() {
             </Select>
           </Field>
           {!editingId && (
-            <Field label="Opening Quantity" hint="Posted as an OPENING stock movement — sets the starting stock-on-hand for this product">
+            <Field label="Opening Quantity" hint={form.quantity ? `Initial stock: ${form.quantity} ${form.unit || DEFAULT_UOM}` : "Posted as an OPENING stock movement"}>
               <Input
                 type="text"
                 inputMode="decimal"
@@ -1055,6 +1104,40 @@ export default function Products() {
               />
             </Field>
           )}
+          <Field label="UOM (Unit of Measure)" required hint="Mandatory unit for stock transactions">
+            <div className="flex items-center gap-2">
+              <Select
+                required
+                data-testid="form-uom"
+                value={form.unit || DEFAULT_UOM}
+                onChange={(e) => {
+                  if (e.target.value === "__ADD_NEW__") {
+                    openUomModal();
+                  } else {
+                    setForm({ ...form, unit: e.target.value });
+                  }
+                }}
+                className="flex-1"
+              >
+                {uoms.map((u) => (
+                  <option key={u} value={u}>
+                    {u}
+                  </option>
+                ))}
+                <option value="__ADD_NEW__">+ Add Custom UOM...</option>
+              </Select>
+              <button
+                type="button"
+                title="Add custom UOM"
+                data-testid="add-uom-btn"
+                onClick={openUomModal}
+                className="w-10 h-10 flex-shrink-0 border border-border hover:border-primary hover:text-primary text-muted-foreground flex items-center justify-center transition-colors"
+                style={{ borderRadius: "var(--radius-md)" }}
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+            </div>
+          </Field>
           <Field label="Cost Price" hint={!editingId ? "Values the opening quantity above (FIFO/LIFO/Weighted-Avg costing)" : undefined}>
             <Input
               type="text"
@@ -1127,6 +1210,45 @@ export default function Products() {
               rows={2}
               value={catForm.description}
               onChange={(e) => setCatForm({ ...catForm, description: e.target.value })}
+            />
+          </Field>
+        </form>
+      </Modal>
+
+      {/* Quick-add UOM popup — create a custom UOM without leaving the product form */}
+      <Modal
+        open={uomModal}
+        onClose={() => setUomModal(false)}
+        title="New Unit of Measure (UOM)"
+        size="sm"
+        testid="quick-uom-modal"
+        footer={
+          <>
+            <SecondaryButton onClick={() => setUomModal(false)}>Cancel</SecondaryButton>
+            <PrimaryButton testid="save-quick-uom" onClick={saveUom} disabled={savingUom}>
+              {savingUom ? "Saving…" : "Add UOM"}
+            </PrimaryButton>
+          </>
+        }
+      >
+        <form
+          onSubmit={(e) => { e.preventDefault(); saveUom(); }}
+          className="space-y-3"
+        >
+          <Field label="UOM Name" required hint="e.g. Dozen, Crate, Packet">
+            <Input
+              required
+              autoFocus
+              data-testid="quick-uom-name"
+              value={uomForm.name}
+              onChange={(e) => setUomForm({ ...uomForm, name: e.target.value })}
+            />
+          </Field>
+          <Field label="Description">
+            <Textarea
+              rows={2}
+              value={uomForm.description}
+              onChange={(e) => setUomForm({ ...uomForm, description: e.target.value })}
             />
           </Field>
         </form>

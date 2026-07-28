@@ -14,11 +14,9 @@ import useGridKeyNav from "@/hooks/useGridKeyNav";
 import useEnterNavigation from "@/hooks/useEnterNavigation";
 import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import { Plus, X, Download, PenLine, Package } from "lucide-react";
+import { STANDARD_UOMS, DEFAULT_UOM } from "@/config/uom";
 
-const UOM_OPTIONS = ["pcs", "nos", "kg", "g", "mg", "l", "ml", "m", "cm", "mm", "ft", "inch", "box", "pair", "set", "bag", "roll", "sheet", "mtr", "sqft", "sqm", "hr", "day"];
-const UOM_LABELS = { pcs: "Pcs", nos: "Nos", mtr: "Mtr" };
-const uomLabel = (u) => UOM_LABELS[u] || u;
-const blankLine = () => ({ product_id: "", product_name: "", hsn_code: "", unit: "pcs", qty: "", rate: "", gst_rate: "", _manual: false, batch_id: "", serial_id: "", expiry_date: "" });
+const blankLine = () => ({ product_id: "", product_name: "", hsn_code: "", unit: DEFAULT_UOM, qty: "", rate: "", gst_rate: "", _manual: false, batch_id: "", serial_id: "", expiry_date: "" });
 const blank = () => ({
   vendor_id: "", purchase_bill_id: "", grn_id: "", godown_id: "", return_date: "",
   reason: "", lines: [blankLine()],
@@ -90,7 +88,7 @@ export default function PurchaseReturns() {
       product_id: productId,
       ...(p.id ? {
         hsn_code: p.hsn_code || "",
-        unit: p.unit || "pcs",
+        unit: p.unit || DEFAULT_UOM,
         rate: p.cost_price != null ? Number(p.cost_price) : "",
         gst_rate: p.gst_rate != null ? Number(p.gst_rate) : "",
       } : {}),
@@ -110,7 +108,7 @@ export default function PurchaseReturns() {
           product_id: l._manual ? null : l.product_id,
           product_name: l._manual ? l.product_name : it.name,
           hsn_code: l.hsn_code || null,
-          unit: l.unit || "pcs",
+          unit: l.unit || DEFAULT_UOM,
           qty: parseFloat(l.qty), rate: parseFloat(l.rate) || 0, gst_rate: parseFloat(l.gst_rate) || 0,
           batch_id: l.batch_id || null,
           serial_id: l.serial_id || null,
@@ -315,9 +313,9 @@ export default function PurchaseReturns() {
                       </div>
                       <div className="col-span-1">
                         <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground mb-1">Unit</div>
-                        <Select value={l.unit || "pcs"} onChange={(e) => setLine(idx, { unit: e.target.value })}
+                        <Select value={l.unit || DEFAULT_UOM} onChange={(e) => setLine(idx, { unit: e.target.value })}
                           ref={gridNav.registerCell(idx, 3)} onKeyDown={gridNav.handleKeyDown(idx, 3)}>
-                          {UOM_OPTIONS.map((u) => <option key={u} value={u}>{uomLabel(u)}</option>)}
+                          {STANDARD_UOMS.map((u) => <option key={u} value={u}>{u}</option>)}
                         </Select>
                       </div>
                       <div className="col-span-2">

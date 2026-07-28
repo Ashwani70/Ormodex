@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
+import { STANDARD_UOMS, DEFAULT_UOM } from "@/config/uom";
 import {
   PageHeader, PrimaryButton, SecondaryButton, Input, Field, Select, EmptyState,
   FormSection, SummaryCard, AttachmentsField, Badge,
@@ -20,11 +21,8 @@ import {
   FileSpreadsheet, ClipboardCheck, Info, ShieldCheck, Save, Eye, Printer, Trash2,
 } from "lucide-react";
 
-const UOM_OPTIONS = ["pcs", "nos", "kg", "g", "mg", "l", "ml", "m", "cm", "mm", "ft", "inch", "box", "pair", "set", "bag", "roll", "sheet", "mtr", "sqft", "sqm", "hr", "day"];
-const UOM_LABELS = { pcs: "Pcs", nos: "Nos", mtr: "Mtr" };
-const uomLabel = (u) => UOM_LABELS[u] || u;
 const blankLine = () => ({
-  product_id: "", product_name: "", hsn_code: "", unit: "pcs", _manual: false,
+  product_id: "", product_name: "", hsn_code: "", unit: DEFAULT_UOM, _manual: false,
   po_line_index: null, qty_received: "", rate: "", gst_rate: "",
   batch_id: "", serial_id: "", expiry_date: "",
 });
@@ -117,7 +115,7 @@ export default function GRNs() {
         ...blankLine(),
         product_id: pl.product_id || "",
         hsn_code: pl.hsn_code || "",
-        unit: pl.unit || "pcs",
+        unit: pl.unit || DEFAULT_UOM,
         po_line_index: idx,
         qty_received: Math.max(0, (parseFloat(pl.qty) || 0) - (parseFloat(pl.received_qty) || 0)),
         rate: pl.rate || 0,
@@ -132,7 +130,7 @@ export default function GRNs() {
     const p = itemById(productId);
     setLine(idx, {
       product_id: productId,
-      ...(p.id ? { hsn_code: p.hsn_code || "", unit: p.unit || "pcs", rate: Number(p.cost_price || 0), gst_rate: Number(p.gst_rate ?? 18) } : {}),
+      ...(p.id ? { hsn_code: p.hsn_code || "", unit: p.unit || DEFAULT_UOM, rate: Number(p.cost_price || 0), gst_rate: Number(p.gst_rate ?? 18) } : {}),
     });
     if (productId) ensureFlags([productId]);
   };
@@ -149,7 +147,7 @@ export default function GRNs() {
           product_id: l._manual ? null : l.product_id,
           product_name: l._manual ? l.product_name : it.name,
           hsn_code: l.hsn_code || null,
-          unit: l.unit || "pcs",
+          unit: l.unit || DEFAULT_UOM,
           po_line_index: l.po_line_index,
           qty_received: parseFloat(l.qty_received),
           rate: parseFloat(l.rate) || 0,
@@ -546,9 +544,9 @@ export default function GRNs() {
                               placeholder="0" className="h-10 text-right" />
                           </td>
                           <td className="px-2 py-2">
-                            <Select value={l.unit || "pcs"} onChange={(e) => setLine(idx, { unit: e.target.value })}
+                            <Select value={l.unit || DEFAULT_UOM} onChange={(e) => setLine(idx, { unit: e.target.value })}
                               ref={gridNav.registerCell(idx, 6)} onKeyDown={gridNav.handleKeyDown(idx, 6)} className="h-10">
-                              {UOM_OPTIONS.map((u) => <option key={u} value={u}>{uomLabel(u)}</option>)}
+                              {STANDARD_UOMS.map((u) => <option key={u} value={u}>{u}</option>)}
                             </Select>
                           </td>
                           <td className="px-2 py-2">

@@ -21,13 +21,11 @@ import useBulkSelect from "@/hooks/useBulkSelect";
 import useGridKeyNav from "@/hooks/useGridKeyNav";
 import useEnterNavigation from "@/hooks/useEnterNavigation";
 import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
+import { STANDARD_UOMS, DEFAULT_UOM } from "@/config/uom";
 
 const inr = (n) => Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 const num = (n, d = 2) => Number(n || 0).toFixed(d);
 
-const UOM_OPTIONS = ["pcs", "kg", "g", "ltr", "ml", "mtr", "cm", "box", "set", "nos", "pair", "roll", "sheet"];
-const UOM_LABELS = { pcs: "Pcs", nos: "Nos", mtr: "Mtr" };
-const uomLabel = (u) => UOM_LABELS[u] || u;
 
 // Normalize a product doc from /products into the shape the selector relies on.
 // The API returns `id` (Mongo `_id` is projected out) and `quantity` for stock;
@@ -39,11 +37,11 @@ const normalizeProduct = (p) => ({
   name: p.name ?? "",
   sku: p.sku ?? "",
   quantity: Number(p.quantity ?? p.availableQty ?? 0),
-  unit: p.unit ?? "pcs",
+  unit: p.unit ?? DEFAULT_UOM,
 });
 
-const blankExistingItem = () => ({ product_id: "", quantity: 1, sku: "", product_name: "", description: "", remarks: "", unit: "pcs", rate: "", gst_rate: "", hsn_code: "", is_custom: false, batch_id: "", serial_id: "", expiry_date: "" });
-const blankCustomItem = () => ({ product_id: "", quantity: 1, sku: "", product_name: "", description: "", unit: "pcs", remarks: "", rate: "", gst_rate: "", hsn_code: "", is_custom: true, batch_id: "", serial_id: "", expiry_date: "" });
+const blankExistingItem = () => ({ product_id: "", quantity: 1, sku: "", product_name: "", description: "", remarks: "", unit: DEFAULT_UOM, rate: "", gst_rate: "", hsn_code: "", is_custom: false, batch_id: "", serial_id: "", expiry_date: "" });
+const blankCustomItem = () => ({ product_id: "", quantity: 1, sku: "", product_name: "", description: "", unit: DEFAULT_UOM, remarks: "", rate: "", gst_rate: "", hsn_code: "", is_custom: true, batch_id: "", serial_id: "", expiry_date: "" });
 
 // Material value of a line = rate × quantity (no GST charged; for ITC-04).
 const lineTaxable = (it) => (parseFloat(it.rate) || 0) * (parseFloat(it.quantity) || 0);
@@ -212,7 +210,7 @@ function SearchableProductSelect({ products, loading, value, onChange, disabledI
                       </span>
                     </span>
                     <span className="font-mono text-[11px] text-muted-foreground whitespace-nowrap flex-shrink-0">
-                      {p.unit || "pcs"}
+                      {p.unit || DEFAULT_UOM}
                     </span>
                   </button>
                 );
@@ -331,7 +329,7 @@ export default function JobWork() {
       product_name: pr.name || "",
       sku: pr.sku || "",
       hsn_code: pr.hsn_code || "",
-      unit: pr.unit || "pcs",
+      unit: pr.unit || DEFAULT_UOM,
       rate: pr.cost_price ?? pr.selling_price ?? "",
       gst_rate: pr.gst_rate ?? "",
     };
@@ -376,7 +374,7 @@ export default function JobWork() {
         sku: it.sku || "",
         description: it.description || "",
         remarks: it.remarks || "",
-        unit: it.unit || "pcs",
+        unit: it.unit || DEFAULT_UOM,
         quantity: it.quantity,
         rate: it.rate ?? "",
         gst_rate: it.gst_rate ?? "",
@@ -530,7 +528,7 @@ export default function JobWork() {
         return {
           product_id: null, product_name: it.product_name.trim(), sku: it.sku || "",
           description: (it.description || "").trim(), quantity: parseFloat(it.quantity),
-          unit: it.unit || "pcs", remarks: (it.remarks || "").trim(),
+          unit: it.unit || DEFAULT_UOM, remarks: (it.remarks || "").trim(),
           rate: parseOpt(it.rate), gst_rate: parseOpt(it.gst_rate), is_custom: true,
         };
       }
@@ -538,7 +536,7 @@ export default function JobWork() {
       return {
         product_id: it.product_id, product_name: pr?.name || "", sku: pr?.sku || "",
         description: (it.description || "").trim(), quantity: parseFloat(it.quantity),
-        unit: pr?.unit || "pcs", remarks: (it.remarks || "").trim(),
+        unit: pr?.unit || DEFAULT_UOM, remarks: (it.remarks || "").trim(),
         rate: parseOpt(it.rate), gst_rate: parseOpt(it.gst_rate),
         hsn_code: pr?.hsn_code || null, is_custom: false,
         batch_id: it.batch_id || null, serial_id: it.serial_id || null, expiry_date: it.expiry_date || null,
@@ -970,7 +968,7 @@ export default function JobWork() {
                           <td className="px-3 py-2.5">{item.job_worker_name || <span className="text-muted-foreground">—</span>}</td>
                           <td className="px-3 py-2.5 font-semibold text-zinc-100">{item.product_name || "—"}</td>
                           <td className="px-3 py-2.5 font-mono text-zinc-300">{item.sku || "—"}</td>
-                          <td className="px-3 py-2.5 text-zinc-400">{item.unit || "pcs"}</td>
+                          <td className="px-3 py-2.5 text-zinc-400">{item.unit || DEFAULT_UOM}</td>
                           <td className="px-3 py-2.5 font-bold text-zinc-100">{item.quantity}</td>
                           <td className="px-3 py-2.5 font-bold text-primary">{item.quantity_pending ?? item.quantity}</td>
                           <td className="px-3 py-2.5">
@@ -1813,14 +1811,14 @@ export default function JobWork() {
                         </td>
                         <td className="px-3 py-2 align-top">
                           <Select
-                            value={item.unit || "pcs"}
+                            value={item.unit || DEFAULT_UOM}
                             onChange={e => patch({ unit: e.target.value })}
                             className="h-10 px-2"
                             aria-label="Unit of measure"
                             ref={challanGridNav.registerCell(idx, 4)}
                             onKeyDown={challanGridNav.handleKeyDown(idx, 4)}
                           >
-                            {UOM_OPTIONS.map(u => <option key={u} value={u}>{uomLabel(u)}</option>)}
+                            {STANDARD_UOMS.map(u => <option key={u} value={u}>{u}</option>)}
                           </Select>
                         </td>
                         <td className="px-3 py-2 align-top">
@@ -2138,7 +2136,7 @@ export default function JobWork() {
                       <tr key={it.product_id || `d-${i}`} className="border-b border-border">
                         <td className="p-2.5 text-foreground">{it.product_name}{it.is_custom && <span className="ml-1 text-[9px] text-primary">Custom</span>}</td>
                         <td className="p-2.5 text-muted-foreground">{it.description || "—"}</td>
-                        <td className="p-2.5 text-right text-foreground">{it.quantity} {it.unit || "pcs"}</td>
+                        <td className="p-2.5 text-right text-foreground">{it.quantity} {it.unit || DEFAULT_UOM}</td>
                         <td className="p-2.5 text-right text-muted-foreground">{it.rate > 0 ? `₹${inr(it.rate)}` : "—"}</td>
                         <td className="p-2.5 text-right text-muted-foreground">{(it.gst_rate ?? "") !== "" ? `${it.gst_rate}%` : "—"}</td>
                         <td className="p-2.5 text-right text-muted-foreground">{it.taxable_value > 0 ? `₹${inr(it.taxable_value)}` : "—"}</td>

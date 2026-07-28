@@ -306,7 +306,7 @@ async def _insert_challan_items(session, challan_id: str, tenant_id: str | None,
             id=row_id, challan_id=challan_id, tenant_id=tenant_id, line_no=idx,
             product_id=item.get("product_id"), product_name=item.get("product_name"),
             sku=item.get("sku"), description=item.get("description"),
-            hsn_code=item.get("hsn_code"), uom=item.get("unit") or item.get("uom") or "pcs",
+            hsn_code=item.get("hsn_code"), uom=item.get("unit") or item.get("uom") or "Nos",
             is_custom=bool(item.get("is_custom")),
             quantity=item.get("quantity"), rate=item.get("rate"), amount=item.get("amount"),
             gst_rate=item.get("gst_rate"), taxable_value=item.get("taxable_value"),
@@ -498,7 +498,7 @@ async def export_challans(
                 c.get("job_worker_name", ""),
                 item.get("product_name", ""),
                 item.get("sku", ""),
-                item.get("uom", "pcs"),
+                item.get("uom", "Nos"),
                 float(item.get("quantity", 0) or 0),
                 float(item.get("quantity_received", 0) or 0),
                 float(item.get("quantity_pending", 0) or 0),
@@ -566,7 +566,7 @@ async def challan_pdf(item_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Challan not found")
     items = await _fetch_challan_items(item_id)
     for item in items:
-        item["unit"] = item.get("uom") or item.get("unit") or "pcs"
+        item["unit"] = item.get("uom") or item.get("unit") or "Nos"
     c["items"] = items
     number = c.get("challan_number") or item_id
     pdf_bytes = await render_document_pdf(
@@ -633,7 +633,7 @@ async def create_challan(payload: JobWorkChallan, user: dict = Depends(get_curre
             raise HTTPException(400, f"Product '{item.get('product_name', item['product_id'])}' not found.")
         item["product_name"] = prod["name"]
         item["sku"] = prod.get("sku", "")
-        item["unit"] = prod.get("unit", "pcs")
+        item["unit"] = prod.get("unit", "Nos")
         _enrich_item_valuation(item, prod)
 
     await validate_tracking_fields(items)
@@ -725,7 +725,7 @@ async def update_challan(item_id: str, payload: JobWorkChallan, user: dict = Dep
             raise HTTPException(400, f"Product '{item.get('product_name', item['product_id'])}' not found.")
         item["product_name"] = prod["name"]
         item["sku"] = prod.get("sku", "")
-        item["unit"] = prod.get("unit", "pcs")
+        item["unit"] = prod.get("unit", "Nos")
         _enrich_item_valuation(item, prod)
 
     await validate_tracking_fields(items)
@@ -1588,7 +1588,7 @@ async def _pending_rows(status_filter: list[str] | None = None, overdue_only: bo
                 "quantity_sent": sent,
                 "quantity_received": received,
                 "quantity_pending": round(pending, 4),
-                "unit": item.get("uom", "pcs"),
+                "unit": item.get("uom", "Nos"),
                 "rate": item.get("rate", 0),
                 "taxable_value": item.get("taxable_value", 0),
             })
@@ -1904,7 +1904,7 @@ async def get_itc04(
                 "product_name": item.get("product_name", ""),
                 "hsn_code": item.get("hsn_code", ""),
                 "quantity_sent": float(item.get("quantity", 0) or 0),
-                "unit": item.get("uom", "pcs"),
+                "unit": item.get("uom", "Nos"),
                 "rate": float(item.get("rate", 0) or 0),
                 "gst_rate": float(item.get("gst_rate", 0) or 0),
                 "taxable_value": float(item.get("taxable_value", 0) or 0),
@@ -1946,7 +1946,7 @@ async def get_itc04(
                 "product_name": item.get("product_name", ""),
                 "quantity_received": float(item.get("quantity_received", 0) or 0),
                 "scrap_quantity": float(item.get("scrap_quantity", 0) or 0),
-                "unit": "pcs",
+                "unit": "Nos",
             })
 
     total_sent = sum(row["quantity_sent"] for row in table4)

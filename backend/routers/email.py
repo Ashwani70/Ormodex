@@ -56,7 +56,7 @@ async def _load_doc_for_email(doc_type: str, doc_id: str) -> dict | None:
             sent = float(item.get("quantity", 0) or 0)
             item["quantity_received"] = received_by_item.get(item["id"], 0.0)
             item["quantity_pending"] = max(0.0, sent - item["quantity_received"])
-            item["unit"] = item.get("uom") or item.get("unit") or "pcs"
+            item["unit"] = item.get("uom") or item.get("unit") or "Nos"
         doc["items"] = items
     elif doc_type == "job_work_receipt":
         from sqlalchemy import select

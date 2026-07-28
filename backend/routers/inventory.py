@@ -5,6 +5,7 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, Response
+from pydantic import BaseModel
 
 from core import cache
 from core.auth_utils import get_current_user, require_admin
@@ -173,11 +174,65 @@ async def _resolve_category(data: dict) -> dict:
     return data
 
 
+STANDARD_UOMS = [
+    "Nos", "Kg", "Gram", "Meter", "Feet", "Inch",
+    "Litre", "Box", "Bundle", "Pair", "Roll", "Set", "Bag", "Ton"
+]
+
+
+class UOMCreate(BaseModel):
+    name: str
+    symbol: Optional[str] = None
+    description: Optional[str] = None
+
+
+@router.get("/uoms")
+@router.get("/inventory/uoms")
+async def list_uoms(_: dict = Depends(get_current_user)):
+    """List standard + custom Units of Measure (UOMs)."""
+    custom_rows = await db.uoms.find({"is_deleted": {"$ne": True}}).to_list(1000)
+    custom_names = [row["name"] for row in custom_rows if row.get("name")]
+
+    seen = set()
+    result = []
+    for uom in STANDARD_UOMS + custom_names:
+        clean = uom.strip()
+        key = clean.lower()
+        if key and key not in seen:
+            seen.add(key)
+            result.append(clean)
+    return result
+
+
+@router.post("/uoms")
+@router.post("/inventory/uoms")
+async def create_uom(payload: UOMCreate, user: dict = Depends(get_current_user)):
+    """Create a new custom Unit of Measure."""
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="UOM name is required")
+
+    existing = await list_uoms(user)
+    for existing_uom in existing:
+        if existing_uom.lower() == name.lower():
+            return {"name": existing_uom, "message": "UOM already exists"}
+
+    created = await crud_create("uoms", {
+        "name": name,
+        "symbol": payload.symbol or name,
+        "description": payload.description,
+    }, user=user)
+    logger.info("Created custom UOM %r by user %s", name, user.get("id"))
+    return created
+
+
 @router.post("/products")
 async def create_product(payload: Product, user: dict = Depends(get_current_user)):
     if await db.products.find_one({"sku": payload.sku}):
         raise HTTPException(status_code=400, detail="SKU already exists")
     data = await _resolve_category(payload.model_dump())
+    if not data.get("unit") or not str(data.get("unit")).strip():
+        data["unit"] = "Nos"
     product = await crud_create("products", data)
 
     # A product created with an opening quantity must have a movement to
@@ -200,11 +255,15 @@ async def create_product(payload: Product, user: dict = Depends(get_current_user
 
 
 @router.put("/products/{item_id}")
-async def update_product(item_id: str, payload: Product, _: dict = Depends(get_current_user)):
+async def update_product(item_id: str, payload: Product, user: dict = Depends(get_current_user)):
     if await db.products.find_one({"sku": payload.sku, "id": {"$ne": item_id}}):
         raise HTTPException(status_code=400, detail="SKU already exists")
     data = await _resolve_category(payload.model_dump())
-    return await crud_update("products", item_id, data)
+    if not data.get("unit") or not str(data.get("unit")).strip():
+        data["unit"] = "Nos"
+    result = await crud_update("products", item_id, data, user=user)
+    await db.stock_items.update_many({"product_id": item_id}, {"$set": {"uom": data["unit"]}})
+    return result
 
 
 @router.delete("/products/{item_id}")
