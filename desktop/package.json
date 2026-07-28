@@ -13,17 +13,20 @@
   "homepage": "./",
   "scripts": {
     "build:frontend": "node scripts/build-frontend.js",
+    "build:python": "node scripts/bundle-python.js",
+    "copy:backend": "node scripts/copy-backend.js",
     "gen:icons": "node scripts/gen-icons.js",
     "smoke": "electron scripts/smoke-test.js",
     "start": "electron .",
-    "pack": "npm run build:frontend && electron-builder --dir",
-    "dist": "npm run build:frontend && electron-builder",
-    "dist:win": "npm run build:frontend && electron-builder --win",
-    "dist:mac": "npm run build:frontend && electron-builder --mac",
-    "dist:linux": "npm run build:frontend && electron-builder --linux"
+    "pack": "npm run build:frontend && npm run build:python && npm run copy:backend && electron-builder --dir",
+    "dist": "npm run build:frontend && npm run build:python && npm run copy:backend && electron-builder",
+    "dist:win": "npm run build:frontend && npm run build:python && npm run copy:backend && electron-builder --win",
+    "dist:mac": "npm run build:frontend && npm run build:python && npm run copy:backend && electron-builder --mac",
+    "dist:linux": "npm run build:frontend && npm run build:python && npm run copy:backend && electron-builder --linux"
   },
   "dependencies": {
-    "electron-updater": "^6.3.9"
+    "electron-updater": "^6.3.9",
+    "embedded-postgres": "18.4.0-beta.17"
   },
   "devDependencies": {
     "electron": "^31.3.1",
@@ -45,8 +48,17 @@
       "menu.js",
       "logger.js",
       "updater.js",
+      "local-stack.js",
+      "local-env.js",
       "app/**/*",
       "build-resources/icon.*"
+    ],
+    "extraResources": [
+      { "from": "backend-src", "to": "backend" },
+      { "from": "runtime/python/${os}-${arch}", "to": "python" }
+    ],
+    "asarUnpack": [
+      "node_modules/embedded-postgres/**/*"
     ],
     "publish": [
       {

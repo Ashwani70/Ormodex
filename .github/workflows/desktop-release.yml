@@ -86,6 +86,18 @@ jobs:
         working-directory: desktop
         run: npm run build:frontend
 
+      # ── Bundle the local-mode Python runtime + backend source ──────
+      # Must run natively per-OS (this job's matrix already does that) since
+      # Python/Postgres binaries are platform-specific — see local-stack.js
+      # and desktop/scripts/bundle-python.js for what these produce.
+      - name: Bundle Python runtime for local mode
+        working-directory: desktop
+        run: npm run build:python
+
+      - name: Copy backend source for local mode
+        working-directory: desktop
+        run: npm run copy:backend
+
       # ── Package installers ─────────────────────────────────────────
       # Build only (no auto-publish) so we can add stable-named copies before
       # uploading. Unsigned for now: warnings on first run are expected.

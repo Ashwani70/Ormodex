@@ -1,0 +1,42 @@
+# Trimmed copy of requirements.txt for bundling into the Electron desktop
+# app's local-mode backend (see desktop/scripts/bundle-python.js). Excludes:
+#   - dev-only tooling: pytest, pytest-asyncio, black, isort, flake8, mypy
+#   - gunicorn: a single local-mode instance is spawned directly via uvicorn,
+#     no multi-worker process manager needed
+#   - boto3: unused anywhere in core/routers — local storage is filesystem-
+#     based (core/storage.py); confirmed unused, not just unneeded locally
+#
+# Keep this in sync with requirements.txt whenever the real dependency list
+# changes — everything else here must match exactly so local-mode behavior
+# is identical to the cloud-hosted backend.
+fastapi>=0.116.2
+uvicorn==0.25.0
+requests-oauthlib>=2.0.0
+cryptography>=42.0.8
+python-dotenv>=1.0.1
+# ── Database: PostgreSQL (SQLAlchemy async) ──
+sqlalchemy>=2.0.31
+asyncpg>=0.29.0
+alembic>=1.13.0
+greenlet>=3.0.0
+pydantic>=2.6.4
+email-validator>=2.2.0
+pyjwt>=2.10.1
+pyotp>=2.9.0
+bcrypt==4.1.3
+passlib>=1.7.4
+tzdata>=2024.2
+requests>=2.31.0
+pandas>=2.2.0
+numpy>=1.26.0
+python-multipart>=0.0.9
+typer>=0.9.0
+reportlab>=4.5.0
+resend>=2.30.0
+httpx>=0.25.0
+# AI Providers
+openai>=1.0.0
+google-generativeai>=0.8.0
+anthropic>=0.40.0
+groq>=0.13.0
+openpyxl>=3.1.2

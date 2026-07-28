@@ -1,13 +1,30 @@
 ﻿// Ormodex ERP — Electron main process.
 //
-// This is a THIN CLIENT: it ships the built React UI locally and calls your hosted
-// backend over HTTPS. The backend/database is NOT bundled — set the server URL once
-// and every device shares the same data.
+// Two backend targets are supported ("mode"):
+//   - "cloud": thin client — ships the built React UI locally and calls your
+//     hosted backend over HTTPS. The device shares data with every other
+//     device pointed at the same server. This was the ONLY mode before
+//     local-mode support was added, and remains the default when a cloud
+//     server is reachable.
+//   - "local": ships a bundled Postgres + a bundled copy of the FastAPI
+//     backend (see local-stack.js), both started as child processes and
+//     bound to 127.0.0.1 only, so the app works with zero internet access.
+//     Data stays on this one device only (no cloud sync in this phase).
 //
-// Backend URL resolution (first match wins):
+// Backend URL resolution (first match wins), unchanged in shape from before —
+// only the local-mode branch is new:
 //   1. GRAVITYONE_BACKEND_URL environment variable (power users / kiosks)
-//   2. A value the user saved in-app (userData/config.json)
-//   3. DEFAULT_BACKEND_URL below (baked default for your production server)
+//   2. If mode is "local" and the local stack is running: its 127.0.0.1 URL
+//   3. A value the user saved in-app (userData/config.json)
+//   4. DEFAULT_BACKEND_URL below (baked default for your production server)
+//
+// Mode resolution (first match wins):
+//   1. GRAVITYONE_MODE environment variable ("cloud" | "local")
+//   2. A value the user saved in-app (userData/config.json), or chose via
+//      File → ERP Server…
+//   3. "auto" — resolved once on first-ever launch (see app.whenReady()):
+//      cloud if reachable, local otherwise. Sticky after that; no silent
+//      auto-switching later.
 
 const { app, BrowserWindow, shell, dialog, ipcMain, Notification } = require("electron");
 const path = require("path");
@@ -17,6 +34,7 @@ const http = require("http");
 const buildMenu = require("./menu");
 const log = require("./logger");
 const { setupAutoUpdate, checkForUpdatesNow } = require("./updater");
+const localStack = require("./local-stack");
 
 const isDev = !app.isPackaged;
 
@@ -45,10 +63,20 @@ function writeConfig(patch) {
   return next;
 }
 
+function backendMode() {
+  const fromEnv = process.env.GRAVITYONE_MODE;
+  const fromCfg = readConfig().mode;
+  return fromEnv || fromCfg || "auto";
+}
+
 function backendUrl() {
   const fromEnv = process.env.GRAVITYONE_BACKEND_URL;
+  if (fromEnv) return fromEnv.replace(/\/$/, "");
+  if (backendMode() === "local" && localStack.isRunning()) {
+    return localStack.getLocalUrl();
+  }
   const fromCfg = readConfig().backendUrl;
-  return (fromEnv || fromCfg || DEFAULT_BACKEND_URL).replace(/\/$/, "");
+  return (fromCfg || DEFAULT_BACKEND_URL).replace(/\/$/, "");
 }
 
 // Reachability probe used by the offline splash screen — a plain HTTPS/HTTP
@@ -197,24 +225,46 @@ function createMainWindow() {
 // ── In-app server configuration ──────────────────────────────────────
 async function promptForServer() {
   const current = backendUrl();
+  const mode = backendMode();
+  const modeLabel = mode === "local" ? "Local (offline)" : "Cloud";
   const { response } = await dialog.showMessageBox(mainWindow, {
     type: "question",
     title: "ERP Server",
     message: "Where is your Ormodex ERP server?",
-    detail: `Current: ${current}\n\nEnter a new server URL to connect this device to a different backend. The app will reload.`,
-    buttons: ["Keep current", "Change…"],
+    detail: `Current mode: ${modeLabel}\nCurrent: ${current}\n\nSwitching mode restarts the app.`,
+    buttons: ["Keep current", "Use Local (offline)", "Change cloud URL…"],
     defaultId: 0,
     cancelId: 0,
   });
-  if (response !== 1) return;
 
-  const input = await textPrompt(current);
-  if (input && /^https?:\/\//.test(input)) {
-    writeConfig({ backendUrl: input.replace(/\/$/, "") });
-    if (mainWindow) mainWindow.reload();
-  } else if (input) {
-    dialog.showErrorBox("Invalid URL", "Server URL must start with http:// or https://");
+  if (response === 1) {
+    // "Use Local (offline)" — relaunch so app.whenReady()'s sequencing
+    // (Postgres → backend → renderer) runs cleanly for the new mode, rather
+    // than adding a second hot-swap code path that duplicates that ordering.
+    writeConfig({ mode: "local" });
+    await relaunchApp();
+    return;
   }
+
+  if (response === 2) {
+    const input = await textPrompt(mode === "cloud" ? current : DEFAULT_BACKEND_URL);
+    if (input && /^https?:\/\//.test(input)) {
+      writeConfig({ mode: "cloud", backendUrl: input.replace(/\/$/, "") });
+      await relaunchApp();
+    } else if (input) {
+      dialog.showErrorBox("Invalid URL", "Server URL must start with http:// or https://");
+    }
+  }
+}
+
+// app.exit() (unlike app.quit()) skips the normal quit lifecycle entirely —
+// it would NOT fire "before-quit", so the local Postgres/backend child
+// processes (if currently running, e.g. switching FROM local TO cloud)
+// would be orphaned. Stop them explicitly first.
+async function relaunchApp() {
+  if (localStack.isRunning()) await localStack.stop();
+  app.relaunch();
+  app.exit();
 }
 
 function textPrompt(initial) {
@@ -254,8 +304,16 @@ function textPrompt(initial) {
 // Expose backend URL + app version to the renderer via preload bridge.
 ipcMain.handle("config:get", () => ({
   backendUrl: backendUrl(),
+  mode: backendMode(),
   version: app.getVersion(),
   platform: process.platform,
+}));
+
+// Groundwork for a future in-app "you are in offline/local mode" indicator —
+// not yet consumed by the frontend in this phase.
+ipcMain.handle("local:status", () => ({
+  running: localStack.isRunning(),
+  url: localStack.isRunning() ? localStack.getLocalUrl() : null,
 }));
 
 // ── Native notifications (renderer asks main to show an OS-level toast) ──
@@ -329,7 +387,41 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     log.info(`Ormodex ERP starting — v${app.getVersion()} (${process.platform})`);
     createSplash();
-    const online = await pingBackend(backendUrl());
+
+    let mode = backendMode();
+    if (mode === "auto") {
+      // True first-run: never persisted a mode before. Prefer cloud if it's
+      // actually reachable (better default for anyone with connectivity —
+      // cloud is the shared source of truth); fall back to local so a
+      // first-time user with no internet still lands in a working app
+      // instead of a dead end. Sticky after this — no silent re-switching.
+      const cloudUrl = process.env.GRAVITYONE_BACKEND_URL || readConfig().backendUrl || DEFAULT_BACKEND_URL;
+      const cloudReachable = await pingBackend(cloudUrl);
+      mode = cloudReachable ? "cloud" : "local";
+      writeConfig({ mode });
+      log.info(`local-stack: first run — auto-resolved mode to "${mode}"`);
+    }
+
+    let online;
+    if (mode === "local") {
+      if (splashWindow && !splashWindow.isDestroyed()) {
+        splashWindow.webContents.send("splash:status", "starting-local");
+      }
+      const result = await localStack.start();
+      if (!result.ok) {
+        dialog.showErrorBox(
+          "Local mode failed to start",
+          `Ormodex ERP could not start its local database/backend.\n\n${result.error}\n\n` +
+            "A diagnostic log has been saved. You can switch to a cloud server via File → ERP Server…"
+        );
+        online = false;
+      } else {
+        online = await pingBackend(backendUrl());
+      }
+    } else {
+      online = await pingBackend(backendUrl());
+    }
+
     if (splashWindow && !splashWindow.isDestroyed()) {
       splashWindow.webContents.send("splash:status", online ? "online" : "offline");
     }
@@ -343,6 +435,20 @@ if (!gotLock) {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
   });
 }
+
+// Graceful shutdown of the local Postgres/backend child processes (if
+// running) before the app actually exits — no orphaned processes left
+// behind. The re-entrancy guard is needed because this handler calls
+// app.quit() itself to re-enter the quit sequence once cleanup is done.
+let quitCleanupDone = false;
+app.on("before-quit", (event) => {
+  if (quitCleanupDone || !localStack.isRunning()) return;
+  event.preventDefault();
+  localStack.stop().finally(() => {
+    quitCleanupDone = true;
+    app.quit();
+  });
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

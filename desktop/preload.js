@@ -31,4 +31,8 @@ contextBridge.exposeInMainWorld("ormodex", {
   // Re-probe backend reachability from inside the loaded app (e.g. a "Retry"
   // button on an in-page offline banner).
   checkBackend: () => ipcRenderer.invoke("net:checkBackend"),
+
+  // Whether the bundled local Postgres/backend (offline mode) is currently
+  // running, and its URL — groundwork for a future in-app mode indicator.
+  getLocalStatus: () => ipcRenderer.invoke("local:status"),
 });

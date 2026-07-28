@@ -3,26 +3,67 @@
 Real native installers for **Windows (`.exe` / `.msi`), macOS (`.dmg`) and Linux
 (`.AppImage` / `.deb`)**.
 
-This is an **Electron thin client**: it ships the built React UI locally and talks to
-your **hosted backend** over HTTPS. The backend and database are **not** bundled — set
-the server URL once and every device shares the same data.
+Two backend targets ("mode") are supported:
+
+- **Cloud** (the original thin-client mode): ships the built React UI locally
+  and talks to your **hosted backend** over HTTPS. The backend/database are
+  not bundled — every device pointed at the same server shares the same data.
+- **Local** (offline mode): bundles a real Postgres instance and a copy of
+  the FastAPI backend, both run as local child processes bound to
+  `127.0.0.1` only. The app works with **zero internet access**. Data stays
+  on that one device only — there is no cloud sync yet (a later phase).
+
+On first-ever launch with no saved preference, the app tries the cloud
+server; if it's unreachable, it automatically falls back to local mode so a
+first-time user never lands on a dead end. After that, the mode is sticky —
+switch it explicitly via **File → ERP Server…**.
 
 ```
 desktop/
-├── main.js                  Electron main process (window, security, server config, IPC)
+├── main.js                  Electron main process (window, security, server/mode config, IPC)
+├── local-stack.js           Owns the local Postgres + local backend child processes
+├── local-env.js             Generates/persists local-mode secrets (JWT, encryption key, ports)
 ├── preload.js               Secure IPC bridge (no Node in the renderer)
-├── splash.html               Offline-aware splash screen shown while connecting
+├── splash.html               Mode-aware splash screen (online / offline / starting local db)
 ├── splash-preload.js         Bridge for the splash screen only
-├── menu.js                  Native menu — Server switcher, Print, Check for Updates
+├── menu.js                  Native menu — Server/mode switcher, Print, Check for Updates
 ├── logger.js                 Rotating file logger (userData/logs/main.log)
 ├── updater.js                 electron-updater wiring (GitHub Releases feed)
-├── package.json             electron-builder config (win/mac/linux/msi targets)
+├── package.json             electron-builder config (win/mac/linux/msi targets, extraResources)
 ├── scripts/
 │   ├── build-frontend.js    Builds ../frontend and copies it into app/
+│   ├── build-python.js      Bundles a portable Python + backend deps for local mode
+│   ├── copy-backend.js      Copies ../backend source (minus secrets/tests) for local mode
 │   └── gen-icons.js         Generates icon.png / icon.ico from icon.svg
 ├── build-resources/icon.svg Brand icon source (raster icons generated in CI)
-└── app/                     ← generated: the built React UI (gitignored)
+├── app/                     ← generated: the built React UI (gitignored)
+├── backend-src/             ← generated: backend source for local mode (gitignored)
+└── runtime/python/          ← generated: bundled Python per-platform (gitignored)
 ```
+
+## Local (offline) mode — how it works
+
+`local-stack.js` starts two child processes when the resolved mode is
+`"local"`:
+
+1. **Postgres**, via the `embedded-postgres` npm package, data directory
+   `userData/pgdata` (persists across restarts — only initializes once).
+2. **The real, unmodified FastAPI backend**, via a bundled Python interpreter
+   running `uvicorn server:app`, pointed at that local Postgres.
+
+Both are bound to `127.0.0.1` only — never LAN-reachable. Secrets (JWT
+signing key, settings-encryption key, generated DB password, and the ports
+picked at first run) are generated once and persisted in
+`userData/local-secrets.json`, kept separate from the human-edited
+`config.json` so restarts don't invalidate existing sessions.
+
+`backend/core/db.py` and `server.py` needed **zero code changes** for this —
+`DATABASE_URL` already defaults to a local Postgres connection string, and
+the dev-mode startup path (`ENV=development`, which local mode sets) already
+auto-creates the schema and seeds an admin user.
+
+Local mode is stopped gracefully (SIGTERM → wait → SIGKILL if needed, then
+Postgres) on app quit, and re-started fresh on next launch if still selected.
 
 ## What's built in
 
@@ -39,15 +80,25 @@ desktop/
 | Disable devtools in production | `webPreferences.devTools: isDev` + blocked shortcuts (F12, Ctrl+Shift+I/J/C) when packaged. |
 | Crash reporting / error logging | `logger.js` writes rotating JSON-line logs; renderer errors forwarded via `log:error` IPC; React `ErrorBoundary` and `window.onerror`/`unhandledrejection` all report through `frontend/src/lib/crashReporter.js`. |
 | Native menus / keyboard shortcuts | `menu.js` — File/Edit/View/Window/Help, Ctrl+P print, Check for Updates. |
+| Fully offline (local) mode | Bundled Postgres + bundled FastAPI backend as local child processes (`local-stack.js`) — see [Local (offline) mode](#local-offline-mode--how-it-works) above. |
 
-## How the backend URL is resolved
+## How the backend URL and mode are resolved
 
 The desktop build overrides the API at **runtime** (the web build is unchanged).
-First match wins:
+
+Mode (`"cloud"` | `"local"`), first match wins:
+
+1. `GRAVITYONE_MODE` environment variable
+2. A mode the user saved via **File → ERP Server…** (stored in userData/config.json)
+3. `"auto"` — resolved once on true first launch: cloud if reachable, local
+   otherwise. Sticky after that.
+
+Backend URL, first match wins:
 
 1. `GRAVITYONE_BACKEND_URL` environment variable
-2. A URL the user saved via **File → ERP Server…** (stored in userData/config.json)
-3. `DEFAULT_BACKEND_URL` in [`main.js`](main.js) — **set this to your production API
+2. If mode is `"local"` and the local stack is running: its `127.0.0.1` URL
+3. A URL the user saved via **File → ERP Server…** (stored in userData/config.json)
+4. `DEFAULT_BACKEND_URL` in [`main.js`](main.js) — **set this to your production API
    host before releasing** (default `https://api.ormodex.com`)
 
 The frontend reads it through `window.__GRAVITYONE_BACKEND_URL__`, wired up in
@@ -66,8 +117,30 @@ npm run dist:linux  # → release/Ormodex-ERP-<v>.AppImage + .deb
 npm run dist:mac    # macOS ONLY — .dmg can't be built on Windows/Linux
 ```
 
+Each `dist*`/`pack` script now also runs `build:python` (downloads a portable
+Python 3.12.7 — pinned to match `render.yaml`'s production version — and
+installs `backend/requirements-desktop.txt` into it) and `copy:backend`
+(copies `../backend` source, excluding `.env`/tests/caches) before invoking
+`electron-builder`, so packaged installers always include a working local
+mode. **These two bundling steps must run natively per target OS** — you
+cannot produce a Windows local-mode bundle from a Linux/macOS machine or vice
+versa; CI (`desktop-release.yml`) already builds natively per OS, so this
+isn't a new constraint there.
+
+To run just the bundling steps (e.g. to inspect the output, or for local dev
+without a full installer build):
+
+```bash
+npm run build:python    # → runtime/python/<platform>-<arch>/
+npm run copy:backend    # → backend-src/
+```
+
 `npm run pack` makes an unpacked app (fast smoke test, no installer).
-`npm start` runs the app against an existing `app/` build for development.
+`npm start` runs the app against an existing `app/` build for development —
+in dev, local mode reads Python from `runtime/python/<platform>-<arch>/`
+(same layout `build:python` produces) and backend source directly from
+`../backend`, so running `npm run build:python` once locally is enough to
+test local mode without a full package/install cycle.
 
 ## Release via CI (recommended)
 

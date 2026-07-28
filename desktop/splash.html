@@ -28,6 +28,7 @@
   .dot { width: 8px; height: 8px; border-radius: 50%; background: #6366f1; animation: pulse 1.1s ease-in-out infinite; }
   .dot.offline { background: #f59e0b; animation: none; }
   .dot.online { background: #22c55e; animation: none; }
+  .dot.starting-local { background: #6366f1; animation: pulse 1.1s ease-in-out infinite; }
   @keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
   .bar { width: 220px; height: 3px; border-radius: 2px; background: #1e293b; overflow: hidden; }
   .bar > div { width: 40%; height: 100%; background: #6366f1; animation: slide 1.2s ease-in-out infinite; }
@@ -48,6 +49,9 @@
       if (status === "online") {
         dot.className = "dot online";
         text.textContent = "Connected — loading Ormodex ERP…";
+      } else if (status === "starting-local") {
+        dot.className = "dot starting-local";
+        text.textContent = "Starting local database…";
       } else {
         dot.className = "dot offline";
         text.textContent = "Offline — you can still browse cached screens once loaded.";
