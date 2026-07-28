@@ -29,6 +29,7 @@ from typing import Optional
 from datetime import date
 
 from core.auth_utils import get_current_user, require_admin, is_admin_role
+from core.cache import get_or_set, TTL_REFERENCE
 from core.db import db
 from core.utils import now_iso, new_id
 
@@ -133,8 +134,12 @@ async def _grouped_balances(
 
     rows = await db.journal_entries.aggregate(pipeline).to_list(5000)
 
-    # join account_type from COA
-    accounts = {a["code"]: a for a in await db.chart_of_accounts.find({}, {"_id": 0}).to_list(1000)}
+    # join account_type from COA (cached 60s single-flight)
+    async def _load_coa():
+        docs = await db.chart_of_accounts.find({}, {"_id": 0}).to_list(1000)
+        return {a["code"]: a for a in docs if "code" in a}
+
+    accounts = await get_or_set("reports:coa_map", TTL_REFERENCE, _load_coa)
     out: dict[str, dict] = {}
     for r in rows:
         code = r.get("account_code")
