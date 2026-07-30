@@ -764,16 +764,30 @@ async def depreciation_schedule(
 
     runs = await db.asset_depreciation_runs.find(filt, {"_id": 0}).sort("financial_year", 1).to_list(5000)
 
+    # Batch-read every referenced asset + category in TWO queries instead of
+    # a find_one-per-row loop (was an N+1 — up to 1 + 2×5000 round trips).
+    asset_ids = list({r.get("asset_id") for r in runs if r.get("asset_id")})
+    assets_by_id: dict = {}
+    if asset_ids:
+        assets = await db.fixed_assets.find({"id": {"$in": asset_ids}}, {"_id": 0}).to_list(len(asset_ids))
+        assets_by_id = {a["id"]: a for a in assets}
+
+    category_ids = list({a.get("category_id") for a in assets_by_id.values() if a.get("category_id")})
+    categories_by_id: dict = {}
+    if category_ids:
+        cats = await db.asset_categories.find({"id": {"$in": category_ids}}, {"_id": 0}).to_list(len(category_ids))
+        categories_by_id = {c["id"]: c for c in cats}
+
     # Enrich with asset details and optionally filter by category
     enriched = []
     for run in runs:
-        asset = await db.fixed_assets.find_one({"id": run.get("asset_id")}, {"_id": 0})
+        asset = assets_by_id.get(run.get("asset_id"))
         if not asset:
             enriched.append(run)
             continue
         if category_id and asset.get("category_id") != category_id:
             continue
-        cat = await db.asset_categories.find_one({"id": asset.get("category_id")}, {"_id": 0})
+        cat = categories_by_id.get(asset.get("category_id"))
         enriched.append({
             **run,
             "asset_code": asset.get("code", ""),

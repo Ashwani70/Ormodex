@@ -15,7 +15,7 @@
 //     open client can react to, and pages that were already tracking their own
 //     queue (POS) pick it up from there.
 
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const SHELL_CACHE = `ormodex-shell-${CACHE_VERSION}`;
 const API_CACHE = `ormodex-api-${CACHE_VERSION}`;
 
@@ -78,12 +78,20 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (isNavigationOrShell(request, url)) {
+    // Network-first for the HTML shell. CRA fingerprints every JS/CSS chunk
+    // with a content hash per build, so a cache-first index.html can go
+    // stale after a deploy and keep referencing chunk files that no longer
+    // exist on the server — the app loads blank until a hard refresh
+    // bypasses the Cache API. Always try the network first; only fall back
+    // to the cached shell when genuinely offline.
     event.respondWith(
-      caches.match(request).then((cached) => cached || fetch(request).then((response) => {
-        const copy = response.clone();
-        caches.open(SHELL_CACHE).then((cache) => cache.put(request, copy));
-        return response;
-      }).catch(() => caches.match("/index.html")))
+      fetch(request)
+        .then((response) => {
+          const copy = response.clone();
+          caches.open(SHELL_CACHE).then((cache) => cache.put(request, copy));
+          return response;
+        })
+        .catch(() => caches.match(request).then((cached) => cached || caches.match("/index.html")))
     );
     return;
   }

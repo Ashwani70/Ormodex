@@ -14,6 +14,7 @@ from typing import Optional, List, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from core import cache
 from core.auth_utils import get_current_user, require_admin, is_admin_role
 from core.db import db
 from core.product_stock_bridge import resolve_godown_id, resolve_stock_item_ids_for_products
@@ -82,8 +83,26 @@ async def inventory_aging(
     warehouse_id: Optional[str] = None,
     user=Depends(get_current_user)
 ):
-    """Products not involved in any sale/dispatch in the last N days (slow-moving/dead stock)."""
+    """Products not involved in any sale/dispatch in the last N days (slow-moving/dead stock).
+
+    Cached (TTL_DASHBOARD, keyed by params + the "stock" cache generation —
+    same generation warehouse_dashboard uses in inventory_v2.py): scans up to
+    200k stock_transactions rows per call, and every DB round-trip costs
+    ~260ms cross-region (see core/cache.py's WHY note). The generation bumps
+    on every products/stock_ledger_entries/stock_items write, and
+    stock_transactions is always written alongside one of those inside
+    stock_ledger.post_entry(), so a fresh movement invalidates this
+    immediately rather than serving stale aging data.
+    """
     _require_inventory(user)
+    return await cache.get_or_set(
+        f"inventory_aging:{days_threshold}:{warehouse_id}:{cache.generation('stock')}",
+        cache.TTL_DASHBOARD,
+        lambda: _compute_inventory_aging(days_threshold, warehouse_id),
+    )
+
+
+async def _compute_inventory_aging(days_threshold: int, warehouse_id: Optional[str]) -> dict:
     _cutoff = (date.today() - timedelta(days=days_threshold)).isoformat()
 
     q: dict = {"quantity": {"$gt": 0}}
@@ -170,9 +189,25 @@ async def stock_valuation(
     category: Optional[str] = None,
     user=Depends(get_current_user)
 ):
-    """Calculate stock valuation using Weighted Average or FIFO method."""
-    _require_inventory(user)
+    """Calculate stock valuation using Weighted Average or FIFO method.
 
+    Cached (TTL_DASHBOARD, keyed by params + the "stock" generation) — FIFO
+    mode scans up to 500k stock_transactions rows; see inventory_aging's
+    caching comment above for why (round-trip cost, invalidation safety).
+    """
+    _require_inventory(user)
+    return await cache.get_or_set(
+        f"stock_valuation:{method}:{warehouse_id}:{category}:{cache.generation('stock')}",
+        cache.TTL_DASHBOARD,
+        lambda: _compute_stock_valuation(method, warehouse_id, category),
+    )
+
+
+async def _compute_stock_valuation(
+    method: Literal["WEIGHTED_AVERAGE", "FIFO"],
+    warehouse_id: Optional[str],
+    category: Optional[str],
+) -> dict:
     q: dict = {"quantity": {"$gt": 0}}
     if warehouse_id:
         q["warehouse_id"] = warehouse_id

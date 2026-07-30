@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 // Tracks how many overlay surfaces (modals, the shortcuts-help panel, the
 // global search dropdown, the profile dropdown, etc.) are currently open,
@@ -24,8 +24,14 @@ export function ModalStackProvider({ children }) {
     };
   }, []);
 
+  // Memoized so consumers (Layout, GlobalSearch, Modal, WarehousePicker,
+  // SlideOver, useGlobalBackNavigation — this provider wraps the whole
+  // routed app) only re-render when isAnyOpen actually flips, not on every
+  // ModalStackProvider render. Same fix as AuthContext's value memoization.
+  const value = useMemo(() => ({ isAnyOpen: count > 0, register }), [count, register]);
+
   return (
-    <ModalStackContext.Provider value={{ isAnyOpen: count > 0, register }}>
+    <ModalStackContext.Provider value={value}>
       {children}
     </ModalStackContext.Provider>
   );

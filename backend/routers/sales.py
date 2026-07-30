@@ -565,13 +565,21 @@ async def invoice_pdf(item_id: str, _: dict = Depends(get_current_user)):
 async def list_credit_notes(q: Optional[str] = None, _: dict = Depends(get_current_user)):
     # pyrefly: ignore [bad-argument-type]
     notes = await crud_list("credit_notes", q, ["credit_note_number", "customer_name", "status"])
-    # Backfill customer_name for records saved before the denormalization was enforced.
-    for note in notes:
-        if not note.get("customer_name") and note.get("customer_id"):
-            cust = await db.customers.find_one({"id": note["customer_id"]}, {"_id": 0, "name": 1})
-            if cust:
-                note["customer_name"] = cust["name"]
-                await db.credit_notes.update_one({"id": note["id"]}, {"$set": {"customer_name": cust["name"]}})
+    # Backfill missing customer_name (records saved before the denormalization
+    # was enforced) in ONE batched query instead of a per-row find_one+
+    # update_one loop — same fix already applied to purchase_v2.py's
+    # vendor_name backfill (list_orders/list_grns); with the DB's ~200ms+
+    # round-trip latency, a page of N unbacked rows used to cost up to 2×N
+    # serial round-trips.
+    missing_ids = list({n["customer_id"] for n in notes if not n.get("customer_name") and n.get("customer_id")})
+    if missing_ids:
+        customers = await db.customers.find({"id": {"$in": missing_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(len(missing_ids))
+        name_by_id = {c["id"]: c["name"] for c in customers}
+        for note in notes:
+            name = name_by_id.get(note.get("customer_id"))
+            if name and not note.get("customer_name"):
+                note["customer_name"] = name
+                await db.credit_notes.update_one({"id": note["id"]}, {"$set": {"customer_name": name}})
     return notes
 
 

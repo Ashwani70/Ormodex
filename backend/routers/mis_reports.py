@@ -214,7 +214,21 @@ async def sales_analysis(
     group_by: str = "month",  # month | customer | product
     user=Depends(get_current_user)
 ):
+    """Cached (TTL_DASHBOARD, keyed by params) — same round-trip-cost
+    reasoning as /dashboard above. TTL-only invalidation (no generation
+    counter), matching /dashboard's own "mis:dashboard" key just above: a
+    60s-stale sales report is an acceptable tradeoff the existing MIS
+    dashboard already makes, and invoices/purchase_orders/expense_entries
+    aren't wired into any cache generation bucket today."""
     _require_mis(user)
+    return await cache.get_or_set(
+        f"sales_analysis:{from_date}:{to_date}:{group_by}",
+        cache.TTL_DASHBOARD,
+        lambda: _compute_sales_analysis(from_date, to_date, group_by),
+    )
+
+
+async def _compute_sales_analysis(from_date: Optional[str], to_date: Optional[str], group_by: str) -> dict:
     q: dict[str, Any] = {}
     if from_date or to_date:
         q["created_at"] = {}
@@ -270,7 +284,16 @@ async def purchase_analysis(
     group_by: str = "month",
     user=Depends(get_current_user)
 ):
+    """Cached (TTL_DASHBOARD, keyed by params) — see sales_analysis above."""
     _require_mis(user)
+    return await cache.get_or_set(
+        f"purchase_analysis:{from_date}:{to_date}:{group_by}",
+        cache.TTL_DASHBOARD,
+        lambda: _compute_purchase_analysis(from_date, to_date, group_by),
+    )
+
+
+async def _compute_purchase_analysis(from_date: Optional[str], to_date: Optional[str], group_by: str) -> dict:
     q: dict[str, Any] = {}
     if from_date or to_date:
         q["created_at"] = {}
@@ -324,7 +347,16 @@ async def profitability_report(
     to_date: Optional[str] = None,
     user=Depends(get_current_user)
 ):
+    """Cached (TTL_DASHBOARD, keyed by params) — see sales_analysis above."""
     _require_mis(user)
+    return await cache.get_or_set(
+        f"profitability:{from_date}:{to_date}",
+        cache.TTL_DASHBOARD,
+        lambda: _compute_profitability(from_date, to_date),
+    )
+
+
+async def _compute_profitability(from_date: Optional[str], to_date: Optional[str]) -> dict:
     q_sales: dict[str, Any] = {}
     q_exp: dict[str, Any] = {}
     if from_date or to_date:

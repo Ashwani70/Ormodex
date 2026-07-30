@@ -1,21 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { PrimaryButton, SecondaryButton } from "@/components/ui-kit";
 import ActivityTable from "@/components/ActivityTable";
-import {
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-  Legend,
-} from "recharts";
 import {
   TrendingUp,
   ShoppingCart,
@@ -32,6 +20,13 @@ import {
   ArrowDownRight,
 } from "lucide-react";
 import { toast } from "sonner";
+
+// recharts is the single largest lazy chunk in the app (~380KB) — split into
+// its own module (DashboardCharts.jsx) and lazy-loaded so it's only
+// fetched/parsed once the dashboard actually renders a chart, not bundled
+// eagerly into this page's own chunk.
+const SalesAreaChart = lazy(() => import("./DashboardCharts").then((m) => ({ default: m.SalesAreaChart })));
+const ExpenseIncomeBarChart = lazy(() => import("./DashboardCharts").then((m) => ({ default: m.ExpenseIncomeBarChart })));
 
 const inr = (n) => Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
 const shortInr = (n) => {
@@ -85,6 +80,21 @@ function KpiCard({ icon: Icon, label, value, trend, tone = "primary" }) {
   );
 }
 
+// Shown while the lazy-loaded recharts chunk (DashboardCharts.jsx) is still
+// fetching/parsing — same skeleton bars ChartCard already shows for its own
+// `loading` (data-fetch) state, reused here for the separate chunk-load wait.
+function ChartSkeleton() {
+  return (
+    <div className="h-full flex flex-col justify-end gap-2 pb-2 animate-pulse">
+      {[60, 85, 45, 70, 55, 90, 40].map((h, i) => (
+        <div key={i} className="flex items-end gap-1 flex-1">
+          <div className="flex-1 bg-muted rounded-t" style={{ height: `${h}%` }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Card shell for the two charts: title + optional period dropdown.
 function ChartCard({ title, period, onPeriod, empty, loading, children }) {
   return (
@@ -125,26 +135,6 @@ function ChartCard({ title, period, onPeriod, empty, loading, children }) {
     </div>
   );
 }
-
-const CustomTooltip = ({ active, payload, label }) => {
-  if (active && payload && payload.length) {
-    return (
-      <div className="bg-card border border-border p-3 shadow-lg rounded-[var(--radius-sm)] text-xs">
-        <p className="font-bold text-muted-foreground uppercase tracking-wider text-[10px] mb-1.5">{label}</p>
-        {payload.map((p, idx) => (
-          <p key={idx} className="font-semibold flex items-center justify-between gap-4 py-0.5">
-            <span className="flex items-center gap-1.5 text-muted-foreground">
-              <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: p.color || p.fill }} />
-              {p.name}
-            </span>
-            <span className="font-mono text-foreground font-bold">₹{Number(p.value).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</span>
-          </p>
-        ))}
-      </div>
-    );
-  }
-  return null;
-};
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
@@ -314,35 +304,15 @@ export default function Dashboard() {
       {/* ── Charts ─────────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ChartCard title="Sales Performance" period={salesPeriod} onPeriod={setSalesPeriod} empty={!loading && salesData.length === 0} loading={loading}>
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={salesData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
-              <defs>
-                <linearGradient id="salesGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.35} />
-                  <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="label" stroke="hsl(var(--muted-foreground))" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
-              <YAxis stroke="hsl(var(--muted-foreground))" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} width={64} tickFormatter={shortInr} />
-              <Tooltip content={<CustomTooltip />} />
-              <Area type="monotone" dataKey="value" name="Revenue" stroke="hsl(var(--primary))" strokeWidth={2.5} fill="url(#salesGrad)" />
-            </AreaChart>
-          </ResponsiveContainer>
+          <Suspense fallback={<ChartSkeleton />}>
+            <SalesAreaChart data={salesData} shortInr={shortInr} />
+          </Suspense>
         </ChartCard>
 
         <ChartCard title="Expense vs Income" period={eiPeriod} onPeriod={setEiPeriod} empty={!loading && eiData.length === 0} loading={loading}>
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={eiData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }} barGap={4}>
-              <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="label" stroke="hsl(var(--muted-foreground))" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
-              <YAxis stroke="hsl(var(--muted-foreground))" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} width={64} tickFormatter={shortInr} />
-              <Tooltip content={<CustomTooltip />} />
-              <Legend iconType="circle" wrapperStyle={{ fontSize: "11px" }} />
-              <Bar dataKey="income" name="Income" fill="hsl(var(--primary))" radius={[3, 3, 0, 0]} maxBarSize={14} />
-              <Bar dataKey="expense" name="Expense" fill="hsl(var(--secondary))" radius={[3, 3, 0, 0]} maxBarSize={14} />
-            </BarChart>
-          </ResponsiveContainer>
+          <Suspense fallback={<ChartSkeleton />}>
+            <ExpenseIncomeBarChart data={eiData} shortInr={shortInr} />
+          </Suspense>
         </ChartCard>
       </div>
 
