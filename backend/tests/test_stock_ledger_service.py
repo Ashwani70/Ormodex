@@ -180,7 +180,7 @@ def test_company_default_applies_when_item_has_no_override():
     # Item has NO valuation_method → must fall back to the company default (LIFO).
     asyncio.run(db.stock_items.insert_one({"id": "item1", "name": "Widget"}))
     asyncio.run(db.companies.insert_one(
-        {"id": "c1", "extra": {"inventory_valuation_method": "LIFO"}}
+        {"id": "c1", "tenant_id": "default", "extra": {"inventory_valuation_method": "LIFO"}}
     ))
     _post("item1", GODOWN, 100, "PURCHASE", rate=100, dt="2026-01-01")
     _post("item1", GODOWN, 200, "PURCHASE", rate=110, dt="2026-01-02")
@@ -197,7 +197,7 @@ def test_item_override_beats_company_default():
         {"id": "item1", "name": "Widget", "valuation_method": "FIFO"}
     ))
     asyncio.run(db.companies.insert_one(
-        {"id": "c1", "extra": {"inventory_valuation_method": "LIFO"}}
+        {"id": "c1", "tenant_id": "default", "extra": {"inventory_valuation_method": "LIFO"}}
     ))
     _post("item1", GODOWN, 100, "PURCHASE", rate=100, dt="2026-01-01")
     _post("item1", GODOWN, 200, "PURCHASE", rate=110, dt="2026-01-02")

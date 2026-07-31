@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 import core.po_numbering as pn
 from core.db import db
+from core.tenant import DEFAULT_TENANT
 from core.purchase_models import PurchaseOrderV2, POLine
 from routers.purchase_v2 import create_order, update_order, order_number_audit
 
@@ -28,7 +29,9 @@ PLAIN = {"id": "u3", "name": "Plain", "role": "employee",
 # Deterministic ids so cleanup is exact.
 _VENDOR_ID = "test_pn_v1"
 _ITEM_ID = "test_pn_i1"
-_PO_COUNTER_KEY = f"{pn.PO_COLLECTION}_po_number_seq"
+# Tenant-prefixed to match core/po_numbering.py's per-tenant counter key
+# scheme (see core/tenant.py, migration 033_document_numbering_tenant.py).
+_PO_COUNTER_KEY = f"{DEFAULT_TENANT}:{pn.PO_COLLECTION}_po_number_seq"
 # PO numbers used by tests (so cleanup can target them precisely).
 _TEST_PO_NUMBERS = {
     "PO-0100", "PO-0101", "MY-CUSTOM-1", "DUP-1", "PO-NEW-1", "PO-NEW-2",
@@ -37,25 +40,32 @@ _TEST_PO_NUMBERS = {
 
 
 async def _seed_masters_async():
-    """Upsert the vendor + stock item every test PO references."""
+    """Upsert the vendor + stock item every test PO references.
+
+    Every test user in this file resolves to tenant "default" (none of them
+    carry a tenant_id), so these masters must be stamped tenant_id="default"
+    too, or crud_get's tenant filter (added alongside core/utils.py's
+    crud_get/crud_update/crud_delete rewrite) 404s on them as if they belong
+    to a different tenant.
+    """
     await db.vendors.update_one(
         {"id": _VENDOR_ID},
-        {"$set": {"id": _VENDOR_ID, "name": "Vendor 1", "state_code": "27"}},
+        {"$set": {"id": _VENDOR_ID, "tenant_id": DEFAULT_TENANT, "name": "Vendor 1", "state_code": "27"}},
         upsert=True,
     )
     await db.stock_items.update_one(
         {"id": _ITEM_ID},
-        {"$set": {"id": _ITEM_ID, "name": "Item 1", "valuation_method": "WEIGHTED_AVG"}},
+        {"$set": {"id": _ITEM_ID, "tenant_id": DEFAULT_TENANT, "name": "Item 1", "valuation_method": "WEIGHTED_AVG"}},
         upsert=True,
     )
 
 
 async def _reset_counter_async():
-    """Remove the global PO sequence counter so start_sequence is honoured fresh."""
+    """Remove tenant "default"'s PO sequence counter so start_sequence is honoured fresh."""
     await db.counters.delete_one({"_id": _PO_COUNTER_KEY})
 
 
-async def _cleanup_async(created_po_ids):
+async def _cleanup_async(created_po_ids, settings_snapshot):
     """Delete every PO + audit row this test created, plus the seeded masters and
     counter, so the shared Supabase DB is left exactly as we found it."""
     for pid in created_po_ids:
@@ -71,6 +81,17 @@ async def _cleanup_async(created_po_ids):
     await db.counters.delete_one({"_id": _PO_COUNTER_KEY})
     await db.vendors.delete_one({"id": _VENDOR_ID})
     await db.stock_items.delete_one({"id": _ITEM_ID})
+    # po_numbering_settings is keyed by tenant_id, and every test user here
+    # resolves to tenant "default" — the SAME tenant real (non-test) data
+    # lives under. Restore whatever was there before this test ran instead
+    # of leaving it deleted or test-mutated, so this file never permanently
+    # clobbers a real PO-numbering configuration.
+    if settings_snapshot is not None:
+        await db.po_numbering_settings.update_one(
+            {"tenant_id": DEFAULT_TENANT}, {"$set": settings_snapshot}, upsert=True,
+        )
+    else:
+        await db.po_numbering_settings.delete_one({"tenant_id": DEFAULT_TENANT})
 
 
 @pytest.fixture
@@ -79,13 +100,20 @@ def pg(request):
 
     Exposes a list the test appends created PO ids to (so teardown can target
     them). Tests don't need to touch it directly — they use `_track()`.
+
+    Snapshots the pre-existing tenant "default" po_numbering_settings row (if
+    any) so cleanup can restore it — see _cleanup_async's note on why this
+    can't just be deleted.
     """
     created: list = []
     request._created_po_ids = created
+    settings_snapshot = asyncio.run(
+        db.po_numbering_settings.find_one({"tenant_id": DEFAULT_TENANT}, {"_id": 0})
+    )
     asyncio.run(_seed_masters_async())
     asyncio.run(_reset_counter_async())
     yield created
-    asyncio.run(_cleanup_async(created))
+    asyncio.run(_cleanup_async(created, settings_snapshot))
 
 
 def _create(payload, user, tracker):
@@ -97,8 +125,7 @@ def _create(payload, user, tracker):
 
 
 def _set_settings(**kw):
-    s = {**pn.DEFAULT_SETTINGS, **kw, "id": "global"}
-    asyncio.run(db.po_numbering_settings.update_one({"id": "global"}, {"$set": s}, upsert=True))
+    asyncio.run(pn.save_settings(kw, user=ADMIN, tenant_id=DEFAULT_TENANT))
 
 
 def _po_payload(po_number=None, reason=None):
