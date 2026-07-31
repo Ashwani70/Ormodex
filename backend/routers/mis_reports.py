@@ -9,7 +9,8 @@ from typing import Optional, Any
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from core import cache
-from core.auth_utils import get_current_user, is_admin_role
+from core.auth_utils import get_current_user, is_admin_role, bypasses_row_ownership
+from core.utils import apply_ownership_filter, log_audit
 from core.db import db
 
 router = APIRouter(prefix="/mis", tags=["MIS Reports"])
@@ -439,6 +440,9 @@ async def export_sales_excel(
         q.setdefault("created_at", {})["$gte"] = from_date
     if to_date:
         q.setdefault("created_at", {})["$lte"] = to_date
+    # Row-ownership: exports must not leak another user's invoices — same
+    # filter every other invoices read path applies (core/utils.py).
+    q = apply_ownership_filter(q, user, "invoices", bypass=bypasses_row_ownership(user.get("role")))
 
     invoices = await db.invoices.find(q, {"_id": 0}).sort("created_at", -1).to_list(2000)
 
@@ -477,6 +481,10 @@ async def export_sales_excel(
     buf.seek(0)
 
     filename = f"sales_report_{date.today().isoformat()}.xlsx"
+    await log_audit(
+        "EXPORT", "invoices", "bulk", user,
+        new_values={"from_date": from_date, "to_date": to_date, "row_count": len(invoices)},
+    )
     return Response(
         content=buf.read(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -537,6 +545,10 @@ async def export_expense_excel(
     buf.seek(0)
 
     filename = f"expense_report_{date.today().isoformat()}.xlsx"
+    await log_audit(
+        "EXPORT", "expense_entries", "bulk", user,
+        new_values={"from_date": from_date, "to_date": to_date, "row_count": len(expenses)},
+    )
     return Response(
         content=buf.read(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

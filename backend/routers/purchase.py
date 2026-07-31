@@ -3,12 +3,13 @@ from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, bypasses_row_ownership
 from core.db import db
 from core.models import PurchaseOrder, Supplier
 from core.product_stock_bridge import resolve_godown_id, resolve_stock_item_id_for_product
 from core.stock_ledger import post_entry
 from core.utils import (
+    assert_owns_or_404,
     calc_totals,
     crud_create,
     crud_delete,
@@ -43,14 +44,33 @@ async def check_gstin_before_save(gstin: Optional[str], data: dict):
             data["pan_number"] = gstin[2:12]
 
 # ---------- Suppliers ----------
+# NOTE: this legacy v1 router reads/writes the SAME `vendors` table as
+# routers/purchase_v2.py — row-ownership filtering (and its bypass rule)
+# must match exactly, or this becomes a silent bypass route around
+# purchase_v2's filtering. _vendor_owner_bypass mirrors purchase_v2.py's
+# _purchase_owner_bypass so an accountant/"purchase"-permission holder sees
+# the same vendors through either router.
+def _vendor_owner_bypass(user: dict) -> bool:
+    role = user.get("role")
+    return (
+        bypasses_row_ownership(role)
+        or role == "accountant"
+        or "purchase" in (user.get("module_permissions") or [])
+    )
+
+
 @router.get("/suppliers")
-async def list_suppliers(q: Optional[str] = None, _: dict = Depends(get_current_user)):
-    return await crud_list("vendors", q, ["name", "company", "email", "phone"], sort_field="name")
+async def list_suppliers(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+    return await crud_list(
+        "vendors", q, ["name", "company", "email", "phone"], sort_field="name",
+        user=user, owner_bypass=_vendor_owner_bypass(user),
+    )
 
 
 @router.post("/suppliers")
 async def create_supplier(payload: Supplier, user: dict = Depends(get_current_user)):
     data = payload.model_dump()
+    data["created_by"] = user["id"]
     await check_gstin_before_save(data.get("gstin"), data)
     if not data.get("vendor_code"):
         data["vendor_code"] = await next_doc_number("VND", "vendors")
@@ -59,7 +79,10 @@ async def create_supplier(payload: Supplier, user: dict = Depends(get_current_us
 
 @router.put("/suppliers/{item_id}")
 async def update_supplier(item_id: str, payload: Supplier, user: dict = Depends(get_current_user)):
+    existing = await crud_get("vendors", item_id, label="Vendor")
+    assert_owns_or_404(existing, user, "vendors", bypass=_vendor_owner_bypass(user), label="Vendor")
     data = payload.model_dump()
+    data.pop("created_by", None)
     await check_gstin_before_save(data.get("gstin"), data)
     return await crud_update("vendors", item_id, data, user=user)
 

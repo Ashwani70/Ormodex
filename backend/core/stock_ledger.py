@@ -51,6 +51,7 @@ from datetime import date
 
 from .db import db
 from .stock_valuation import resolve_method, value_movements
+from .tenant import DEFAULT_TENANT, resolve_tenant
 from .utils import log_audit, new_id, now_iso
 
 logger = logging.getLogger(__name__)
@@ -143,18 +144,18 @@ async def _sync_product_quantity(product_id: str | None, delta: float) -> None:
         )
 
 
-async def _company_default_method() -> str | None:
-    """The company-wide default valuation method, or None if unset.
+async def _company_default_method(tenant_id: str = DEFAULT_TENANT) -> str | None:
+    """This tenant's default valuation method, or None if unset.
 
     Stored in ``company.extra.inventory_valuation_method`` (JSONB) so it needs
     no schema migration and matches how the rest of the app packs settings.
     """
-    company = await db.companies.find_one({}, {"_id": 0, "extra": 1}) or {}
+    company = await db.companies.find_one({"tenant_id": tenant_id}, {"_id": 0, "extra": 1}) or {}
     extra = company.get("extra") or {}
     return extra.get("inventory_valuation_method")
 
 
-async def _item_valuation(stock_item_id: str) -> tuple[str, float]:
+async def _item_valuation(stock_item_id: str, tenant_id: str = DEFAULT_TENANT) -> tuple[str, float]:
     """Resolve an item's effective valuation method and standard cost.
 
     Method resolution is Item Override → Company Default → engine default,
@@ -171,19 +172,21 @@ async def _item_valuation(stock_item_id: str) -> tuple[str, float]:
     if std is None:
         std = extra.get("standard_cost")
     method = resolve_method(
-        item.get("valuation_method"), await _company_default_method()
+        item.get("valuation_method"), await _company_default_method(tenant_id)
     )
     return method, float(std or 0.0)
 
 
-async def _item_method(stock_item_id: str) -> str:
+async def _item_method(stock_item_id: str, tenant_id: str = DEFAULT_TENANT) -> str:
     """Back-compat shim: effective method only (used by callers that don't
     need the standard cost). Prefer ``_item_valuation`` in new code."""
-    method, _ = await _item_valuation(stock_item_id)
+    method, _ = await _item_valuation(stock_item_id, tenant_id)
     return method
 
 
-async def item_valuation_configs(stock_item_ids: list[str]) -> dict[str, tuple[str, float]]:
+async def item_valuation_configs(
+    stock_item_ids: list[str], tenant_id: str = DEFAULT_TENANT,
+) -> dict[str, tuple[str, float]]:
     """Batched (method, standard_cost) resolution for many items in 2 queries.
 
     Public helper so report/aggregation endpoints can resolve each item's
@@ -200,7 +203,7 @@ async def item_valuation_configs(stock_item_ids: list[str]) -> dict[str, tuple[s
         {"id": {"$in": ids}},
         {"_id": 0, "id": 1, "valuation_method": 1, "standard_cost": 1, "extra": 1},
     ).to_list(len(ids))
-    company_default = await _company_default_method()
+    company_default = await _company_default_method(tenant_id)
     by_id = {it["id"]: it for it in items}
     out: dict[str, tuple[str, float]] = {}
     for sid in ids:
@@ -258,7 +261,7 @@ async def post_entry(
 
     if qty < 0:
         # Price the outward move: replay history + this move under the item's method.
-        method, standard_cost = await _item_valuation(stock_item_id)
+        method, standard_cost = await _item_valuation(stock_item_id, resolve_tenant(user))
         history = await _prior_entries(stock_item_id, godown_id)
         this_move = {"qty": qty, "entry_date": entry_date}
         result = value_movements(history + [this_move], method,

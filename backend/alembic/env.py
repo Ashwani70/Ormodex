@@ -102,7 +102,18 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     db_url = _db_url()
-    eng = create_async_engine(db_url, poolclass=pool.NullPool)
+    # The URL-level `?prepared_statement_cache_size=0` (added in _db_url())
+    # only disables asyncpg's OWN statement cache. SQLAlchemy's asyncpg
+    # dialect keeps a SEPARATE prepared-statement cache and reuses handles
+    # across the pooler's multiplexed backend connections regardless of the
+    # URL param — mirrors the same fix core/db.py applies for the app's own
+    # runtime engine (see its "SQLAlchemy asyncpg dialect keeps its OWN
+    # prepared-statement cache" comment). Without this, alembic's SELECT
+    # against alembic_version itself intermittently raises
+    # DuplicatePreparedStatementError against the Supabase transaction pooler.
+    connect_args = {"statement_cache_size": 0, "prepared_statement_cache_size": 0} \
+        if ("pooler.supabase.com" in db_url or ":6543" in db_url) else {}
+    eng = create_async_engine(db_url, poolclass=pool.NullPool, connect_args=connect_args)
     try:
         # Establish + round-trip the connection before handing off to Alembic's
         # own migration transaction — turns "asyncpg.exceptions/OSError deep

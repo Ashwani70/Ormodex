@@ -37,6 +37,7 @@ from core.schema import (
     JobWorkReceiptItem,
 )
 from core.stock_ledger import post_entry
+from core.tenant import resolve_tenant
 from core.tracking_validation import validate_tracking_fields
 from core.utils import now_iso, new_id, next_doc_number, get_active_company, log_audit, render_document_pdf
 
@@ -198,9 +199,9 @@ async def _post_job_work_movements(
 
 # ── GST computation (reference only — no tax charged on a §143 challan) ───────
 
-async def _resolve_state_codes(challan: dict) -> tuple[str, str]:
+async def _resolve_state_codes(challan: dict, user: dict | None = None) -> tuple[str, str]:
     """Return (company_state_code, job_worker_state_code)."""
-    company = await db.companies.find_one({})
+    company = await db.companies.find_one({"tenant_id": resolve_tenant(user)})
     company_state = (company.get("state_code") if company else None) or "27"
 
     gstin = (challan.get("job_worker_gstin") or "").strip()
@@ -220,14 +221,14 @@ async def _resolve_state_codes(challan: dict) -> tuple[str, str]:
     return company_state, company_state
 
 
-async def _resolve_inter_state(challan: dict) -> bool:
+async def _resolve_inter_state(challan: dict, user: dict | None = None) -> bool:
     """A manual gst_type of intra/inter wins outright; "auto" compares state codes."""
     gst_type = (challan.get("gst_type") or "auto").lower()
     if gst_type == "inter":
         return True
     if gst_type == "intra":
         return False
-    company_state, jw_state = await _resolve_state_codes(challan)
+    company_state, jw_state = await _resolve_state_codes(challan, user)
     return jw_state != company_state
 
 
@@ -510,6 +511,7 @@ async def export_challans(
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
+    await log_audit("EXPORT", "job_work_challans", "bulk", user, new_values={"row_count": len(challans)})
     return Response(
         content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -649,7 +651,7 @@ async def create_challan(payload: JobWorkChallan, user: dict = Depends(get_curre
             source_doc_id=data["id"],
         )
 
-    inter_state = await _resolve_inter_state(data)
+    inter_state = await _resolve_inter_state(data, user)
     for item in items:
         _compute_line_gst(item, inter_state)
     data["is_inter_state"] = inter_state
@@ -748,7 +750,7 @@ async def update_challan(item_id: str, payload: JobWorkChallan, user: dict = Dep
     inter_state = await _resolve_inter_state({
         **data,
         "job_worker_id": data.get("job_worker_id") or existing.get("job_worker_id"),
-    })
+    }, user)
     for item in items:
         _compute_line_gst(item, inter_state)
     data["is_inter_state"] = inter_state
@@ -1473,6 +1475,7 @@ async def export_receipts(
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
+    await log_audit("EXPORT", "job_work_receipts", "bulk", user, new_values={"row_count": len(receipts)})
     return Response(
         content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

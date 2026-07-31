@@ -4,7 +4,7 @@ from typing import Optional, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.auth_utils import get_current_user, require_hr_or_admin
+from core.auth_utils import get_current_user, require_hr_or_admin, bypasses_row_ownership
 from core.db import db
 from core.hr_models import (
     Advance,
@@ -66,13 +66,26 @@ async def _employee_from_user(user: dict) -> dict:
     return emp
 
 
+def _has_hr_access(user: dict) -> bool:
+    """Full HR visibility: admin/super_admin/manager (bypasses_row_ownership),
+    the dedicated "hr" role, or anyone explicitly granted the "hr" module
+    permission. Anyone else only ever sees their OWN attendance regardless of
+    what employee_id they pass — see list_attendance/attendance_check_in/
+    attendance_check_out below."""
+    return (
+        bypasses_row_ownership(user.get("role"))
+        or user.get("role") == "hr"
+        or "hr" in (user.get("module_permissions") or [])
+    )
+
+
 # ---------- Attendance (HR view) ----------
 @router.get("/attendance")
 async def list_attendance(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     employee_id: Optional[str] = None,
-    _: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ):
     filt = {}
     if date_from and date_to:
@@ -81,8 +94,16 @@ async def list_attendance(
         filt["date"] = {"$gte": date_from}
     elif date_to:
         filt["date"] = {"$lte": date_to}
-    if employee_id:
-        filt["employee_id"] = employee_id
+    if _has_hr_access(user):
+        if employee_id:
+            filt["employee_id"] = employee_id
+    else:
+        # Never trust a client-supplied employee_id here — force-scope to the
+        # caller's OWN linked employee record regardless of what was passed.
+        emp = await db.employees.find_one({"user_id": user["id"]}, {"_id": 0, "id": 1})
+        if not emp:
+            return []
+        filt["employee_id"] = emp["id"]
     rows = await db.attendance.find(filt, {"_id": 0}).sort([("date", -1), ("employee_id", 1)]).to_list(5000)
     # enrich with names
     ids = list({r["employee_id"] for r in rows})
@@ -122,24 +143,37 @@ async def _upsert_attendance(*, employee_id: str, d: str, patch: dict) -> dict:
     return new
 
 
+async def _resolve_checkin_employee_id(payload_employee_id: str, user: dict) -> str:
+    """HR/admin/manager may check in/out on behalf of any employee (payload
+    value trusted, matching this endpoint's existing manual-entry purpose).
+    Anyone else can only ever check themselves in/out — a client-supplied
+    employee_id for someone else is silently overridden, never trusted."""
+    if _has_hr_access(user):
+        return payload_employee_id
+    emp = await _employee_from_user(user)
+    return emp["id"]
+
+
 @router.post("/attendance/check-in")
-async def attendance_check_in(payload: CheckInOut, _: dict = Depends(get_current_user)):
-    emp = await crud_get("employees", payload.employee_id)
+async def attendance_check_in(payload: CheckInOut, user: dict = Depends(get_current_user)):
+    employee_id = await _resolve_checkin_employee_id(payload.employee_id, user)
+    emp = await crud_get("employees", employee_id)
     shift = await _resolve_shift(emp)
     ts = payload.timestamp or _now_hhmm()
     status = "LATE" if _is_late(ts, shift) else "PRESENT"
     return await _upsert_attendance(
-        employee_id=payload.employee_id,
+        employee_id=employee_id,
         d=_today_iso(),
         patch={"check_in": ts, "status": status, "source": "manual"},
     )
 
 
 @router.post("/attendance/check-out")
-async def attendance_check_out(payload: CheckInOut, _: dict = Depends(get_current_user)):
+async def attendance_check_out(payload: CheckInOut, user: dict = Depends(get_current_user)):
+    employee_id = await _resolve_checkin_employee_id(payload.employee_id, user)
     ts = payload.timestamp or _now_hhmm()
     return await _upsert_attendance(
-        employee_id=payload.employee_id,
+        employee_id=employee_id,
         d=_today_iso(),
         patch={"check_out": ts},
     )

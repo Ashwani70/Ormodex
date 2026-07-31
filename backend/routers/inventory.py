@@ -14,6 +14,7 @@ from core.models import Product, Warehouse
 from core.product_stock_bridge import enrich_products_with_live_stock, resolve_godown_id, resolve_stock_item_id_for_product
 from core.stock_ledger import on_hand, post_entry
 from core.storage import APP_NAME, get_object, put_object
+from core.tenant import DEFAULT_TENANT
 from core.utils import (
     crud_create,
     crud_delete,
@@ -406,8 +407,13 @@ async def serve_public_logo():
     (e.g. the public payslip share link). Only the configured company logo path
     is reachable here — arbitrary file paths are not accepted, so this cannot be
     used to read other uploads.
+
+    No JWT here (deliberately public), so there is no user to resolve a
+    tenant from — stays pinned to DEFAULT_TENANT until a real public-link
+    tenant-identification mechanism exists (Phase 3-7+); today every real
+    user is also tenant "default", so this is not yet a behavior change.
     """
-    company = await db.companies.find_one({}, {"_id": 0, "logo_url": 1})
+    company = await db.companies.find_one({"tenant_id": DEFAULT_TENANT}, {"_id": 0, "logo_url": 1})
     logo_path = (company or {}).get("logo_url")
     if not logo_path:
         raise HTTPException(status_code=404, detail="No logo configured")

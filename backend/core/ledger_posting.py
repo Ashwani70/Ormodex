@@ -15,6 +15,8 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Optional
 
+from .tenant import resolve_tenant
+
 # Chart-of-Accounts codes (seeded by /accounting/seed-coa).
 ACC_INVENTORY = "1200"
 ACC_GST_ITC = "1500"
@@ -53,13 +55,15 @@ def _split_gst(gst_amount: float, interstate: bool) -> dict:
     return {"cgst": half, "sgst": round(gst_amount - half, 2), "igst": 0.0}
 
 
-async def _is_interstate(db, supplier_id: Optional[str]) -> bool:
+async def _is_interstate(db, supplier_id: Optional[str], user: Optional[dict] = None) -> bool:
     """Place-of-supply: inter-state when the vendor's state differs from the tenant's."""
     supplier = None
     if supplier_id:
         supplier = await db.suppliers.find_one({"id": supplier_id}, {"_id": 0, "state_code": 1}) \
             or await db.vendors.find_one({"id": supplier_id}, {"_id": 0, "state_code": 1})
-    company = await db.companies.find_one({}, {"_id": 0, "state_code": 1})
+    company = await db.companies.find_one(
+        {"tenant_id": resolve_tenant(user)}, {"_id": 0, "state_code": 1},
+    )
     company_state = (company or {}).get("state_code") or "27"  # matches /company/active default
     supplier_state = (supplier or {}).get("state_code")
     return bool(supplier_state and str(supplier_state) != str(company_state))
@@ -144,7 +148,9 @@ async def post_purchase_journal(
         supplier = await db.suppliers.find_one(
             {"id": supplier_id}, {"_id": 0, "state_code": 1}
         )
-    company = await db.companies.find_one({}, {"_id": 0, "state_code": 1})
+    company = await db.companies.find_one(
+        {"tenant_id": resolve_tenant(user)}, {"_id": 0, "state_code": 1},
+    )
     company_state = (company or {}).get("state_code") or "27"  # matches /company/active default
     supplier_state = (supplier or {}).get("state_code")
     if supplier_state and str(supplier_state) != str(company_state):
@@ -287,7 +293,7 @@ async def post_purchase_bill_journal(
             "entries will never be created."
         )
 
-    interstate = await _is_interstate(db, vendor_id)
+    interstate = await _is_interstate(db, vendor_id, user)
     taxable, gst_amount = _sum_lines(lines)
     gross = round(taxable + gst_amount, 2)
     if gross <= 0:
@@ -356,7 +362,7 @@ async def post_purchase_return_journal(
     if not await db.chart_of_accounts.find_one({"code": ACC_ACCOUNTS_PAYABLE}):
         return None
 
-    interstate = await _is_interstate(db, vendor_id)
+    interstate = await _is_interstate(db, vendor_id, user)
     taxable, gst_amount = _sum_lines(lines)
     gross = round(taxable + gst_amount, 2)
     if gross <= 0:
@@ -424,7 +430,9 @@ async def post_credit_note_journal(
     customer = None
     if customer_id:
         customer = await db.customers.find_one({"id": customer_id}, {"_id": 0, "state_code": 1})
-    company = await db.companies.find_one({}, {"_id": 0, "state_code": 1})
+    company = await db.companies.find_one(
+        {"tenant_id": resolve_tenant(user)}, {"_id": 0, "state_code": 1},
+    )
     company_state = (company or {}).get("state_code") or "27"
     customer_state = (customer or {}).get("state_code")
     if customer_state and str(customer_state) != str(company_state):

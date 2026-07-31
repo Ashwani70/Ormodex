@@ -23,7 +23,8 @@ from fastapi import HTTPException
 
 from .auth_utils import is_admin_role
 from .db import db
-from .utils import now_iso
+from .tenant import DEFAULT_TENANT
+from .utils import now_iso, new_id
 
 VALID_SEPARATORS = {"-", "/", ""}
 
@@ -54,10 +55,11 @@ DOC_TYPES: dict[str, dict] = {
 TABLE = "document_numbering_settings"
 
 
-def _default_settings(doc_type: str) -> dict:
+def _default_settings(doc_type: str, tenant_id: str) -> dict:
     cfg = DOC_TYPES[doc_type]
     return {
-        "id": doc_type, "mode": "AUTO", "prefix": cfg["default_prefix"], "fy_format": "",
+        "tenant_id": tenant_id, "doc_type": doc_type,
+        "mode": "AUTO", "prefix": cfg["default_prefix"], "fy_format": "",
         "branch_code": "", "separator": "-", "start_sequence": 1, "sequence_length": 5,
     }
 
@@ -76,9 +78,10 @@ def financial_year_label(d: Optional[datetime] = None) -> str:
     return f"{start % 100:02d}-{(start + 1) % 100:02d}"
 
 
-def _coerce_settings(doc_type: str, raw: dict | None) -> dict:
-    s = {**_default_settings(doc_type), **(raw or {})}
-    s["id"] = doc_type
+def _coerce_settings(doc_type: str, raw: dict | None, tenant_id: str) -> dict:
+    s = {**_default_settings(doc_type, tenant_id), **(raw or {})}
+    s["tenant_id"] = tenant_id
+    s["doc_type"] = doc_type
     s["mode"] = "MANUAL" if str(s.get("mode", "AUTO")).upper() == "MANUAL" else "AUTO"
     if s.get("separator") not in VALID_SEPARATORS:
         s["separator"] = "-"
@@ -100,28 +103,39 @@ def _table_for(doc_type: str) -> str:
     return legacy or TABLE
 
 
-async def get_settings(doc_type: str) -> dict:
+def _row_filter(table: str, doc_type: str, tenant_id: str) -> dict:
+    # po_numbering_settings has one row per tenant (no doc_type column — it
+    # only ever holds Purchase Order settings, see core/po_numbering.py,
+    # which this must resolve to the SAME row for). document_numbering_settings
+    # holds every other doc_type, so it also needs doc_type in the filter.
+    if table == "po_numbering_settings":
+        return {"tenant_id": tenant_id}
+    return {"tenant_id": tenant_id, "doc_type": doc_type}
+
+
+async def get_settings(doc_type: str, tenant_id: str = DEFAULT_TENANT) -> dict:
     if doc_type not in DOC_TYPES:
         raise HTTPException(404, f"Unknown document type '{doc_type}'")
     table = _table_for(doc_type)
-    # The legacy po_numbering_settings table keys its single row "global",
-    # not "purchase_order" — every other (new) table keys by doc_type itself.
-    row_id = "global" if table == "po_numbering_settings" else doc_type
-    row = await db[table].find_one({"id": row_id}, {"_id": 0})
-    return _coerce_settings(doc_type, row)
+    row = await db[table].find_one(_row_filter(table, doc_type, tenant_id), {"_id": 0})
+    return _coerce_settings(doc_type, row, tenant_id)
 
 
-async def save_settings(doc_type: str, payload: dict, user: dict) -> dict:
+async def save_settings(doc_type: str, payload: dict, user: dict, tenant_id: str = DEFAULT_TENANT) -> dict:
     if doc_type not in DOC_TYPES:
         raise HTTPException(404, f"Unknown document type '{doc_type}'")
-    s = _coerce_settings(doc_type, payload)
+    s = _coerce_settings(doc_type, payload, tenant_id)
     s["updated_at"] = now_iso()
     s["updated_by"] = (user or {}).get("id")
     table = _table_for(doc_type)
-    row_id = "global" if table == "po_numbering_settings" else doc_type
-    s["id"] = row_id
-    await db[table].update_one({"id": row_id}, {"$set": s}, upsert=True)
-    return await get_settings(doc_type)
+    row_filter = _row_filter(table, doc_type, tenant_id)
+    existing = await db[table].find_one(row_filter, {"_id": 0, "id": 1})
+    if existing:
+        await db[table].update_one(row_filter, {"$set": s})
+    else:
+        s["id"] = new_id()
+        await db[table].insert_one(s)
+    return await get_settings(doc_type, tenant_id)
 
 
 def build_document_number(settings: dict, seq: int) -> str:
@@ -135,8 +149,8 @@ def build_document_number(settings: dict, seq: int) -> str:
     return sep.join(segments) if sep else "".join(segments)
 
 
-async def _next_sequence(doc_type: str, settings: dict) -> int:
-    counter_key = f"document_numbering:{doc_type}_seq"
+async def _next_sequence(doc_type: str, settings: dict, tenant_id: str) -> int:
+    counter_key = f"{tenant_id}:document_numbering:{doc_type}_seq"
     start = int(settings.get("start_sequence", 1))
 
     existing = await db.counters.find_one({"_id": counter_key})
@@ -170,22 +184,26 @@ async def ensure_unique(doc_type: str, number: str, exclude_id: Optional[str] = 
         raise HTTPException(status_code=409, detail=f"{label} number '{number}' already exists")
 
 
-async def generate_unique_auto_number(doc_type: str, settings: Optional[dict] = None) -> str:
-    settings = settings or await get_settings(doc_type)
+async def generate_unique_auto_number(
+    doc_type: str, tenant_id: str = DEFAULT_TENANT, settings: Optional[dict] = None,
+) -> str:
+    settings = settings or await get_settings(doc_type, tenant_id)
     for _ in range(50):
-        seq = await _next_sequence(doc_type, settings)
+        seq = await _next_sequence(doc_type, settings, tenant_id)
         candidate = build_document_number(settings, seq)
         if await is_unique(doc_type, candidate):
             return candidate
     raise HTTPException(status_code=500, detail="Unable to allocate a unique document number")
 
 
-async def allocate_document_number(doc_type: str, payload_number: Optional[str], user: dict) -> str:
+async def allocate_document_number(
+    doc_type: str, payload_number: Optional[str], user: dict, tenant_id: str = DEFAULT_TENANT,
+) -> str:
     """Drop-in replacement for a bare `next_doc_number(prefix, collection)` call
     at a document's create endpoint — same call shape as po_numbering's
     allocate_po_number. Pass the caller-supplied number (if any) through as
     payload_number; returns the number to actually store."""
-    settings = await get_settings(doc_type)
+    settings = await get_settings(doc_type, tenant_id)
     supplied = (payload_number or "").strip()
     if supplied:
         if not has_perm(user, doc_type, "override"):
@@ -196,4 +214,4 @@ async def allocate_document_number(doc_type: str, payload_number: Optional[str],
     if settings["mode"] == "MANUAL":
         label = DOC_TYPES[doc_type]["label"]
         raise HTTPException(status_code=400, detail=f"{label} number is required (numbering mode is Manual Entry)")
-    return await generate_unique_auto_number(doc_type, settings)
+    return await generate_unique_auto_number(doc_type, tenant_id, settings)

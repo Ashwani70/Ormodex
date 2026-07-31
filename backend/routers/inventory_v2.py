@@ -20,6 +20,7 @@ from core.stock_ledger import (
     LEDGER, item_valuation_configs, on_hand, on_hand_bulk, post_entry,
 )
 from core.stock_valuation import DEFAULT_METHOD, value_movements
+from core.tenant import resolve_tenant
 
 
 def _value(movements: list[dict], cfg: tuple[str, float] | None):
@@ -133,7 +134,7 @@ async def get_godown(item_id: str, user: dict = Depends(get_current_user)):
         sid = e.get("stock_item_id")
         if sid:
             by_item.setdefault(sid, []).append(e)
-    cfgs = await item_valuation_configs(list(by_item)) if by_item else {}
+    cfgs = await item_valuation_configs(list(by_item), resolve_tenant(user)) if by_item else {}
     stock_value = 0.0
     active_items = 0
     for sid, evs in by_item.items():
@@ -360,7 +361,7 @@ async def warehouse_insights(item_id: str, user: dict = Depends(get_current_user
     item_ids = list({e.get("stock_item_id") for e in entries if e.get("stock_item_id")})
     items = await db.stock_items.find({"id": {"$in": item_ids}}, {"_id": 0}).to_list(len(item_ids) or 1) if item_ids else []
     item_by_id = {it["id"]: it for it in items}
-    cfg_by_id = await item_valuation_configs(item_ids)
+    cfg_by_id = await item_valuation_configs(item_ids, resolve_tenant(user))
 
     by_item: dict[str, list[dict]] = {}
     for e in entries:
@@ -682,7 +683,7 @@ async def stock_summary(
     """Per item: opening / inward / outward / closing (qty + value), and a per-godown split."""
     _require_inventory(user)
     items = await db.stock_items.find({}, {"_id": 0}).to_list(5000)
-    cfg_by_id = await item_valuation_configs([it["id"] for it in items])
+    cfg_by_id = await item_valuation_configs([it["id"] for it in items], resolve_tenant(user))
 
     # Batch-read every item's ledger history in ONE query instead of a
     # find_one-per-item loop (was a genuine N+1 — 1 + N round-trips, each

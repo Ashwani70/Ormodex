@@ -28,9 +28,9 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import text
 
-from core.auth_utils import get_current_user, is_admin_role
+from core.auth_utils import get_current_user, is_admin_role, bypasses_row_ownership
 from core.db import get_session
-from core.utils import log_audit
+from core.utils import log_audit, OWNED_COLLECTIONS
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -46,17 +46,27 @@ SIMILARITY_THRESHOLD = 0.15
 class _Entity:
     """One searchable table. `select_sql` must produce exactly the columns:
     id, title, subtitle, doc_number, status, occurred_at, rank — in that order,
-    aliased, so every branch of the UNION ALL lines up."""
+    aliased, so every branch of the UNION ALL lines up.
 
-    __slots__ = ("key", "label", "icon", "route", "select_sql", "perms")
+    `owner_col`: for entities in core.utils.OWNED_COLLECTIONS, the SQL
+    expression (aliased consistently per entity, e.g. "customers.created_by"
+    or "q.created_by" when the entity's own select_sql joins under an alias)
+    that identifies the row's creator — row-level ownership filtering wraps
+    the entity's own select_sql in a derived table and ANDs
+    "<owner_col> = :uid" onto it for an Employee-tier caller. None for every
+    non-owned entity (products, employees, ledgers, etc.), which are never
+    filtered by creator."""
 
-    def __init__(self, key, label, icon, route, select_sql, perms):
+    __slots__ = ("key", "label", "icon", "route", "select_sql", "perms", "owner_col")
+
+    def __init__(self, key, label, icon, route, select_sql, perms, owner_col=None):
         self.key = key
         self.label = label
         self.icon = icon
         self.route = route
         self.select_sql = select_sql
         self.perms = perms  # tuple of module_permission keys; any() grants access
+        self.owner_col = owner_col
 
 
 def _match(cols: list[str]) -> str:
@@ -91,20 +101,24 @@ _ENTITIES: list[_Entity] = [
         f"""SELECT id, name AS title,
                    concat_ws(' | ', company, phone, email) AS subtitle,
                    gstin AS doc_number, CASE WHEN is_deleted THEN 'ARCHIVED' ELSE 'ACTIVE' END AS status,
-                   updated_at AS occurred_at, {_rank(['name', 'company', 'email', 'phone', 'gstin', 'pan'])} AS rank
+                   updated_at AS occurred_at, {_rank(['name', 'company', 'email', 'phone', 'gstin', 'pan'])} AS rank,
+                   created_by
             FROM customers
             WHERE coalesce(is_deleted, false) = false AND ({_match(['name', 'company', 'email', 'phone', 'gstin', 'pan'])})""",
         ("sales", "masters"),
+        owner_col="created_by",
     ),
     _Entity(
         "vendors", "Vendors", "truck", "/vendors",
         f"""SELECT id, name AS title,
                    concat_ws(' | ', company, phone, email) AS subtitle,
                    gstin AS doc_number, CASE WHEN is_deleted THEN 'ARCHIVED' ELSE 'ACTIVE' END AS status,
-                   updated_at AS occurred_at, {_rank(['name', 'company', 'email', 'phone', 'gstin', 'pan'])} AS rank
+                   updated_at AS occurred_at, {_rank(['name', 'company', 'email', 'phone', 'gstin', 'pan'])} AS rank,
+                   created_by
             FROM vendors
             WHERE coalesce(is_deleted, false) = false AND ({_match(['name', 'company', 'email', 'phone', 'gstin', 'pan'])})""",
         ("purchase", "masters"),
+        owner_col="created_by",
     ),
     _Entity(
         "employees", "Employees", "users", "/hr/employees",
@@ -140,20 +154,24 @@ _ENTITIES: list[_Entity] = [
         f"""SELECT q.id, q.quotation_no AS title,
                    concat_ws(' | ', c.name, q.status) AS subtitle,
                    q.quotation_no AS doc_number, q.status AS status,
-                   q.quotation_date AS occurred_at, {_rank(['q.quotation_no'])} AS rank
+                   q.quotation_date AS occurred_at, {_rank(['q.quotation_no'])} AS rank,
+                   q.created_by AS created_by
             FROM quotations q LEFT JOIN customers c ON c.id = q.customer_id
             WHERE {_match(['q.quotation_no'])}""",
         ("sales",),
+        owner_col="created_by",
     ),
     _Entity(
         "sales_orders", "Sales Orders", "shopping-cart", "/sales-orders",
         f"""SELECT so.id, so.so_number AS title,
                    concat_ws(' | ', c.name, so.status) AS subtitle,
                    so.so_number AS doc_number, so.status AS status,
-                   so.order_date AS occurred_at, {_rank(['so.so_number'])} AS rank
+                   so.order_date AS occurred_at, {_rank(['so.so_number'])} AS rank,
+                   so.created_by AS created_by
             FROM sales_orders so LEFT JOIN customers c ON c.id = so.customer_id
             WHERE {_match(['so.so_number'])}""",
         ("sales",),
+        owner_col="created_by",
     ),
     _Entity(
         "invoices", "Tax Invoices", "receipt", "/invoices",
@@ -161,10 +179,12 @@ _ENTITIES: list[_Entity] = [
                    concat_ws(' | ', c.name, i.status) AS subtitle,
                    coalesce(i.invoice_number, i.invoice_no) AS doc_number, i.status AS status,
                    i.invoice_date AS occurred_at,
-                   {_rank(['i.invoice_no', 'i.invoice_number'])} AS rank
+                   {_rank(['i.invoice_no', 'i.invoice_number'])} AS rank,
+                   i.created_by AS created_by
             FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id
             WHERE {_match(['i.invoice_no', 'i.invoice_number'])}""",
         ("sales", "accounting"),
+        owner_col="created_by",
     ),
     _Entity(
         "credit_notes", "Credit Notes", "file-minus", "/credit-notes",
@@ -200,10 +220,12 @@ _ENTITIES: list[_Entity] = [
         f"""SELECT po.id, po.po_number AS title,
                    concat_ws(' | ', v.name, po.status) AS subtitle,
                    po.po_number AS doc_number, po.status AS status,
-                   po.order_date AS occurred_at, {_rank(['po.po_number'])} AS rank
+                   po.order_date AS occurred_at, {_rank(['po.po_number'])} AS rank,
+                   po.created_by AS created_by
             FROM purchase_orders_v2 po LEFT JOIN vendors v ON v.id = po.vendor_id
             WHERE {_match(['po.po_number'])}""",
         ("purchase",),
+        owner_col="created_by",
     ),
     _Entity(
         "grn_v2", "GRNs", "package-check", "/grns",
@@ -221,10 +243,12 @@ _ENTITIES: list[_Entity] = [
                    concat_ws(' | ', vendor_name, status) AS subtitle,
                    coalesce(bill_number, vendor_bill_no) AS doc_number, status AS status,
                    bill_date AS occurred_at,
-                   {_rank(['bill_number', 'vendor_invoice_no', 'vendor_name'])} AS rank
+                   {_rank(['bill_number', 'vendor_invoice_no', 'vendor_name'])} AS rank,
+                   created_by
             FROM purchase_bills
             WHERE {_match(['bill_number', 'vendor_invoice_no', 'vendor_name'])}""",
         ("purchase", "accounting"),
+        owner_col="created_by",
     ),
     _Entity(
         "vouchers", "Vouchers", "book-open", "/vouchers",
@@ -353,16 +377,33 @@ async def global_search(request: Request, q: Optional[str] = None, user: dict = 
     if not entities:
         return {"query": query, "groups": {}, "count": 0, "took_ms": 0}
 
+    # Row-level ownership: an Employee-tier user's search must not surface
+    # another user's customers/vendors/quotations/sales orders/invoices/
+    # purchase orders/purchase bills — same OWNED_COLLECTIONS/bypass rule as
+    # every other read path (core/utils.py's apply_ownership_filter), just
+    # applied as a SQL fragment here since this endpoint builds its own raw
+    # UNION ALL rather than going through the Mongo-compat layer.
+    owner_bypass = bypasses_row_ownership(user.get("role"))
     params = {"term": query, "like": f"%{query}%", "thresh": SIMILARITY_THRESHOLD}
+    if not owner_bypass:
+        params["uid"] = user.get("id")
     branches = []
     for e in entities:
         # Each branch's own ORDER BY/LIMIT must be parenthesized as a derived
         # table — an unparenthesized ORDER BY/LIMIT after a UNION ALL member
         # binds to the WHOLE union, not that member, and is a syntax error
         # anywhere but the final branch.
+        owner_clause = ""
+        if e.key in OWNED_COLLECTIONS and e.owner_col and not owner_bypass:
+            # OR owner_col IS NULL: grandfathers rows created before this
+            # feature shipped (nobody "owns" them in the new system) — a
+            # plain "= :uid" equality never matches NULL under SQL's
+            # three-valued logic, which would otherwise hide every
+            # pre-existing row from every Employee-tier user's search.
+            owner_clause = f" WHERE (t_{e.key}.{e.owner_col} = :uid OR t_{e.key}.{e.owner_col} IS NULL)"
         branches.append(
             f"(SELECT '{e.key}' AS entity, id, title, subtitle, doc_number, status, "
-            f"occurred_at, rank FROM ({e.select_sql}) t_{e.key} "
+            f"occurred_at, rank FROM ({e.select_sql}) t_{e.key}{owner_clause} "
             f"ORDER BY rank DESC LIMIT {PER_ENTITY_LIMIT})"
         )
     sql = " UNION ALL ".join(branches) + f" ORDER BY rank DESC LIMIT {TOTAL_LIMIT}"

@@ -132,6 +132,17 @@ class PONumberingSetting(Base):
     start_sequence = _int(1); sequence_length = _int(5); updated_by = _text()
 
 
+class DocumentNumberingSetting(Base):
+    __tablename__ = "document_numbering_settings"
+    __table_args__ = (
+        Index("ix_document_numbering_settings_tenant_doctype", "tenant_id", "doc_type"),
+    )
+    id = _pk(); tenant_id = _text(); doc_type = _text()
+    mode = _text(); prefix = _text(); fy_format = _text(); branch_code = _text()
+    separator = _text(); start_sequence = _int(1); sequence_length = _int(5)
+    updated_at = _ts(); updated_by = _text()
+
+
 # ── CRM ────────────────────────────────────────────────────────────────────────
 class Lead(Base):
     __tablename__ = "leads"
@@ -152,12 +163,18 @@ class Customer(Base):
         Index("ix_customers_tenant_id", "tenant_id"),
         Index("ix_customers_tenant_gstin", "tenant_id", "gstin"),
         Index("ix_customers_tenant_name", "tenant_id", "name"),
+        Index("ix_customers_tenant_created_by", "tenant_id", "created_by"),
     )
     id = _pk(); tenant_id = _text(); name = _text(); company = _text(); email = _text()
     phone = _text(); country = _text(); address = _text(); gstin = _text(); pan = _text()
     credit_limit = _num(); payment_terms = _text(); price_list_id = _text()
     ledger_id = _text(); extra = _jsonb(); is_deleted = _bool(); deleted_at = _ts()
     created_at = _ts(); updated_at = _ts()
+    # Row-level ownership (2026-07-29): the user who created this record — an
+    # Employee-tier user only sees rows they created (see core/utils.py's
+    # OWNED_COLLECTIONS / apply_ownership_filter). NULL = created before this
+    # feature shipped; grandfathered visible to everyone, not hidden.
+    created_by = _text()
 
 
 class Vendor(Base):
@@ -166,12 +183,14 @@ class Vendor(Base):
         Index("ix_vendors_tenant_id", "tenant_id"),
         Index("ix_vendors_tenant_gstin", "tenant_id", "gstin"),
         Index("ix_vendors_tenant_name", "tenant_id", "name"),
+        Index("ix_vendors_tenant_created_by", "tenant_id", "created_by"),
     )
     id = _pk(); tenant_id = _text(); name = _text(); company = _text(); email = _text()
     phone = _text(); address = _text(); gstin = _text(); pan = _text()
     payment_terms = _text(); tds_applicable = _bool(); tds_section = _text()
     tds_rate = _num(); ledger_id = _text(); extra = _jsonb(); is_deleted = _bool()
     deleted_at = _ts(); created_at = _ts(); updated_at = _ts()
+    created_by = _text()  # see Customer.created_by above
 
 
 # ── inventory ──────────────────────────────────────────────────────────────────
@@ -358,10 +377,12 @@ class PurchaseOrderV2(Base):
         Index("ix_po_v2_tenant_id", "tenant_id"),
         Index("ix_po_v2_tenant_status", "tenant_id", "status"),
         Index("ix_po_v2_tenant_vendor", "tenant_id", "vendor_id"),
+        Index("ix_po_v2_tenant_created_by", "tenant_id", "created_by"),
     )
     id = _pk(); tenant_id = _text(); vendor_id = _text(); po_number = _text()
     status = _text(); lines = _jsonb(); gst_details = _jsonb(); total_amount = _num()
     notes = _text(); order_date = _ts(); created_at = _ts(); updated_at = _ts()
+    created_by = _text()  # see Customer.created_by in this file for the WHY
 
 
 class GoodsReceiptNoteV2(Base):
@@ -383,6 +404,7 @@ class PurchaseBill(Base):
         Index("ix_purchase_bills_tenant_id", "tenant_id"),
         Index("ix_purchase_bills_tenant_status", "tenant_id", "status"),
         Index("ix_purchase_bills_tenant_vendor", "tenant_id", "vendor_id"),
+        Index("ix_purchase_bills_tenant_created_by", "tenant_id", "created_by"),
     )
     id = _pk(); tenant_id = _text(); vendor_id = _text()
     # legacy single-GRN link (old Mongo field — kept for backward compat)
@@ -397,6 +419,7 @@ class PurchaseBill(Base):
     # legacy field aliases (old Mongo schema — preserved so existing rows still read)
     vendor_bill_no = _text(); total_amount = _num(); bill_date = _ts()
     created_at = _ts(); updated_at = _ts()
+    created_by = _text()  # see Customer.created_by in this file for the WHY
 
 
 class PurchaseReturn(Base):
@@ -443,11 +466,13 @@ class Quotation(Base):
         Index("ix_quotations_tenant_id", "tenant_id"),
         Index("ix_quotations_tenant_status", "tenant_id", "status"),
         Index("ix_quotations_tenant_customer", "tenant_id", "customer_id"),
+        Index("ix_quotations_tenant_created_by", "tenant_id", "created_by"),
     )
     id = _pk(); tenant_id = _text(); customer_id = _text(); quotation_no = _text()
     status = _text(); lines = _jsonb(); gst_details = _jsonb(); total_amount = _num()
     notes = _text(); valid_until = _ts(); quotation_date = _ts()
     created_at = _ts(); updated_at = _ts()
+    created_by = _text()  # see Customer.created_by in this file for the WHY
 
 
 class SalesOrder(Base):
@@ -456,11 +481,13 @@ class SalesOrder(Base):
         Index("ix_sales_orders_tenant_id", "tenant_id"),
         Index("ix_sales_orders_tenant_status", "tenant_id", "status"),
         Index("ix_sales_orders_tenant_customer", "tenant_id", "customer_id"),
+        Index("ix_sales_orders_tenant_created_by", "tenant_id", "created_by"),
     )
     id = _pk(); tenant_id = _text(); customer_id = _text(); so_number = _text()
     status = _text(); lines = _jsonb(); gst_details = _jsonb(); total_amount = _num()
     notes = _text(); delivery_date = _ts(); order_date = _ts()
     created_at = _ts(); updated_at = _ts()
+    created_by = _text()  # see Customer.created_by in this file for the WHY
 
 
 class Invoice(Base):
@@ -470,6 +497,7 @@ class Invoice(Base):
         Index("ix_invoices_tenant_status", "tenant_id", "status"),
         Index("ix_invoices_tenant_customer", "tenant_id", "customer_id"),
         Index("ix_invoices_tenant_date", "tenant_id", "invoice_date"),
+        Index("ix_invoices_tenant_created_by", "tenant_id", "created_by"),
     )
     id = _pk(); tenant_id = _text(); customer_id = _text(); so_id = _text()
     invoice_no = _text(); status = _text(); lines = _jsonb(); gst_details = _jsonb()
@@ -478,6 +506,7 @@ class Invoice(Base):
     # drift: written by routers, were dropped by migration
     approval_state = _text(); invoice_number = _text(); invoice_type = _text()
     source_bill_submission_id = _text(); supplier_id = _text(); total = _num()
+    created_by = _text()  # see Customer.created_by in this file for the WHY
 
     @property
     def payment_received(self):

@@ -780,6 +780,7 @@ async def export_excel(
     wb.save(buf)
     buf.seek(0)
     filename = f"stock_log_{date.today().isoformat()}.xlsx"
+    await log_audit("EXPORT", "stock_transactions", "bulk", user, new_values={"row_count": len(rows)})
     return Response(
         content=buf.read(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -849,6 +850,7 @@ async def export_pdf(
     buf.seek(0)
 
     filename = f"stock_log_{date.today().isoformat()}.pdf"
+    await log_audit("EXPORT", "stock_transactions", "bulk", user, new_values={"row_count": len(rows)})
     return Response(
         content=buf.read(),
         media_type="application/pdf",

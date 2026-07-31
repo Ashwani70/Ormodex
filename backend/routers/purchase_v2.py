@@ -13,7 +13,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
-from core.auth_utils import get_current_user, require_admin, is_admin_role
+from core.auth_utils import get_current_user, require_admin, is_admin_role, bypasses_row_ownership
 from core.db import db
 from core.pdf import normalize_purchase_doc
 from core.ledger_posting import ChartOfAccountsNotSeededError, post_purchase_bill_journal, post_purchase_return_journal
@@ -26,7 +26,10 @@ from core.purchase_models import (
     GRNV2, PurchaseBill, PurchaseOrderV2, PurchaseReturn, Vendor, VendorUpdate,
 )
 from core.stock_ledger import post_entry
-from core.utils import crud_create, crud_delete, crud_get, crud_update, log_audit, next_doc_number, now_iso, paginated_list, render_document_pdf
+from core.utils import (
+    apply_ownership_filter, assert_owns_or_404, crud_create, crud_delete, crud_get,
+    crud_update, log_audit, next_doc_number, now_iso, paginated_list, render_document_pdf,
+)
 from core import po_numbering as pn
 from core.document_numbering import allocate_document_number
 from core import cache as _cache
@@ -42,6 +45,22 @@ def _require_purchase(user: dict) -> dict:
     raise HTTPException(status_code=403, detail="Purchase module access required")
 
 
+def _purchase_owner_bypass(user: dict) -> bool:
+    """Row-ownership bypass for this router: anyone who reaches these
+    endpoints via _require_purchase's admin/accountant/"purchase"-permission
+    check already had full access to this module before row-level ownership
+    existed — this feature only ADDS filtering on top for whichever of them
+    are Employee-tier, it doesn't open the module to anyone new. Manager
+    bypasses unconditionally per bypasses_row_ownership, same as every other
+    owned collection."""
+    role = user.get("role")
+    return (
+        bypasses_row_ownership(role)
+        or role == "accountant"
+        or "purchase" in (user.get("module_permissions") or [])
+    )
+
+
 async def _grn_over_receipt_blocked() -> bool:
     """Tenant setting: block (True) or merely warn (False) on over-receipt vs PO."""
     settings = await db.purchase_settings.find_one({"id": "global"}, {"_id": 0})
@@ -55,9 +74,12 @@ async def list_vendors(q: Optional[str] = None, page: Optional[int] = None, limi
                        from_date: Optional[str] = None, to_date: Optional[str] = None,
                        user: dict = Depends(get_current_user)):
     _require_purchase(user)
+    bypass = _purchase_owner_bypass(user)
     # Cache the unfiltered full list (dropdown population) — avoids a 260 ms
-    # round-trip on every form that needs the vendor picker.
-    if not q and page is None and limit is None and not from_date and not to_date:
+    # round-trip on every form that needs the vendor picker. Only safe on the
+    # bypass (unfiltered) path — an Employee-tier request must never read
+    # from or populate this shared cache key.
+    if not q and page is None and limit is None and not from_date and not to_date and bypass:
         return await _cache.get_or_set(
             "vendors:all", _cache.TTL_REFERENCE,
             lambda: paginated_list("vendors", sort_field="name", sort_dir=1),
@@ -65,13 +87,15 @@ async def list_vendors(q: Optional[str] = None, page: Optional[int] = None, limi
     return await paginated_list("vendors", page=page, limit=limit, q=q,
                                  search_fields=["name", "company", "gstin", "email", "phone"],
                                  sort_field="name", sort_dir=1,
-                                 from_date=from_date, to_date=to_date, date_field="created_at")
+                                 from_date=from_date, to_date=to_date, date_field="created_at",
+                                 user=user, owner_bypass=bypass)
 
 
 @router.post("/vendors")
 async def create_vendor(payload: Vendor, user: dict = Depends(get_current_user)):
     _require_purchase(user)
     data = payload.model_dump()
+    data["created_by"] = user["id"]
     if not data.get("vendor_code"):
         data["vendor_code"] = await next_doc_number("VND", "vendors")
     # Auto-link a Chart-of-Accounts ledger (Sundry Creditors) so this vendor
@@ -91,7 +115,10 @@ async def create_vendor(payload: Vendor, user: dict = Depends(get_current_user))
 @router.put("/vendors/{vendor_id}")
 async def update_vendor(vendor_id: str, payload: VendorUpdate, user: dict = Depends(get_current_user)):
     _require_purchase(user)
+    existing = await crud_get("vendors", vendor_id, label="Vendor")
+    assert_owns_or_404(existing, user, "vendors", bypass=_purchase_owner_bypass(user), label="Vendor")
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
+    data.pop("created_by", None)
     result = await crud_update("vendors", vendor_id, data, user=user)
     _cache.invalidate("vendors:all")
     return result
@@ -100,7 +127,8 @@ async def update_vendor(vendor_id: str, payload: VendorUpdate, user: dict = Depe
 @router.get("/vendors/{vendor_id}")
 async def get_vendor(vendor_id: str, user: dict = Depends(get_current_user)):
     _require_purchase(user)
-    return await crud_get("vendors", vendor_id)
+    doc = await crud_get("vendors", vendor_id)
+    return assert_owns_or_404(doc, user, "vendors", bypass=_purchase_owner_bypass(user), label="Vendor")
 
 
 @router.delete("/vendors/{vendor_id}")
@@ -125,7 +153,8 @@ async def list_orders(q: Optional[str] = None, page: Optional[int] = None, limit
     result = await paginated_list("purchase_orders_v2", page=page, limit=limit, q=q,
                                    search_fields=["po_number", "vendor_name", "status"],
                                    sort_field="created_at", sort_dir=-1,
-                                   from_date=from_date, to_date=to_date)
+                                   from_date=from_date, to_date=to_date,
+                                   user=user, owner_bypass=_purchase_owner_bypass(user))
     rows = result["items"] if isinstance(result, dict) else result
     # Backfill missing vendor_name in ONE batched query instead of a per-row
     # find_one+update_one loop — with the DB's ~200ms+ round-trip latency, a
@@ -145,18 +174,20 @@ async def list_orders(q: Optional[str] = None, page: Optional[int] = None, limit
 @router.get("/orders/{po_id}")
 async def get_order(po_id: str, user: dict = Depends(get_current_user)):
     _require_purchase(user)
-    return await crud_get("purchase_orders_v2", po_id)
+    doc = await crud_get("purchase_orders_v2", po_id)
+    return assert_owns_or_404(doc, user, "purchase_orders_v2", bypass=_purchase_owner_bypass(user), label="Purchase order")
 
 
 @router.post("/orders")
 async def create_order(payload: PurchaseOrderV2, user: dict = Depends(get_current_user)):
     _require_purchase(user)
     data = payload.model_dump()
+    data["created_by"] = user["id"]
     reason = data.pop("po_number_reason", None)
     supplied_number = data.get("po_number")
     # Resolve the PO number per the configured numbering mode + permissions and
     # guarantee uniqueness across the database before persisting.
-    data["po_number"] = await pn.allocate_po_number(supplied_number, user)
+    data["po_number"] = await pn.allocate_po_number(supplied_number, user, resolve_tenant(user))
     data["po_number_locked"] = False
     vendor = await crud_get("vendors", data["vendor_id"])
     data["vendor_name"] = data.get("vendor_name") or vendor.get("company") or vendor.get("name")
@@ -178,7 +209,8 @@ async def set_order_status(po_id: str, status: str = Query(...), user: dict = De
     valid = {"DRAFT", "SENT", "PARTIALLY_RECEIVED", "RECEIVED", "CLOSED", "CANCELLED"}
     if status not in valid:
         raise HTTPException(400, f"Invalid status. One of {sorted(valid)}")
-    await crud_get("purchase_orders_v2", po_id)
+    existing = await crud_get("purchase_orders_v2", po_id)
+    assert_owns_or_404(existing, user, "purchase_orders_v2", bypass=_purchase_owner_bypass(user), label="Purchase order")
     return await crud_update("purchase_orders_v2", po_id, {"status": status}, user=user)
 
 
@@ -186,6 +218,7 @@ async def set_order_status(po_id: str, status: str = Query(...), user: dict = De
 async def update_order(po_id: str, payload: PurchaseOrderV2, user: dict = Depends(get_current_user)):
     _require_purchase(user)
     existing = await crud_get("purchase_orders_v2", po_id, label="Purchase order")
+    assert_owns_or_404(existing, user, "purchase_orders_v2", bypass=_purchase_owner_bypass(user), label="Purchase order")
     # Once any goods have been received against the PO, its lines drive receipt
     # reconciliation — editing them would corrupt the running tally, so block it.
     if any(float(ln.get("received_qty", 0)) > 0 for ln in existing.get("lines", [])):
@@ -194,6 +227,7 @@ async def update_order(po_id: str, payload: PurchaseOrderV2, user: dict = Depend
         raise HTTPException(400, f"Cannot edit a {existing['status']} purchase order.")
 
     data = payload.model_dump()
+    data.pop("created_by", None)
     reason = data.pop("po_number_reason", None)
     vendor = await crud_get("vendors", data["vendor_id"], label="Vendor")
     data["vendor_name"] = data.get("vendor_name") or vendor.get("company") or vendor.get("name")
@@ -233,7 +267,8 @@ async def update_order(po_id: str, payload: PurchaseOrderV2, user: dict = Depend
 async def order_number_audit(po_id: str, user: dict = Depends(get_current_user)):
     """PO-number change history (old → new, who, when, why) for the details page."""
     _require_purchase(user)
-    await crud_get("purchase_orders_v2", po_id, label="Purchase order")
+    existing = await crud_get("purchase_orders_v2", po_id, label="Purchase order")
+    assert_owns_or_404(existing, user, "purchase_orders_v2", bypass=_purchase_owner_bypass(user), label="Purchase order")
     return await pn.number_audit_history(po_id)
 
 
@@ -241,6 +276,7 @@ async def order_number_audit(po_id: str, user: dict = Depends(get_current_user))
 async def delete_order(po_id: str, user: dict = Depends(get_current_user)):
     _require_purchase(user)
     existing = await crud_get("purchase_orders_v2", po_id, label="Purchase order")
+    assert_owns_or_404(existing, user, "purchase_orders_v2", bypass=_purchase_owner_bypass(user), label="Purchase order")
     if any(float(ln.get("received_qty", 0)) > 0 for ln in existing.get("lines", [])):
         raise HTTPException(400, "Cannot delete a purchase order that has received goods.")
     grn = await db.goods_receipt_notes_v2.find_one({"purchase_order_id": po_id}, {"_id": 0, "id": 1})
@@ -321,7 +357,7 @@ async def create_grn(payload: GRNV2, user: dict = Depends(get_current_user)):
     data["received_date"] = data.get("received_date") or date.today().isoformat()
     # AUTO/MANUAL + prefix/FY/branch template per Admin -> Document Numbering
     # (core/document_numbering.py) — replaces the old fixed GRN00001 counter.
-    data["grn_number"] = await allocate_document_number("grn", data.get("grn_number"), user)
+    data["grn_number"] = await allocate_document_number("grn", data.get("grn_number"), user, resolve_tenant(user))
 
     # Resolve product_id → backing stock_item_id on every line up front, so the
     # over-receipt check, persisted GRN, and ledger postings all agree.
@@ -450,7 +486,8 @@ async def list_bills(q: Optional[str] = None, page: Optional[int] = None, limit:
     return await paginated_list("purchase_bills", page=page, limit=limit, q=q,
                                  search_fields=["bill_number", "vendor_invoice_no", "vendor_name"],
                                  sort_field="created_at", sort_dir=-1,
-                                 from_date=from_date, to_date=to_date)
+                                 from_date=from_date, to_date=to_date,
+                                 user=user, owner_bypass=_purchase_owner_bypass(user))
 
 
 @router.post("/bills")
@@ -459,6 +496,7 @@ async def create_bill(payload: PurchaseBill, user: dict = Depends(get_current_us
     GST, Cr Vendor, Cr TDS). Links to GRN(s)/PO for three-way matching."""
     _require_purchase(user)
     data = payload.model_dump()
+    data["created_by"] = user["id"]
     vendor = await crud_get("vendors", data["vendor_id"])
     data["vendor_name"] = data.get("vendor_name") or vendor.get("company") or vendor.get("name")
     if not data.get("bill_number"):
@@ -545,10 +583,12 @@ async def update_bill(bill_id: str, payload: PurchaseBill, user: dict = Depends(
     because that would desync the payment status / outstanding balance."""
     _require_purchase(user)
     existing = await crud_get("purchase_bills", bill_id, label="Purchase bill")
+    assert_owns_or_404(existing, user, "purchase_bills", bypass=_purchase_owner_bypass(user), label="Purchase bill")
     if float(existing.get("payment_received", 0)) > 0:
         raise HTTPException(400, "Cannot edit a bill that has payments recorded. Reverse the payment first.")
 
     data = payload.model_dump()
+    data.pop("created_by", None)
     vendor = await crud_get("vendors", data["vendor_id"], label="Vendor")
     data["vendor_name"] = data.get("vendor_name") or vendor.get("company") or vendor.get("name")
     # bill_number is server-managed — never let the client change it.
@@ -629,9 +669,10 @@ async def record_bill_payment(bill_id: str, amount: float = Query(...), user: di
     _require_purchase(user)
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Payment amount must be positive")
-    
+
     bill = await crud_get("purchase_bills", bill_id)
-    
+    assert_owns_or_404(bill, user, "purchase_bills", bypass=_purchase_owner_bypass(user), label="Purchase bill")
+
     taxable = float(bill.get("taxable") or 0.0)
     total = bill.get("total")
     if total is None:
@@ -662,6 +703,7 @@ async def three_way_match(bill_id: str, user: dict = Depends(get_current_user)):
     """Compare PO vs GRN vs Bill quantities/values for the linked documents."""
     _require_purchase(user)
     bill = await crud_get("purchase_bills", bill_id)
+    assert_owns_or_404(bill, user, "purchase_bills", bypass=_purchase_owner_bypass(user), label="Purchase bill")
     bill_qty = round(sum(float(l["qty"]) for l in bill.get("lines", [])), 4)
 
     grn_qty = 0.0
@@ -689,7 +731,7 @@ async def three_way_match(bill_id: str, user: dict = Depends(get_current_user)):
     }
 
 
-async def _vendor_doc_for_pdf(doc: dict) -> dict:
+async def _vendor_doc_for_pdf(doc: dict, user: Optional[dict] = None) -> dict:
     """Attach vendor master + company onto a purchase doc and normalise it onto
     the sales-shaped doc that build_doc_pdf consumes."""
     doc = dict(doc)
@@ -699,7 +741,7 @@ async def _vendor_doc_for_pdf(doc: dict) -> dict:
             doc["vendor"] = vendor
             doc.setdefault("vendor_name", vendor.get("company") or vendor.get("name"))
             doc.setdefault("place_of_supply", vendor.get("state"))
-    doc["company"] = await db.companies.find_one({}, {"_id": 0})
+    doc["company"] = await db.companies.find_one({"tenant_id": resolve_tenant(user)}, {"_id": 0})
     return normalize_purchase_doc(doc, party_field="vendor")
 
 
@@ -716,8 +758,9 @@ async def order_pdf(po_id: str, user: dict = Depends(get_current_user)):
     """Purchase order PDF, rendered through the shared vendor-document template."""
     _require_purchase(user)
     po = await crud_get("purchase_orders_v2", po_id)
+    assert_owns_or_404(po, user, "purchase_orders_v2", bypass=_purchase_owner_bypass(user), label="Purchase order")
     number = po.get("po_number") or po_id
-    doc = await _vendor_doc_for_pdf(po)
+    doc = await _vendor_doc_for_pdf(po, user)
     pdf_bytes = await render_document_pdf(
         "PURCHASE ORDER", number, doc,
         party_id=po.get("vendor_id"), party_type="vendor", company=doc.get("company"),
@@ -729,8 +772,9 @@ async def order_pdf(po_id: str, user: dict = Depends(get_current_user)):
 async def bill_pdf(bill_id: str, user: dict = Depends(get_current_user)):
     _require_purchase(user)
     bill = await crud_get("purchase_bills", bill_id)
+    assert_owns_or_404(bill, user, "purchase_bills", bypass=_purchase_owner_bypass(user), label="Purchase bill")
     number = bill.get("bill_number") or bill.get("vendor_invoice_no") or bill_id
-    doc = await _vendor_doc_for_pdf(bill)
+    doc = await _vendor_doc_for_pdf(bill, user)
     pdf_bytes = await render_document_pdf(
         "PURCHASE INVOICE", number, doc,
         party_id=bill.get("vendor_id"), party_type="vendor", company=doc.get("company"),
@@ -760,7 +804,7 @@ async def grn_pdf(grn_id: str, user: dict = Depends(get_current_user)):
     } for ln in (grn.get("lines") or [])]
     doc.setdefault("date", grn.get("received_date"))
     doc.setdefault("po_number", None)
-    company = await db.companies.find_one({}, {"_id": 0})
+    company = await db.companies.find_one({"tenant_id": resolve_tenant(user)}, {"_id": 0})
     pdf_bytes = await render_document_pdf(
         "GOODS RECEIPT NOTE", number, doc,
         party_id=grn.get("vendor_id"), party_type="vendor", company=company,
@@ -835,7 +879,7 @@ async def return_pdf(return_id: str, user: dict = Depends(get_current_user)):
     _require_purchase(user)
     ret = await crud_get("purchase_returns", return_id)
     number = ret.get("debit_note_number") or return_id
-    doc = await _vendor_doc_for_pdf(ret)
+    doc = await _vendor_doc_for_pdf(ret, user)
     if ret.get("reason"):
         doc.setdefault("notes", f"Reason: {ret['reason']}")
     pdf_bytes = await render_document_pdf(
@@ -856,13 +900,13 @@ async def credit_note_pdf(note_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Credit note not found")
     number = note.get("credit_note_number") or note.get("number") or note_id
     note = dict(note)
-    note["company"] = await db.companies.find_one({}, {"_id": 0})
+    note["company"] = await db.companies.find_one({"tenant_id": resolve_tenant(user)}, {"_id": 0})
     # Credit notes may reference either a customer or a vendor; prefer customer.
     if note.get("customer_id"):
         doc = normalize_purchase_doc(note, party_field="customer")
         party_id, party_type = note.get("customer_id"), "customer"
     else:
-        doc = await _vendor_doc_for_pdf(note)
+        doc = await _vendor_doc_for_pdf(note, user)
         party_id, party_type = note.get("vendor_id"), "vendor"
     pdf_bytes = await render_document_pdf(
         "CREDIT NOTE", number, doc,

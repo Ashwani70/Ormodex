@@ -337,6 +337,23 @@ def is_admin_role(role: str | None) -> bool:
     return role in ("admin", "super_admin")
 
 
+def bypasses_row_ownership(role: str | None) -> bool:
+    """True for roles that skip row-level ownership filtering (see
+    core/utils.py's OWNED_COLLECTIONS / apply_ownership_filter /
+    assert_owns_or_404) — Manager sees every row, same as Admin/Super Admin,
+    by explicit product decision for THIS feature only.
+
+    Deliberately NOT folded into is_admin_role(): that function backs
+    require_admin(), which gates ~120 admin-only endpoints (user management,
+    security settings, etc.) across the app. Adding "manager" there would
+    silently grant Manager full admin access everywhere, not just row-level
+    visibility — a much bigger privilege change than intended. Use this
+    function ONLY for the ownership-bypass checks introduced alongside
+    OWNED_COLLECTIONS; use is_admin_role/require_admin for everything else.
+    """
+    return is_admin_role(role) or role == "manager"
+
+
 async def require_admin(user: dict = Depends(get_current_user)) -> dict:
     if not is_admin_role(user.get("role")):
         raise HTTPException(status_code=403, detail="Admin access required")

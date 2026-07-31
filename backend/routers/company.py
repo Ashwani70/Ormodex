@@ -10,6 +10,7 @@ from core.stock_valuation import (
     VALUATION_METHODS,
     canonical_method,
 )
+from core.tenant import stamp_tenant, tenant_ctx
 from core.utils import now_iso, new_id
 
 router = APIRouter(prefix="/company", tags=["Company Profile"])
@@ -33,37 +34,41 @@ _DEFAULT_COMPANY = {
 
 
 @router.get("/active")
-async def get_active_company():
-    """Retrieve the current active company profile (defaulting to the first created one or placeholder).
+async def get_active_company(tenant: str = Depends(tenant_ctx)):
+    """Retrieve the current tenant's active company profile (defaulting to the
+    first created one or placeholder).
 
     Loads on every page via the Sidebar and changes only when an admin edits the
-    profile, so it's cached for a short TTL; company writes invalidate "company:".
+    profile, so it's cached for a short TTL keyed per tenant; company writes
+    invalidate "company:".
 
-    Sorted by created_at ascending (oldest = "the" company row) so this is
-    deterministic. This table is meant to be a singleton — see the note on
-    update_company for how duplicate rows could previously appear; without a
-    stable sort, which duplicate got returned as "active" was arbitrary, so a
-    save could appear to succeed while the user was shown a totally different
+    Sorted by created_at ascending (oldest = "the" company row for this tenant)
+    so this is deterministic within a tenant — see the note on update_company
+    for how duplicate rows could previously appear; without a stable sort,
+    which duplicate got returned as "active" was arbitrary, so a save could
+    appear to succeed while the user was shown a totally different
     (older/newer) row on the next load.
     """
     async def _load():
-        company = await db.companies.find_one({}, {"_id": 0}, sort=[("created_at", 1)])
+        company = await db.companies.find_one({"tenant_id": tenant}, {"_id": 0}, sort=[("created_at", 1)])
         return company or _DEFAULT_COMPANY
 
-    return await cache.get_or_set("company:active", cache.TTL_REFERENCE, _load)
+    return await cache.get_or_set(f"company:active:{tenant}", cache.TTL_REFERENCE, _load)
 
 
 @router.get("")
-async def list_companies(_: dict = Depends(require_admin)):
-    """List all configured company profiles."""
-    return await db.companies.find({}, {"_id": 0}).to_list(100)
+async def list_companies(_: dict = Depends(require_admin), tenant: str = Depends(tenant_ctx)):
+    """List all configured company profiles for this tenant."""
+    return await db.companies.find({"tenant_id": tenant}, {"_id": 0}).to_list(100)
 
 
 @router.post("")
-async def create_company(payload: CompanyProfile, _: dict = Depends(require_admin)):
-    """Create a new company profile."""
+async def create_company(payload: CompanyProfile, _: dict = Depends(require_admin),
+                         tenant: str = Depends(tenant_ctx)):
+    """Create a new company profile for this tenant."""
     data = payload.model_dump()
     data["id"] = new_id()
+    stamp_tenant(data, tenant)
     data["created_at"] = now_iso()
     data["updated_at"] = now_iso()
     await db.companies.insert_one(data)
@@ -80,15 +85,15 @@ class ValuationSettings(BaseModel):
 
 
 @router.get("/valuation-settings")
-async def get_valuation_settings(_: dict = Depends(require_admin)):
-    """The company-wide default inventory valuation method.
+async def get_valuation_settings(_: dict = Depends(require_admin), tenant: str = Depends(tenant_ctx)):
+    """This tenant's default inventory valuation method.
 
     This is the fallback used for any stock item that doesn't override it. It is
     stored in company.extra.inventory_valuation_method (no dedicated column); an
     unset value means the engine default (WEIGHTED_AVG) applies.
     """
     company = await db.companies.find_one(
-        {}, {"_id": 0, "extra": 1}, sort=[("created_at", 1)]
+        {"tenant_id": tenant}, {"_id": 0, "extra": 1}, sort=[("created_at", 1)]
     ) or {}
     extra = company.get("extra") or {}
     method = canonical_method(extra.get("inventory_valuation_method")) or DEFAULT_METHOD
@@ -101,14 +106,14 @@ async def get_valuation_settings(_: dict = Depends(require_admin)):
 
 @router.put("/valuation-settings")
 async def update_valuation_settings(
-    payload: ValuationSettings, _: dict = Depends(require_admin)
+    payload: ValuationSettings, _: dict = Depends(require_admin), tenant: str = Depends(tenant_ctx),
 ):
-    """Set the company-wide default valuation method.
+    """Set this tenant's default valuation method.
 
     Merges into company.extra so it doesn't clobber other settings, and only
-    ever touches the single (oldest) company row — mirroring update_company's
-    singleton handling. Invalidates the company cache so the new default takes
-    effect on the next read.
+    ever touches this tenant's single (oldest) company row — mirroring
+    update_company's singleton handling. Invalidates the company cache so the
+    new default takes effect on the next read.
     """
     method = canonical_method(payload.valuation_method)
     if method is None:
@@ -117,7 +122,7 @@ async def update_valuation_settings(
             detail=f"Unknown valuation method. Allowed: {', '.join(VALUATION_METHODS)}",
         )
 
-    company = await db.companies.find_one({}, {"_id": 0}, sort=[("created_at", 1)])
+    company = await db.companies.find_one({"tenant_id": tenant}, {"_id": 0}, sort=[("created_at", 1)])
     if not company:
         raise HTTPException(status_code=404, detail="No company profile configured")
 
@@ -132,45 +137,48 @@ async def update_valuation_settings(
 
 
 @router.put("/{item_id}")
-async def update_company(item_id: str, payload: CompanyProfile, _: dict = Depends(require_admin)):
-    """Update a company profile.
+async def update_company(item_id: str, payload: CompanyProfile, _: dict = Depends(require_admin),
+                         tenant: str = Depends(tenant_ctx)):
+    """Update a company profile, scoped to this tenant.
 
-    This table is meant to hold exactly one row (the app has no real
-    multi-company support — see get_active_company). If `item_id` doesn't
-    match any row — the frontend sends the placeholder id "default" before
-    its first GET has resolved, or its cached state is simply stale — find
-    and update whatever row already exists instead of inserting a new one.
-    Blindly inserting-on-mismatch (the old behavior) silently accumulated
-    duplicate rows over time; which one get_active_company then returned was
-    arbitrary, so a save could appear to succeed while a later reload showed
-    an entirely different (older) row — exactly the "doesn't save properly"
-    symptom this fixes. Only insert a genuinely new row when the table is
-    empty.
+    This table holds one row per tenant (see get_active_company). If
+    `item_id` doesn't match any row of THIS tenant's — the frontend sends the
+    placeholder id "default" before its first GET has resolved, or its cached
+    state is simply stale — find and update whatever row already exists for
+    this tenant instead of inserting a new one. Blindly inserting-on-mismatch
+    (the old behavior) silently accumulated duplicate rows over time; which
+    one get_active_company then returned was arbitrary, so a save could
+    appear to succeed while a later reload showed an entirely different
+    (older) row — exactly the "doesn't save properly" symptom this fixes.
+    Only insert a genuinely new row when this tenant has none yet. Scoping by
+    tenant_id also prevents one tenant from touching another's row by id
+    guess.
     """
     data = payload.model_dump()
     data["updated_at"] = now_iso()
-    res = await db.companies.update_one({"id": item_id}, {"$set": data})
+    res = await db.companies.update_one({"id": item_id, "tenant_id": tenant}, {"$set": data})
     if res.matched_count == 0:
-        existing = await db.companies.find_one({}, {"_id": 0}, sort=[("created_at", 1)])
+        existing = await db.companies.find_one({"tenant_id": tenant}, {"_id": 0}, sort=[("created_at", 1)])
         if existing:
             real_id = existing["id"]
-            await db.companies.update_one({"id": real_id}, {"$set": data})
-            updated = await db.companies.find_one({"id": real_id}, {"_id": 0})
+            await db.companies.update_one({"id": real_id, "tenant_id": tenant}, {"$set": data})
+            updated = await db.companies.find_one({"id": real_id, "tenant_id": tenant}, {"_id": 0})
             return updated
         data["id"] = new_id()
+        stamp_tenant(data, tenant)
         data["created_at"] = now_iso()
         await db.companies.insert_one(data)
         data.pop("_id", None)
         return data
 
-    updated = await db.companies.find_one({"id": item_id}, {"_id": 0})
+    updated = await db.companies.find_one({"id": item_id, "tenant_id": tenant}, {"_id": 0})
     return updated
 
 
 @router.delete("/{item_id}")
-async def delete_company(item_id: str, _: dict = Depends(require_admin)):
-    """Delete a company profile."""
-    res = await db.companies.delete_one({"id": item_id})
+async def delete_company(item_id: str, _: dict = Depends(require_admin), tenant: str = Depends(tenant_ctx)):
+    """Delete a company profile, scoped to this tenant."""
+    res = await db.companies.delete_one({"id": item_id, "tenant_id": tenant})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Company profile not found")
     return {"ok": True}

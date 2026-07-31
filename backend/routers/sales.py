@@ -7,7 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, Request
 from pydantic import BaseModel
 
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_admin, bypasses_row_ownership
 from core import rapidapi_gst, gstverify_gst
 from core.db import db
 from core.models import (
@@ -26,6 +26,8 @@ from core.product_stock_bridge import resolve_godown_id, resolve_stock_item_id_f
 from core.stock_ledger import on_hand, post_entry
 from core.tenant import resolve_tenant
 from core.utils import (
+    apply_ownership_filter,
+    assert_owns_or_404,
     calc_totals,
     crud_create,
     crud_delete,
@@ -109,19 +111,33 @@ async def check_gstin_before_save(gstin: Optional[str], data: dict):
 
 # ---------- Customers ----------
 @router.get("/customers")
-async def list_customers(q: Optional[str] = None, _: dict = Depends(get_current_user)):
+async def list_customers(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+    bypass = bypasses_row_ownership(user.get("role"))
     if not q:
-        return await _cache.get_or_set(
-            "customers:all", _cache.TTL_REFERENCE,
-            lambda: crud_list("customers", None, ["name", "company", "email", "phone", "country"], sort_field="name"),
+        if bypass:
+            # Shared cache is safe ONLY on the unfiltered (admin/manager) path
+            # — an Employee-tier request must never read from or populate
+            # this cache key, or one user's row-filtered view would leak into
+            # (or be leaked into by) another's.
+            return await _cache.get_or_set(
+                "customers:all", _cache.TTL_REFERENCE,
+                lambda: crud_list("customers", None, ["name", "company", "email", "phone", "country"], sort_field="name"),
+            )
+        return await crud_list(
+            "customers", None, ["name", "company", "email", "phone", "country"],
+            sort_field="name", user=user, owner_bypass=bypass,
         )
     # pyrefly: ignore [bad-argument-type]
-    return await crud_list("customers", q, ["name", "company", "email", "phone", "country"], sort_field="name")
+    return await crud_list(
+        "customers", q, ["name", "company", "email", "phone", "country"],
+        sort_field="name", user=user, owner_bypass=bypass,
+    )
 
 
 @router.post("/customers")
 async def create_customer(payload: Customer, user: dict = Depends(get_current_user)):
     data = payload.model_dump()
+    data["created_by"] = user["id"]
     await check_gstin_before_save(data.get("gstin"), data)
     if not data.get("customer_code"):
         data["customer_code"] = await next_doc_number("CUST", "customers")
@@ -140,7 +156,10 @@ async def create_customer(payload: Customer, user: dict = Depends(get_current_us
 
 @router.put("/customers/{item_id}")
 async def update_customer(item_id: str, payload: Customer, user: dict = Depends(get_current_user)):
+    existing = await crud_get("customers", item_id, label="Customer")
+    assert_owns_or_404(existing, user, "customers", bypass=bypasses_row_ownership(user.get("role")), label="Customer")
     data = payload.model_dump()
+    data.pop("created_by", None)  # never let the payload overwrite the original creator
     await check_gstin_before_save(data.get("gstin"), data)
     result = await crud_update("customers", item_id, data, user=user)
     _cache.invalidate("customers:all")
@@ -290,13 +309,17 @@ async def delete_lead(item_id: str, user: dict = Depends(require_admin)):
 
 # ---------- Quotations ----------
 @router.get("/quotations")
-async def list_quotations(q: Optional[str] = None, _: dict = Depends(get_current_user)):
-    return await crud_list("quotations", q, ["quote_number", "customer_name", "status"])
+async def list_quotations(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+    return await crud_list(
+        "quotations", q, ["quote_number", "customer_name", "status"],
+        user=user, owner_bypass=bypasses_row_ownership(user.get("role")),
+    )
 
 
 @router.post("/quotations")
 async def create_quotation(payload: Quotation, user: dict = Depends(get_current_user)):
     data = payload.model_dump()
+    data["created_by"] = user["id"]
     if not data.get("quote_number"):
         data["quote_number"] = await next_doc_number("QUO", "quotations")
     if data.get("customer_id"):
@@ -309,7 +332,10 @@ async def create_quotation(payload: Quotation, user: dict = Depends(get_current_
 
 @router.put("/quotations/{item_id}")
 async def update_quotation(item_id: str, payload: Quotation, user: dict = Depends(get_current_user)):
+    existing = await crud_get("quotations", item_id, label="Quotation")
+    assert_owns_or_404(existing, user, "quotations", bypass=bypasses_row_ownership(user.get("role")), label="Quotation")
     data = payload.model_dump()
+    data.pop("created_by", None)
     if data.get("customer_id"):
         cust = await db.customers.find_one({"id": data["customer_id"]}, {"_id": 0, "name": 1})
         if cust:
@@ -324,13 +350,15 @@ async def delete_quotation(item_id: str, user: dict = Depends(require_admin)):
 
 
 @router.get("/quotations/{item_id}")
-async def get_quotation(item_id: str, _: dict = Depends(get_current_user)):
-    return await crud_get("quotations", item_id)
+async def get_quotation(item_id: str, user: dict = Depends(get_current_user)):
+    doc = await crud_get("quotations", item_id)
+    return assert_owns_or_404(doc, user, "quotations", bypass=bypasses_row_ownership(user.get("role")), label="Quotation")
 
 
 @router.get("/quotations/{item_id}/pdf")
-async def quotation_pdf(item_id: str, _: dict = Depends(get_current_user)):
+async def quotation_pdf(item_id: str, user: dict = Depends(get_current_user)):
     doc = await crud_get("quotations", item_id)
+    assert_owns_or_404(doc, user, "quotations", bypass=bypasses_row_ownership(user.get("role")), label="Quotation")
     pdf_bytes = await render_document_pdf(
         "QUOTATION", doc.get("quote_number", item_id), doc,
         party_id=doc.get("customer_id"), party_type="customer",
@@ -344,13 +372,17 @@ async def quotation_pdf(item_id: str, _: dict = Depends(get_current_user)):
 
 # ---------- Sales Orders ----------
 @router.get("/sales-orders")
-async def list_sos(q: Optional[str] = None, _: dict = Depends(get_current_user)):
-    return await crud_list("sales_orders", q, ["order_number", "customer_name", "status"])
+async def list_sos(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+    return await crud_list(
+        "sales_orders", q, ["order_number", "customer_name", "status"],
+        user=user, owner_bypass=bypasses_row_ownership(user.get("role")),
+    )
 
 
 @router.post("/sales-orders")
 async def create_so(payload: SalesOrder, user: dict = Depends(get_current_user)):
     data = payload.model_dump()
+    data["created_by"] = user["id"]
     if not data.get("order_number"):
         data["order_number"] = await next_doc_number("SO", "sales_orders")
     if data.get("customer_id"):
@@ -363,7 +395,10 @@ async def create_so(payload: SalesOrder, user: dict = Depends(get_current_user))
 
 @router.put("/sales-orders/{item_id}")
 async def update_so(item_id: str, payload: SalesOrder, user: dict = Depends(get_current_user)):
+    existing = await crud_get("sales_orders", item_id, label="Sales order")
+    assert_owns_or_404(existing, user, "sales_orders", bypass=bypasses_row_ownership(user.get("role")), label="Sales order")
     data = payload.model_dump()
+    data.pop("created_by", None)
     if data.get("customer_id"):
         cust = await db.customers.find_one({"id": data["customer_id"]}, {"_id": 0, "name": 1})
         if cust:
@@ -375,6 +410,7 @@ async def update_so(item_id: str, payload: SalesOrder, user: dict = Depends(get_
 @router.post("/sales-orders/{item_id}/confirm")
 async def confirm_so(item_id: str, user: dict = Depends(get_current_user)):
     so = await crud_get("sales_orders", item_id)
+    assert_owns_or_404(so, user, "sales_orders", bypass=bypasses_row_ownership(user.get("role")), label="Sales order")
     if so.get("status") not in ["PENDING"]:
         raise HTTPException(status_code=400, detail="Order is not pending")
     godown_id = await resolve_godown_id(None)
@@ -404,13 +440,15 @@ async def delete_so(item_id: str, user: dict = Depends(require_admin)):
 
 
 @router.get("/sales-orders/{item_id}")
-async def get_so(item_id: str, _: dict = Depends(get_current_user)):
-    return await crud_get("sales_orders", item_id)
+async def get_so(item_id: str, user: dict = Depends(get_current_user)):
+    doc = await crud_get("sales_orders", item_id)
+    return assert_owns_or_404(doc, user, "sales_orders", bypass=bypasses_row_ownership(user.get("role")), label="Sales order")
 
 
 @router.get("/sales-orders/{item_id}/pdf")
-async def so_pdf(item_id: str, _: dict = Depends(get_current_user)):
+async def so_pdf(item_id: str, user: dict = Depends(get_current_user)):
     doc = await crud_get("sales_orders", item_id)
+    assert_owns_or_404(doc, user, "sales_orders", bypass=bypasses_row_ownership(user.get("role")), label="Sales order")
     pdf_bytes = await render_document_pdf(
         "SALES ORDER", doc.get("order_number", item_id), doc,
         party_id=doc.get("customer_id"), party_type="customer",
@@ -423,9 +461,9 @@ async def so_pdf(item_id: str, _: dict = Depends(get_current_user)):
 
 
 # ---------- Invoices ----------
-async def calculate_gst_for_invoice(data: dict):
+async def calculate_gst_for_invoice(data: dict, user: dict | None = None):
     # Fetch active company state code
-    company = await db.companies.find_one({})
+    company = await db.companies.find_one({"tenant_id": resolve_tenant(user)})
     company_state_code = company.get("state_code", "27") if company else "27"
 
     # Fetch customer to determine inter/intra-state GST (customer_id is optional for B2C/walk-in)
@@ -472,21 +510,25 @@ async def calculate_gst_for_invoice(data: dict):
 
 
 @router.get("/invoices")
-async def list_invoices(q: Optional[str] = None, _: dict = Depends(get_current_user)):
-    return await crud_list("invoices", q, ["invoice_number", "customer_name", "status"])
+async def list_invoices(q: Optional[str] = None, user: dict = Depends(get_current_user)):
+    return await crud_list(
+        "invoices", q, ["invoice_number", "customer_name", "status"],
+        user=user, owner_bypass=bypasses_row_ownership(user.get("role")),
+    )
 
 
 @router.post("/invoices")
 async def create_invoice(payload: Invoice, user: dict = Depends(get_current_user)):
     data = payload.model_dump()
+    data["created_by"] = user["id"]
     # AUTO/MANUAL + prefix/FY/branch template per Admin -> Document Numbering
     # (core/document_numbering.py) — replaces the old fixed INV00001 counter.
-    data["invoice_number"] = await allocate_document_number("invoice", data.get("invoice_number"), user)
+    data["invoice_number"] = await allocate_document_number("invoice", data.get("invoice_number"), user, resolve_tenant(user))
     if data.get("customer_id"):
         cust = await db.customers.find_one({"id": data["customer_id"]}, {"_id": 0, "name": 1})
         if cust:
             data["customer_name"] = cust["name"]
-    await calculate_gst_for_invoice(data)
+    await calculate_gst_for_invoice(data, user)
     return await crud_create("invoices", data, user=user)
 
 
@@ -499,12 +541,15 @@ async def get_einvoice_settings_alias(user: dict = Depends(require_admin)):
 
 @router.put("/invoices/{item_id}")
 async def update_invoice(item_id: str, payload: Invoice, user: dict = Depends(get_current_user)):
+    existing = await crud_get("invoices", item_id, label="Invoice")
+    assert_owns_or_404(existing, user, "invoices", bypass=bypasses_row_ownership(user.get("role")), label="Invoice")
     data = payload.model_dump()
+    data.pop("created_by", None)
     if data.get("customer_id"):
         cust = await db.customers.find_one({"id": data["customer_id"]}, {"_id": 0, "name": 1})
         if cust:
             data["customer_name"] = cust["name"]
-    await calculate_gst_for_invoice(data)
+    await calculate_gst_for_invoice(data, user)
     return await crud_update("invoices", item_id, data, user=user)
 
 
@@ -513,6 +558,7 @@ async def record_payment(item_id: str, amount: float = Query(...), user: dict = 
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Payment amount must be positive")
     inv = await crud_get("invoices", item_id)
+    assert_owns_or_404(inv, user, "invoices", bypass=bypasses_row_ownership(user.get("role")), label="Invoice")
     total = float(inv.get("total", 0))
     already_received = float(inv.get("payment_received", 0))
     # Cap received amount so it never exceeds total (prevents negative outstanding)
@@ -538,13 +584,15 @@ async def delete_invoice(item_id: str, user: dict = Depends(require_admin)):
 
 
 @router.get("/invoices/{item_id}")
-async def get_invoice(item_id: str, _: dict = Depends(get_current_user)):
-    return await crud_get("invoices", item_id)
+async def get_invoice(item_id: str, user: dict = Depends(get_current_user)):
+    doc = await crud_get("invoices", item_id)
+    return assert_owns_or_404(doc, user, "invoices", bypass=bypasses_row_ownership(user.get("role")), label="Invoice")
 
 
 @router.get("/invoices/{item_id}/pdf")
-async def invoice_pdf(item_id: str, _: dict = Depends(get_current_user)):
+async def invoice_pdf(item_id: str, user: dict = Depends(get_current_user)):
     doc = await crud_get("invoices", item_id)
+    assert_owns_or_404(doc, user, "invoices", bypass=bypasses_row_ownership(user.get("role")), label="Invoice")
     pdf_bytes = await render_document_pdf(
         "TAX INVOICE", doc.get("invoice_number", item_id), doc,
         party_id=doc.get("customer_id"), party_type="customer",
@@ -631,7 +679,7 @@ async def create_credit_note(payload: CreditNote, user: dict = Depends(get_curre
     if data.get("original_invoice_id"):
         # Validate the referenced invoice exists (traceability).
         await crud_get("invoices", data["original_invoice_id"])
-    await calculate_gst_for_invoice(data)
+    await calculate_gst_for_invoice(data, user)
     note = await crud_create("credit_notes", data, user=user)
 
     # An ISSUED credit note reverses the sale in the books AND returns the
@@ -658,7 +706,7 @@ async def update_credit_note(item_id: str, payload: CreditNote, user: dict = Dep
         cust = await db.customers.find_one({"id": data["customer_id"]}, {"_id": 0, "name": 1})
         if cust:
             data["customer_name"] = cust["name"]
-    await calculate_gst_for_invoice(data)
+    await calculate_gst_for_invoice(data, user)
     note = await crud_update("credit_notes", item_id, data, user=user)
 
     # Post on transition to ISSUED. Both the journal and the stock return are
@@ -713,6 +761,7 @@ async def generate_einvoice(item_id: str, user: dict = Depends(get_current_user)
     import hashlib
     from core import irp_einvoice
     inv = await crud_get("invoices", item_id)
+    assert_owns_or_404(inv, user, "invoices", bypass=bypasses_row_ownership(user.get("role")), label="Invoice")
     if inv.get("einvoice_status") == "GENERATED":
         return inv
 
@@ -721,7 +770,7 @@ async def generate_einvoice(item_id: str, user: dict = Depends(get_current_user)
     # keeps working without an external dependency.
     irp_username, irp_password = await _get_irp_credentials()
     if irp_einvoice.is_configured() and irp_username and irp_password:
-        company = await db.companies.find_one({}) or {}
+        company = await db.companies.find_one({"tenant_id": resolve_tenant(user)}) or {}
         invoice_json = build_einvoice_json(inv, company)
         try:
             res = await irp_einvoice.generate_irn(invoice_json, irp_username, irp_password)
@@ -772,6 +821,7 @@ async def generate_einvoice(item_id: str, user: dict = Depends(get_current_user)
 @router.post("/invoices/{item_id}/cancel-einvoice")
 async def cancel_einvoice(item_id: str, user: dict = Depends(get_current_user)):
     inv = await crud_get("invoices", item_id)
+    assert_owns_or_404(inv, user, "invoices", bypass=bypasses_row_ownership(user.get("role")), label="Invoice")
     if inv.get("einvoice_status") != "GENERATED":
         raise HTTPException(status_code=400, detail="E-Invoice is not generated or already cancelled")
 
@@ -847,9 +897,10 @@ def build_einvoice_json(inv: dict, company: dict) -> dict:
 
 
 @router.get("/invoices/{item_id}/einvoice-json")
-async def get_einvoice_json(item_id: str, _: dict = Depends(get_current_user)):
+async def get_einvoice_json(item_id: str, user: dict = Depends(get_current_user)):
     inv = await crud_get("invoices", item_id)
-    company = await db.companies.find_one({}) or {}
+    assert_owns_or_404(inv, user, "invoices", bypass=bypasses_row_ownership(user.get("role")), label="Invoice")
+    company = await db.companies.find_one({"tenant_id": resolve_tenant(user)}) or {}
     return build_einvoice_json(inv, company)
 
 
@@ -873,7 +924,8 @@ async def generate_ewb(
     transport_mode: Literal["ROAD", "RAIL", "AIR", "SHIP"] = Query(...),
     user: dict = Depends(get_current_user)
 ):
-    await crud_get("invoices", item_id)
+    inv = await crud_get("invoices", item_id)
+    assert_owns_or_404(inv, user, "invoices", bypass=bypasses_row_ownership(user.get("role")), label="Invoice")
     ewb_number = f"3810{str(uuid.uuid4())[:8].upper()}"
     ewb_date = now_iso()[:10]
     

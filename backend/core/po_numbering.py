@@ -7,13 +7,13 @@ from fastapi import HTTPException
 
 from .auth_utils import is_admin_role
 from .db import db
+from .tenant import DEFAULT_TENANT
 from .utils import now_iso, new_id
 
-SETTINGS_ID = "global"
 PO_COLLECTION = "purchase_orders_v2"
 VALID_SEPARATORS = {"-", "/", ""}
 DEFAULT_SETTINGS = {
-    "id": SETTINGS_ID, "mode": "AUTO", "prefix": "PO", "fy_format": "",
+    "mode": "AUTO", "prefix": "PO", "fy_format": "",
     "branch_code": "", "separator": "-", "start_sequence": 1, "sequence_length": 5,
 }
 PERM_OVERRIDE = "po_number_override"
@@ -32,9 +32,9 @@ def financial_year_label(d: Optional[datetime] = None) -> str:
     return f"{start % 100:02d}-{(start + 1) % 100:02d}"
 
 
-def _coerce_settings(raw: dict | None) -> dict:
+def _coerce_settings(raw: dict | None, tenant_id: str) -> dict:
     s = {**DEFAULT_SETTINGS, **(raw or {})}
-    s["id"] = SETTINGS_ID
+    s["tenant_id"] = tenant_id
     s["mode"] = "MANUAL" if str(s.get("mode", "AUTO")).upper() == "MANUAL" else "AUTO"
     if s.get("separator") not in VALID_SEPARATORS:
         s["separator"] = "-"
@@ -51,21 +51,22 @@ def _coerce_settings(raw: dict | None) -> dict:
     return s
 
 
-async def get_settings() -> dict:
-    row = await db.po_numbering_settings.find_one({"id": SETTINGS_ID}, {"_id": 0})
-    return _coerce_settings(row)
+async def get_settings(tenant_id: str = DEFAULT_TENANT) -> dict:
+    row = await db.po_numbering_settings.find_one({"tenant_id": tenant_id}, {"_id": 0})
+    return _coerce_settings(row, tenant_id)
 
 
-async def save_settings(payload: dict, user: dict) -> dict:
-    s = _coerce_settings(payload)
+async def save_settings(payload: dict, user: dict, tenant_id: str = DEFAULT_TENANT) -> dict:
+    s = _coerce_settings(payload, tenant_id)
     s["updated_at"] = now_iso()
     s["updated_by"] = (user or {}).get("id")
-    await db.po_numbering_settings.update_one(
-        {"id": SETTINGS_ID},
-        {"$set": s},
-        upsert=True
-    )
-    return await get_settings()
+    existing = await db.po_numbering_settings.find_one({"tenant_id": tenant_id}, {"_id": 0, "id": 1})
+    if existing:
+        await db.po_numbering_settings.update_one({"tenant_id": tenant_id}, {"$set": s})
+    else:
+        s["id"] = new_id()
+        await db.po_numbering_settings.insert_one(s)
+    return await get_settings(tenant_id)
 
 
 def build_po_number(settings: dict, seq: int) -> str:
@@ -79,8 +80,8 @@ def build_po_number(settings: dict, seq: int) -> str:
     return sep.join(segments) if sep else "".join(segments)
 
 
-async def _next_sequence(settings: dict) -> int:
-    counter_key = f"{PO_COLLECTION}_po_number_seq"
+async def _next_sequence(settings: dict, tenant_id: str) -> int:
+    counter_key = f"{tenant_id}:{PO_COLLECTION}_po_number_seq"
     start = int(settings.get("start_sequence", 1))
 
     existing = await db.counters.find_one({"_id": counter_key})
@@ -112,18 +113,18 @@ async def ensure_unique(po_number: str, exclude_id: Optional[str] = None) -> Non
         raise HTTPException(status_code=409, detail=f"PO number '{po_number}' already exists")
 
 
-async def generate_unique_auto_number(settings: Optional[dict] = None) -> str:
-    settings = settings or await get_settings()
+async def generate_unique_auto_number(tenant_id: str = DEFAULT_TENANT, settings: Optional[dict] = None) -> str:
+    settings = settings or await get_settings(tenant_id)
     for _ in range(50):
-        seq = await _next_sequence(settings)
+        seq = await _next_sequence(settings, tenant_id)
         candidate = build_po_number(settings, seq)
         if await is_unique(candidate):
             return candidate
     raise HTTPException(status_code=500, detail="Unable to allocate a unique PO number")
 
 
-async def allocate_po_number(payload_number: Optional[str], user: dict) -> str:
-    settings = await get_settings()
+async def allocate_po_number(payload_number: Optional[str], user: dict, tenant_id: str = DEFAULT_TENANT) -> str:
+    settings = await get_settings(tenant_id)
     supplied = (payload_number or "").strip()
     if supplied:
         if not has_perm(user, PERM_OVERRIDE):
@@ -132,7 +133,7 @@ async def allocate_po_number(payload_number: Optional[str], user: dict) -> str:
         return supplied
     if settings["mode"] == "MANUAL":
         raise HTTPException(status_code=400, detail="PO number is required (numbering mode is Manual Entry)")
-    return await generate_unique_auto_number(settings)
+    return await generate_unique_auto_number(tenant_id, settings)
 
 
 _LOCKED_STATUSES = {"SENT", "PARTIALLY_RECEIVED", "RECEIVED", "CLOSED", "APPROVED"}

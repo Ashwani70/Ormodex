@@ -37,6 +37,7 @@ from core import nic_ewaybill as nic
 from core import gst_validators as gv
 from core.pdf import build_ewaybill_pdf
 from core.rate_limit import rate_limit, client_ip
+from core.tenant import resolve_tenant
 from core.utils import now_iso, new_id, log_audit
 
 router = APIRouter(prefix="/ewaybill", tags=["e-Way Bill"])
@@ -87,8 +88,8 @@ async def _get_invoice(invoice_id: str) -> dict:
     return inv
 
 
-async def _company() -> dict:
-    return await db.companies.find_one({}, {"_id": 0}) or {}
+async def _company(user: dict) -> dict:
+    return await db.companies.find_one({"tenant_id": resolve_tenant(user)}, {"_id": 0}) or {}
 
 
 async def _customer(inv: dict) -> dict:
@@ -197,7 +198,7 @@ async def generate_eway_bill(
     _rl(user, request, "generate", limit=20, window=60)
 
     inv = await _get_invoice(req.invoice_id)
-    company = await _company()
+    company = await _company(user)
     customer = await _customer(inv)
 
     # Dedup: an active e-Way Bill already exists for this invoice.
@@ -515,7 +516,7 @@ async def eway_bill_pdf(ewb_number: str, user: dict = Depends(get_current_user))
         raise HTTPException(404, "e-Way Bill not found")
 
     inv = await db.invoices.find_one({"id": ewb.get("invoice_id")}, {"_id": 0}) or {}
-    company = await _company()
+    company = await _company(user)
     customer = await _customer(inv)
     pdf_bytes = build_ewaybill_pdf(_enrich_pdf_fields(ewb, inv, company, customer), company=company)
     return Response(

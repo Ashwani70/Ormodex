@@ -16,9 +16,9 @@ import io
 import secrets
 import hashlib
 
-from core.auth_utils import get_current_user, require_admin, is_admin_role
+from core.auth_utils import get_current_user, require_admin, is_admin_role, bypasses_row_ownership
 from core.db import db
-from core.utils import now_iso, new_id, next_doc_number
+from core.utils import now_iso, new_id, next_doc_number, apply_ownership_filter, log_audit
 from core.tally_parser import parse_tally_xml, build_preview
 from core.webhooks import enqueue_event, deliver_pending
 
@@ -213,7 +213,13 @@ async def export_entity(entity: str, format: Literal["json", "csv"] = "json",
     _require_integration(user)
     if entity not in _ENTITY_SCHEMA and entity not in ("journal_entries", "invoices", "vouchers"):
         raise HTTPException(400, f"Export not allowed for '{entity}'")
-    docs = await db[entity].find({}, {"_id": 0}).to_list(10000)
+    # Row-ownership: this is a truly generic "export any entity" endpoint, so
+    # explicitly apply the same filter every other read path for these
+    # collections uses — an unfiltered dump here would otherwise be a silent
+    # bypass around every ownership check elsewhere.
+    q = apply_ownership_filter({}, user, entity, bypass=bypasses_row_ownership(user.get("role")))
+    docs = await db[entity].find(q, {"_id": 0}).to_list(10000)
+    await log_audit("EXPORT", entity, "bulk", user, new_values={"format": format, "row_count": len(docs)})
     if format == "json":
         return {"entity": entity, "count": len(docs), "rows": docs}
     # CSV

@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .db import get_session
@@ -218,6 +218,7 @@ def _build_collection_map() -> dict:
         "purchase_settings": _s.PurchaseSetting,
         "theme_settings": _s.ThemeSetting,
         "po_numbering_settings": _s.PONumberingSetting,
+        "document_numbering_settings": _s.DocumentNumberingSetting,
         "counters": _s.Counter,
         "audit_logs": _s.AuditLog,
         # Tables missed by the initial migration (added after audit found these
@@ -421,9 +422,18 @@ def _row_to_dict(row) -> Optional[dict]:
 
 
 # ── atomic sequence counter ────────────────────────────────────────────────────
-async def next_doc_number(prefix: str, collection: str) -> str:
+async def next_doc_number(prefix: str, collection: str, tenant_id: Optional[str] = None) -> str:
+    """`tenant_id` defaults to core.tenant.DEFAULT_TENANT ("default") so every
+    existing call site (sales/purchase/manufacturing/... routers) keeps
+    producing the exact same keys/numbers it does today without being
+    touched. Callers that DO know their tenant (post-Phase-3 auth wiring)
+    should pass it explicitly so sequences are scoped per company instead of
+    shared — migration 032_tenant_backfill.py renames existing counter rows
+    to the "default:"-prefixed key format in anticipation of this.
+    """
+    from .tenant import DEFAULT_TENANT
     Counter = _Counter()
-    key = f"{collection}:{prefix}"
+    key = f"{tenant_id or DEFAULT_TENANT}:{collection}:{prefix}"
     async with get_session() as session:
         stmt = (
             pg_insert(Counter)
@@ -559,6 +569,10 @@ async def crud_create(collection: str, data: dict, user: Optional[dict] = None) 
     now = now_iso()
     data.setdefault("created_at", now)
     data.setdefault("updated_at", now)
+    if hasattr(Model, "tenant_id"):
+        from .tenant import TENANT_ENFORCEMENT, current_tenant
+        if TENANT_ENFORCEMENT:
+            data.setdefault("tenant_id", current_tenant())
 
     if collection == "payslips":
         data = _prepare_payslip_doc(data)
@@ -599,15 +613,125 @@ async def crud_create(collection: str, data: dict, user: Optional[dict] = None) 
     return data
 
 
+# ── Row-level ownership (2026-07-29) ─────────────────────────────────────────
+# An Employee-tier user only sees rows they created in these 7 tables — every
+# other table (Products, Inventory, Accounting, Dashboard/Reports, etc.) stays
+# gated by module_permissions alone, as before. See alembic/versions/
+# 031_row_ownership.py for the created_by column + composite-index migration,
+# and core/auth_utils.py's bypasses_row_ownership() for who skips this
+# filtering (Admin/Super Admin/Manager, plus whatever a specific router's own
+# access rule already grants — e.g. purchase_v2's accountant/"purchase"-
+# permission check, computed by the caller and passed in as `bypass`).
+OWNED_COLLECTIONS: frozenset[str] = frozenset({
+    "customers", "vendors", "quotations", "sales_orders",
+    "invoices", "purchase_orders_v2", "purchase_bills",
+})
+
+
+def apply_ownership_filter(
+    filt: Optional[dict], user: dict, collection: str, *, bypass: bool = False,
+) -> dict:
+    """Merge a "created_by is me, OR created_by is NULL (grandfathered
+    pre-feature rows)" constraint into a list-query filter dict for an
+    Employee-tier user reading one of OWNED_COLLECTIONS.
+
+    Nested under "$and" rather than writing a top-level "created_by"/"$or"
+    key directly: crud_list/paginated_list add their OWN "$or" for text
+    search AFTER calling this function, and a second top-level "$or" key
+    would silently overwrite this one (last-write-wins on the same dict
+    key) — "$and": [{"$or": [...]}] composes safely no matter what the
+    caller adds to the filter afterward.
+
+    A plain {"created_by": user_id} equality would ALSO be wrong on its own
+    even without the collision risk: SQL's three-valued NULL logic means
+    "created_by = :uid" never matches created_by IS NULL rows, which would
+    hide every pre-existing (grandfathered) row from every Employee-tier
+    user — exactly the "looks like mass data loss on rollout day" outcome
+    the grandfathering decision was meant to avoid. Explicit $exists:false
+    (-> IS NULL) covers that case.
+
+    `bypass` is computed by the CALLER, not re-derived here: each router
+    already has its own access rule (sales.py has none — any non-bypass role
+    is row-filtered; purchase_v2.py requires accountant role or the
+    "purchase" module permission before you can reach these endpoints at
+    all), so there is no single global "who bypasses" expression to hardcode.
+    """
+    from .auth_utils import bypasses_row_ownership
+    f = dict(filt or {})
+    if collection not in OWNED_COLLECTIONS or bypass or bypasses_row_ownership(user.get("role")):
+        return f
+    ownership_clause = {"$or": [{"created_by": user.get("id")}, {"created_by": {"$exists": False}}]}
+    existing_and = f.pop("$and", None)
+    f["$and"] = ([*existing_and, ownership_clause] if existing_and else [ownership_clause])
+    return f
+
+
+def assert_owns_or_404(
+    doc: dict, user: dict, collection: str, *, bypass: bool = False, label: str = "Record",
+) -> dict:
+    """For a single fetched row from OWNED_COLLECTIONS, 404 (never 403 — don't
+    leak that another user's record exists) when an Employee-tier user reads
+    a row they didn't create.
+
+    Rows with created_by IS NULL (everything that existed before this
+    feature shipped — nobody "owns" them in the new system) are deliberately
+    grandfathered as visible to everyone: the alternative (hiding them from
+    every non-admin user until manually reassigned) would look like mass
+    data loss on the day this ships, for data that was never actually
+    private under the old model.
+
+    Call this explicitly at each GET-by-id/PUT/DELETE site for the 7 owned
+    collections — crud_get/crud_update/crud_delete stay untouched since
+    they're shared with dozens of non-owned collections (products, company,
+    settings, ...) where this check would be wrong.
+    """
+    from .auth_utils import bypasses_row_ownership
+    if collection in OWNED_COLLECTIONS and not bypass and not bypasses_row_ownership(user.get("role")):
+        owner = doc.get("created_by")
+        if owner and owner != user.get("id"):
+            raise HTTPException(status_code=404, detail=f"{label} not found")
+    return doc
+
+
+def _tenant_where(Model, stmt):
+    """Append a tenant_id condition to a select()/update-target statement when
+    Model is tenant-scoped and enforcement is on — the core/utils.py-side
+    counterpart of core/_mongo_compat.py's _tenant_cond, needed because
+    crud_get/crud_update/crud_delete use SQLAlchemy select()/session.get()
+    directly rather than going through the compat layer's _to_filter(). Not
+    shared as one function across both modules to avoid a circular import
+    (core/_mongo_compat.py already imports from core/utils.py); both read the
+    same core.tenant.current_tenant()/TENANT_ENFORCEMENT source of truth, so
+    the two implementations can't drift in meaning, only in file location.
+    """
+    if not hasattr(Model, "tenant_id"):
+        return stmt
+    from .tenant import TENANT_BYPASS, TENANT_ENFORCEMENT, current_tenant
+    if not TENANT_ENFORCEMENT:
+        return stmt
+    tenant = current_tenant()
+    if tenant == TENANT_BYPASS:
+        return stmt
+    return stmt.where(Model.tenant_id == tenant)
+
+
 async def crud_get(collection: str, doc_id: str, label: str = "Record") -> dict:
     """Fetch one document by id, or raise 404.
 
     Returns a plain dict (never None) so callers can subscript/`.get()` the
     result directly. `label` customises the 404 message (e.g. "Product not found").
+
+    Uses select(Model).where(...) rather than session.get() (a PK-only
+    lookup with no room for an extra WHERE clause) specifically so this can
+    be tenant-filtered — see _tenant_where. Returns the SAME "not found" 404
+    regardless of whether the row doesn't exist at all or exists in a
+    different tenant, matching the row-ownership feature's "404, never 403 —
+    don't leak that another tenant's/user's record exists" precedent.
     """
     Model = _table(collection)
     async with get_session() as session:
-        row = await session.get(Model, doc_id)
+        stmt = _tenant_where(Model, select(Model).where(Model.id == doc_id))
+        row = (await session.execute(stmt.limit(1))).scalars().first()
         doc = _row_to_dict(row)
     if doc is None:
         raise HTTPException(status_code=404, detail=f"{label} not found")
@@ -714,7 +838,8 @@ async def crud_update(
     updates = _pack_overflow_fields(updates, Model)
 
     async with get_session() as session:
-        row = await session.get(Model, doc_id)
+        stmt = _tenant_where(Model, select(Model).where(Model.id == doc_id))
+        row = (await session.execute(stmt.limit(1))).scalars().first()
         if row is None:
             raise HTTPException(status_code=404, detail=f"{label} not found")
         before = _row_to_dict(row)
@@ -744,7 +869,8 @@ async def crud_delete(collection: str, doc_id: str, user: Optional[dict] = None)
     AuditLog = _AuditLog()
     Model = _table(collection)
     async with get_session() as session:
-        row = await session.get(Model, doc_id)
+        stmt = _tenant_where(Model, select(Model).where(Model.id == doc_id))
+        row = (await session.execute(stmt.limit(1))).scalars().first()
         if row is None:
             return False
         before = _row_to_dict(row)
@@ -759,14 +885,22 @@ async def crud_delete(collection: str, doc_id: str, user: Optional[dict] = None)
 
 
 async def crud_list(collection, q=None, search_fields=None, sort_field="created_at",
-                    sort_dir=-1, filt=None) -> list[dict]:
+                    sort_dir=-1, filt=None, user: Optional[dict] = None,
+                    owner_bypass: bool = False) -> list[dict]:
     """List documents with optional substring search and equality filters.
 
     `q` + `search_fields` build a case-insensitive OR-regex search; `filt`
     carries equality filters. Runs through the Mongo-compat data layer so the
     same call shape works as before the Postgres migration.
+
+    `user`/`owner_bypass`: when `collection` is one of OWNED_COLLECTIONS and
+    `user` is supplied, applies row-level ownership filtering (see
+    apply_ownership_filter). Omitting `user` is a true no-op — every existing
+    caller that doesn't pass it behaves exactly as before.
     """
     f = dict(filt or {})
+    if user is not None:
+        f = apply_ownership_filter(f, user, collection, bypass=owner_bypass)
     if q and search_fields:
         f["$or"] = [{x: {"$regex": q, "$options": "i"}} for x in search_fields]
     from ._mongo_compat import db  # lazy: avoids utils ↔ _mongo_compat cycle
@@ -775,14 +909,20 @@ async def crud_list(collection, q=None, search_fields=None, sort_field="created_
 
 async def paginated_list(collection, *, page=None, limit=None, q=None,
                          search_fields=None, sort_field="created_at", sort_dir=-1,
-                         filt=None, from_date=None, to_date=None, date_field="created_at") -> Any:
+                         filt=None, from_date=None, to_date=None, date_field="created_at",
+                         user: Optional[dict] = None, owner_bypass: bool = False) -> Any:
     """Generic paginated, filterable, searchable list helper.
 
     Returns the standard envelope {total, page, items} when paging params
     are supplied, or a bare array when page/limit are None (backward compat).
     Page/limit are clamped: page>=1, 1<=limit<=200.
+
+    `user`/`owner_bypass`: see crud_list — same row-ownership behavior,
+    same no-op-when-omitted guarantee.
     """
     f = dict(filt or {})
+    if user is not None:
+        f = apply_ownership_filter(f, user, collection, bypass=owner_bypass)
     if q and search_fields:
         f["$or"] = [{x: {"$regex": q, "$options": "i"}} for x in search_fields]
     if from_date or to_date:

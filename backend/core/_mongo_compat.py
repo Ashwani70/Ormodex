@@ -20,6 +20,7 @@ from typing import Any, Optional
 from sqlalchemy import select, func, and_, or_
 
 from .db import get_session
+from .tenant import TENANT_BYPASS, TENANT_ENFORCEMENT, current_tenant
 from .utils import _table, _row_to_dict, new_id, now_iso
 
 # Hard cap on to_list() calls to prevent accidental full-table scans.
@@ -169,6 +170,40 @@ def _to_filter(Model, q: dict):
                 conds.append(col == None)
             else:
                 conds.append(col == v_c)
+    return conds
+
+
+def _tenant_cond(Model):
+    """The extra SQLAlchemy WHERE condition every read/update/delete on a
+    tenant-having Model should carry, or None if this Model isn't
+    tenant-scoped (e.g. GSTINCache, Counter) or enforcement is off.
+
+    Deliberately appended to the conds LIST built by _to_filter(), never
+    merged into the caller's Mongo-style filter dict — so it composes safely
+    with anything already in that dict (including the row-ownership
+    feature's $and/$or ownership clause) via a plain extra AND, with zero
+    key-collision risk. See core/tenant.py's current_tenant() for the
+    fail-closed-when-enforced / no-op-when-not-enforced contract this relies
+    on — while TENANT_ENFORCEMENT is off (this phase), this always returns
+    None, making every call site below a no-op.
+    """
+    if not TENANT_ENFORCEMENT or not hasattr(Model, "tenant_id"):
+        return None
+    tenant = current_tenant()
+    if tenant == TENANT_BYPASS:
+        return None
+    return Model.tenant_id == tenant
+
+
+def _conds_with_tenant(Model, q: dict) -> list:
+    """_to_filter(Model, q) plus the tenant condition, if any — the one call
+    every read/update/delete method in this file should make instead of
+    calling _to_filter() directly, so tenant scoping can never be forgotten
+    at an individual call site."""
+    conds = _to_filter(Model, q)
+    tcond = _tenant_cond(Model)
+    if tcond is not None:
+        conds.append(tcond)
     return conds
 
 
@@ -353,10 +388,9 @@ class MongoCollectionCompat:
             q = self._remap_id(Model, q)
         async with get_session() as session:
             stmt = select(Model)
-            if q:
-                conds = _to_filter(Model, q)
-                if conds:
-                    stmt = stmt.where(and_(*conds))
+            conds = _conds_with_tenant(Model, q or {})
+            if conds:
+                stmt = stmt.where(and_(*conds))
             for field, direction in (sort or []):
                 col = getattr(Model, field, None)
                 if col is not None:
@@ -389,6 +423,8 @@ class MongoCollectionCompat:
             doc.setdefault("created_at", now_iso())
         if hasattr(Model, "updated_at"):
             doc.setdefault("updated_at", now_iso())
+        if TENANT_ENFORCEMENT and hasattr(Model, "tenant_id"):
+            doc.setdefault("tenant_id", current_tenant())
         if self._name == "payslips":
             from .utils import _prepare_payslip_doc
             doc = _prepare_payslip_doc(doc)
@@ -434,6 +470,8 @@ class MongoCollectionCompat:
                 doc.setdefault("id", new_id())
                 doc.setdefault("created_at", now)
                 doc.setdefault("updated_at", now)
+                if TENANT_ENFORCEMENT and hasattr(Model, "tenant_id"):
+                    doc.setdefault("tenant_id", current_tenant())
                 if self._name == "payslips":
                     from .utils import _prepare_payslip_doc
                     doc = _prepare_payslip_doc(doc)
@@ -498,7 +536,7 @@ class MongoCollectionCompat:
         q = self._remap_id(Model, q)
         async with get_session() as session:
             stmt = select(Model)
-            conds = _to_filter(Model, q)
+            conds = _conds_with_tenant(Model, q)
             if conds:
                 stmt = stmt.where(and_(*conds))
             row = (await session.execute(stmt.limit(1))).scalars().first()
@@ -506,6 +544,8 @@ class MongoCollectionCompat:
                 if not upsert:
                     return None
                 doc = _apply_update_to_dict(dict(q), update_doc)
+                if TENANT_ENFORCEMENT and hasattr(Model, "tenant_id"):
+                    doc.setdefault("tenant_id", current_tenant())
                 row = Model(**{k: v for k, v in doc.items() if hasattr(Model, k)})
                 session.add(row)
                 await session.flush()
@@ -522,7 +562,7 @@ class MongoCollectionCompat:
         q = self._remap_id(Model, q)
         async with get_session() as session:
             stmt = select(Model)
-            conds = _to_filter(Model, q)
+            conds = _conds_with_tenant(Model, q)
             if conds:
                 stmt = stmt.where(and_(*conds))
             stmt = stmt.limit(1)
@@ -538,6 +578,8 @@ class MongoCollectionCompat:
                     doc.setdefault("id", new_id())
                     doc.setdefault("created_at", now_iso())
                     doc["updated_at"] = now_iso()
+                    if TENANT_ENFORCEMENT and hasattr(Model, "tenant_id"):
+                        doc.setdefault("tenant_id", current_tenant())
                     new_row = Model(**{k: v for k, v in doc.items() if hasattr(Model, k)})
                     session.add(new_row)
                     self._invalidate_caches(q)
@@ -555,7 +597,7 @@ class MongoCollectionCompat:
             return _FakeUpdateResult(0)
         async with get_session() as session:
             stmt = select(Model)
-            conds = _to_filter(Model, q)
+            conds = _conds_with_tenant(Model, q)
             if conds:
                 stmt = stmt.where(and_(*conds))
             result = await session.execute(stmt)
@@ -602,6 +644,9 @@ class MongoCollectionCompat:
             for i in range(0, len(ids), chunk_size):
                 chunk_ids = ids[i:i + chunk_size]
                 stmt = select(Model).where(Model.id.in_(chunk_ids))
+                tcond = _tenant_cond(Model)
+                if tcond is not None:
+                    stmt = stmt.where(tcond)
                 result = await session.execute(stmt)
                 rows = result.scalars().all()
                 for row in rows:
@@ -618,7 +663,7 @@ class MongoCollectionCompat:
             return _FakeDeleteResult(0)
         async with get_session() as session:
             stmt = select(Model)
-            conds = _to_filter(Model, q)
+            conds = _conds_with_tenant(Model, q)
             if conds:
                 stmt = stmt.where(and_(*conds))
             stmt = stmt.limit(1)
@@ -636,7 +681,7 @@ class MongoCollectionCompat:
             return _FakeDeleteResult(0)
         async with get_session() as session:
             stmt = select(Model)
-            conds = _to_filter(Model, q)
+            conds = _conds_with_tenant(Model, q)
             if conds:
                 stmt = stmt.where(and_(*conds))
             result = await session.execute(stmt)
@@ -654,10 +699,9 @@ class MongoCollectionCompat:
             return 0
         async with get_session() as session:
             stmt = select(func.count()).select_from(Model)
-            if q:
-                conds = _to_filter(Model, q)
-                if conds:
-                    stmt = stmt.where(and_(*conds))
+            conds = _conds_with_tenant(Model, q or {})
+            if conds:
+                stmt = stmt.where(and_(*conds))
             result = await session.execute(stmt)
             return result.scalar_one()
 
@@ -692,10 +736,9 @@ class MongoCollectionCompat:
             return []
         async with get_session() as session:
             stmt = select(col).distinct()
-            if q:
-                conds = _to_filter(Model, q)
-                if conds:
-                    stmt = stmt.where(and_(*conds))
+            conds = _conds_with_tenant(Model, q or {})
+            if conds:
+                stmt = stmt.where(and_(*conds))
             result = await session.execute(stmt)
             return [r for (r,) in result.all() if r is not None]
 
@@ -734,7 +777,7 @@ class MongoFindBuilder:
             return []
         async with get_session() as session:
             stmt = select(self._Model)
-            conds = _to_filter(self._Model, self._q)
+            conds = _conds_with_tenant(self._Model, self._q)
             if conds:
                 stmt = stmt.where(and_(*conds))
             for field, direction in self._sort:
@@ -802,10 +845,9 @@ class MongoAggregateCursor:
 
         async with get_session() as session:
             stmt = select(self._Model)
-            if sql_match:
-                conds = _to_filter(self._Model, sql_match)
-                if conds:
-                    stmt = stmt.where(and_(*conds))
+            conds = _conds_with_tenant(self._Model, sql_match or {})
+            if conds:
+                stmt = stmt.where(and_(*conds))
             rows = (await session.execute(stmt)).scalars().all()
         docs: list[dict] = [d for d in (_row_to_dict(r) for r in rows) if d is not None]
 
