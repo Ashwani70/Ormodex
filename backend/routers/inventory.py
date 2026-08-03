@@ -264,6 +264,52 @@ async def update_product(item_id: str, payload: Product, user: dict = Depends(ge
         data["unit"] = "Nos"
     result = await crud_update("products", item_id, data, user=user)
     await db.stock_items.update_many({"product_id": item_id}, {"$set": {"uom": data["unit"]}})
+
+    stock_item_id = await resolve_stock_item_id_for_product(item_id, user)
+    godown_id = await resolve_godown_id(data.get("warehouse_id"))
+    existing_opening = await db.stock_ledger_entries.find_one({
+        "source_doc_type": "product_opening_stock",
+        "source_doc_id": item_id,
+        "is_deleted": {"$ne": True}
+    })
+    rate = float(data.get("cost_price") or 0)
+
+    if existing_opening is None:
+        # No opening movement posted yet (e.g. product created with qty=0):
+        # the Edit modal's stock field is still effectively the opening qty,
+        # so post it as OPENING rather than an ADJUSTMENT.
+        qty = float(data.get("quantity") or 0)
+        if qty > 0:
+            await post_entry(
+                stock_item_id=stock_item_id, godown_id=godown_id,
+                qty=qty, movement_type="OPENING", rate=rate,
+                source_doc_type="product_opening_stock", source_doc_id=item_id,
+                user=user,
+            )
+    else:
+        # Opening movement already exists — the Edit modal's stock field now
+        # shows *current* on-hand qty, so any change the user makes there is
+        # a correction to on-hand stock, not a rewrite of history. Post it as
+        # a real ADJUSTMENT ledger entry (delta) and leave the original
+        # OPENING entry untouched, so Stock Log keeps an honest audit trail.
+        submitted_qty = data.get("quantity")
+        if submitted_qty is not None:
+            current = await on_hand(stock_item_id, godown_id)
+            delta = float(submitted_qty) - float(current["qty"])
+            if delta != 0:
+                if delta < 0 and float(current["qty"]) + delta < 0:
+                    raise HTTPException(status_code=400, detail="Insufficient stock for this quantity change")
+                adj_rate = rate if delta > 0 else float(current.get("rate") or rate)
+                entry = await post_entry(
+                    stock_item_id=stock_item_id, godown_id=godown_id,
+                    qty=delta, movement_type="ADJUSTMENT", rate=adj_rate,
+                    source_doc_type="product_adjust", source_doc_id=item_id,
+                    user=user,
+                )
+                logger.info(
+                    "product %s: edit-modal stock change posted as adjustment delta=%s entry=%s",
+                    item_id, delta, entry["id"],
+                )
     return result
 
 

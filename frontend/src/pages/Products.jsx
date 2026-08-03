@@ -1093,17 +1093,24 @@ export default function Products() {
               ))}
             </Select>
           </Field>
-          {!editingId && (
-            <Field label="Opening Quantity" hint={form.quantity ? `Initial stock: ${form.quantity} ${form.unit || DEFAULT_UOM}` : "Posted as an OPENING stock movement"}>
-              <Input
-                type="text"
-                inputMode="decimal"
-                data-testid="form-opening-quantity"
-                value={form.quantity}
-                onChange={(e) => setForm({ ...form, quantity: e.target.value })}
-              />
-            </Field>
-          )}
+          <Field
+            label={editingId ? "Stock Quantity" : "Opening Quantity"}
+            hint={
+              editingId
+                ? "Changing this posts a stock adjustment for the difference"
+                : form.quantity
+                ? `Initial stock: ${form.quantity} ${form.unit || DEFAULT_UOM}`
+                : "Posted as an OPENING stock movement"
+            }
+          >
+            <Input
+              type="text"
+              inputMode="decimal"
+              data-testid="form-opening-quantity"
+              value={form.quantity ?? ""}
+              onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+            />
+          </Field>
           <Field label="UOM (Unit of Measure)" required hint="Mandatory unit for stock transactions">
             <div className="flex items-center gap-2">
               <Select
@@ -1138,7 +1145,7 @@ export default function Products() {
               </button>
             </div>
           </Field>
-          <Field label="Cost Price" hint={!editingId ? "Values the opening quantity above (FIFO/LIFO/Weighted-Avg costing)" : undefined}>
+          <Field label="Cost Price" hint="Values the opening quantity above (FIFO/LIFO/Weighted-Avg costing)">
             <Input
               type="text"
               inputMode="decimal"
