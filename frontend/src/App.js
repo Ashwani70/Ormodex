@@ -307,7 +307,7 @@ function App() {
                 <Route
                   path="/admin/po-numbering"
                   element={
-                    <ProtectedRoute adminOnly>
+                    <ProtectedRoute allowedPermission="po_numbering">
                       <PoNumberingSettings />
                     </ProtectedRoute>
                   }
@@ -315,7 +315,7 @@ function App() {
                 <Route
                   path="/admin/document-numbering"
                   element={
-                    <ProtectedRoute adminOnly>
+                    <ProtectedRoute allowedPermission="document_numbering">
                       <DocumentNumberingSettings />
                     </ProtectedRoute>
                   }
@@ -394,7 +394,7 @@ function App() {
                 <Route
                   path="/admin/company-master"
                   element={
-                    <ProtectedRoute adminOnly>
+                    <ProtectedRoute allowedPermission="company_profile">
                       <CompanyMaster />
                     </ProtectedRoute>
                   }

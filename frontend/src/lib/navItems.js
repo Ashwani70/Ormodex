@@ -241,6 +241,9 @@ export function isVisibleToRole(item, userOrRole) {
     if (path.startsWith("/reports") && permissions.includes("reports")) return true;
     if (path.startsWith("/mis-reports") && permissions.includes("mis_reports")) return true;
     if (path.startsWith("/ai-assistant") && permissions.includes("ai_tools")) return true;
+    if (path.startsWith("/admin/company-master") && permissions.includes("company_profile")) return true;
+    if (path.startsWith("/admin/po-numbering") && permissions.includes("po_numbering")) return true;
+    if (path.startsWith("/admin/document-numbering") && permissions.includes("document_numbering")) return true;
   }
 
   // 3. Section header check

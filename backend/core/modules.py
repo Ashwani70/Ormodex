@@ -44,6 +44,11 @@ MODULES: list[tuple[str, str]] = [
     ("audit", "Audit Logs"),
     ("letterhead_design", "Letterhead Designer"),
     ("letterhead_manage", "Letterhead Template Management"),
+    ("company_profile", "Company Profile"),
+    ("po_numbering", "PO Numbering"),
+    ("po_number_edit", "PO Number Manual Entry"),
+    ("po_number_override", "PO Number Override"),
+    ("document_numbering", "Document Numbering"),
 ]
 
 MODULE_KEYS: set[str] = {key for key, _ in MODULES}

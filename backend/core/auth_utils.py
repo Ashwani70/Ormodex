@@ -371,3 +371,21 @@ async def require_payroll_role(user: dict = Depends(get_current_user)) -> dict:
             and "payroll" not in user.get("module_permissions", [])):
         raise HTTPException(status_code=403, detail="HR/Accountant/Admin access required")
     return user
+
+
+async def require_company_profile(user: dict = Depends(get_current_user)) -> dict:
+    if not is_admin_role(user.get("role")) and "company_profile" not in user.get("module_permissions", []):
+        raise HTTPException(status_code=403, detail="Company Profile access required")
+    return user
+
+
+async def require_po_numbering(user: dict = Depends(get_current_user)) -> dict:
+    if not is_admin_role(user.get("role")) and "po_numbering" not in user.get("module_permissions", []):
+        raise HTTPException(status_code=403, detail="PO Numbering access required")
+    return user
+
+
+async def require_document_numbering(user: dict = Depends(get_current_user)) -> dict:
+    if not is_admin_role(user.get("role")) and "document_numbering" not in user.get("module_permissions", []):
+        raise HTTPException(status_code=403, detail="Document Numbering access required")
+    return user

@@ -2,7 +2,7 @@
 from pydantic import BaseModel
 
 from core import cache
-from core.auth_utils import require_admin
+from core.auth_utils import require_admin, require_company_profile
 from core.db import db
 from core.models import CompanyProfile
 from core.stock_valuation import (
@@ -57,13 +57,13 @@ async def get_active_company(tenant: str = Depends(tenant_ctx)):
 
 
 @router.get("")
-async def list_companies(_: dict = Depends(require_admin), tenant: str = Depends(tenant_ctx)):
+async def list_companies(_: dict = Depends(require_company_profile), tenant: str = Depends(tenant_ctx)):
     """List all configured company profiles for this tenant."""
     return await db.companies.find({"tenant_id": tenant}, {"_id": 0}).to_list(100)
 
 
 @router.post("")
-async def create_company(payload: CompanyProfile, _: dict = Depends(require_admin),
+async def create_company(payload: CompanyProfile, _: dict = Depends(require_company_profile),
                          tenant: str = Depends(tenant_ctx)):
     """Create a new company profile for this tenant."""
     data = payload.model_dump()
@@ -85,7 +85,7 @@ class ValuationSettings(BaseModel):
 
 
 @router.get("/valuation-settings")
-async def get_valuation_settings(_: dict = Depends(require_admin), tenant: str = Depends(tenant_ctx)):
+async def get_valuation_settings(_: dict = Depends(require_company_profile), tenant: str = Depends(tenant_ctx)):
     """This tenant's default inventory valuation method.
 
     This is the fallback used for any stock item that doesn't override it. It is
@@ -106,7 +106,7 @@ async def get_valuation_settings(_: dict = Depends(require_admin), tenant: str =
 
 @router.put("/valuation-settings")
 async def update_valuation_settings(
-    payload: ValuationSettings, _: dict = Depends(require_admin), tenant: str = Depends(tenant_ctx),
+    payload: ValuationSettings, _: dict = Depends(require_company_profile), tenant: str = Depends(tenant_ctx),
 ):
     """Set this tenant's default valuation method.
 
@@ -137,7 +137,7 @@ async def update_valuation_settings(
 
 
 @router.put("/{item_id}")
-async def update_company(item_id: str, payload: CompanyProfile, _: dict = Depends(require_admin),
+async def update_company(item_id: str, payload: CompanyProfile, _: dict = Depends(require_company_profile),
                          tenant: str = Depends(tenant_ctx)):
     """Update a company profile, scoped to this tenant.
 

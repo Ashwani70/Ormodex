@@ -13,7 +13,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, field_validator
 
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_document_numbering
 from core import document_numbering as dn
 from core.tenant import tenant_ctx
 
@@ -54,9 +54,9 @@ async def read_settings(doc_type: str, user: dict = Depends(get_current_user),
 
 
 @router.post("/{doc_type}")
-async def write_settings(doc_type: str, payload: DocumentNumberingSettings, user: dict = Depends(require_admin),
+async def write_settings(doc_type: str, payload: DocumentNumberingSettings, user: dict = Depends(require_document_numbering),
                          tenant: str = Depends(tenant_ctx)):
-    """Save numbering settings for one document type (admin only)."""
+    """Save numbering settings for one document type (admin, or a role granted the document_numbering permission)."""
     return await dn.save_settings(doc_type, payload.model_dump(), user=user, tenant_id=tenant)
 
 

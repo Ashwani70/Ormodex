@@ -8,7 +8,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, field_validator
 
-from core.auth_utils import get_current_user, require_admin
+from core.auth_utils import get_current_user, require_po_numbering
 from core import po_numbering as pn
 from core.tenant import tenant_ctx
 
@@ -40,9 +40,9 @@ async def read_settings(user: dict = Depends(get_current_user), tenant: str = De
 
 
 @router.post("")
-async def write_settings(payload: PONumberingSettings, user: dict = Depends(require_admin),
+async def write_settings(payload: PONumberingSettings, user: dict = Depends(require_po_numbering),
                           tenant: str = Depends(tenant_ctx)):
-    """Save numbering settings (admin only)."""
+    """Save numbering settings (admin, or a role granted the po_numbering permission)."""
     return await pn.save_settings(payload.model_dump(), user=user, tenant_id=tenant)
 
 
