@@ -377,6 +377,9 @@ export default function JobWorkChallan() {
                         onChange={(e) => setLine(idx, { unit: e.target.value })}
                         className="h-10 w-full rounded-[var(--radius-md)] bg-surface border border-input text-foreground text-sm px-1 focus:border-primary focus:outline-none"
                       >
+                        {it.unit && !STANDARD_UOMS.includes(it.unit) && (
+                          <option key={it.unit} value={it.unit}>{it.unit}</option>
+                        )}
                         {STANDARD_UOMS.map((u) => <option key={u} value={u}>{u}</option>)}
                       </select>
                     </td>

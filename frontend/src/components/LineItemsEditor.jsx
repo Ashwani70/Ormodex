@@ -209,6 +209,9 @@ export default function LineItemsEditor({ items, setItems, products }) {
                         onKeyDown={gridNav.handleKeyDown(idx, col(idx, "unit"))}
                         className="w-full bg-background border border-input text-foreground text-sm px-2 py-1 focus:border-primary focus:outline-none transition-colors"
                       >
+                        {it.unit && !STANDARD_UOMS.includes(it.unit) && (
+                          <option key={it.unit} value={it.unit}>{it.unit}</option>
+                        )}
                         {STANDARD_UOMS.map((u) => <option key={u} value={u}>{u}</option>)}
                       </select>
                     </td>

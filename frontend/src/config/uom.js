@@ -8,7 +8,7 @@
 // can fetch it at load time should prefer that over this static fallback.
 
 export const STANDARD_UOMS = [
-  "Nos", "Kg", "Gram", "Meter", "Feet", "Inch",
+  "Nos", "Pcs", "Kg", "Gram", "Meter", "Feet", "Inch",
   "Litre", "Box", "Bundle", "Pair", "Roll", "Set", "Bag", "Ton",
 ];
 

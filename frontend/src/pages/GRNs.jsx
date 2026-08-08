@@ -546,6 +546,9 @@ export default function GRNs() {
                           <td className="px-2 py-2">
                             <Select value={l.unit || DEFAULT_UOM} onChange={(e) => setLine(idx, { unit: e.target.value })}
                               ref={gridNav.registerCell(idx, 6)} onKeyDown={gridNav.handleKeyDown(idx, 6)} className="h-10">
+                              {l.unit && !STANDARD_UOMS.includes(l.unit) && (
+                                <option key={l.unit} value={l.unit}>{l.unit}</option>
+                              )}
                               {STANDARD_UOMS.map((u) => <option key={u} value={u}>{u}</option>)}
                             </Select>
                           </td>

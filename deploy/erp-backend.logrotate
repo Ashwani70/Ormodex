@@ -1,0 +1,20 @@
+# Ormodex ERP — logrotate policy for backend app logs.
+# Install: sudo cp deploy/erp-backend.logrotate /etc/logrotate.d/erp-backend
+#
+# Nginx's own access/error logs already have a distro-provided logrotate
+# policy at /etc/logrotate.d/nginx — this file only covers what the app
+# itself writes (Gunicorn access/error logs, backup script log).
+
+/var/www/erp/backend/logs/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 erpapp erpapp
+    sharedscripts
+    postrotate
+        systemctl reload erp-backend >/dev/null 2>&1 || true
+    endscript
+}

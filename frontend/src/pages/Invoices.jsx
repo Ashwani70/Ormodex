@@ -703,6 +703,9 @@ export default function Invoices() {
                         <td className="px-2 py-2">
                           <Select value={l.unit || DEFAULT_UOM} onChange={(e) => setLine(idx, { unit: e.target.value })}
                             ref={gridNav.registerCell(idx, 2)} onKeyDown={gridNav.handleKeyDown(idx, 2)} className="h-10">
+                            {l.unit && !STANDARD_UOMS.includes(l.unit) && (
+                              <option key={l.unit} value={l.unit}>{l.unit}</option>
+                            )}
                             {STANDARD_UOMS.map((u) => <option key={u} value={u}>{u}</option>)}
                           </Select>
                         </td>

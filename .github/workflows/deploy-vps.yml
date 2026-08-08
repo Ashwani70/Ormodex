@@ -1,0 +1,122 @@
+name: Deploy to Hostinger VPS
+
+# Runs the existing test gate (mirrors deploy.yml's jobs) then SSHes into the
+# VPS and runs deploy/deploy.sh, which pulls, installs deps, migrates,
+# rebuilds the frontend, and restarts the backend service.
+#
+# This workflow is for the self-managed Hostinger VPS path
+# (docs/HOSTINGER_VPS_DEPLOYMENT_GUIDE.md). If you're still on Railway/Vercel
+# (docs/PRODUCTION_DEPLOYMENT_GUIDE.md), that path auto-deploys via each
+# platform's own Git integration and does NOT use this workflow — disable
+# whichever path you're not using so you don't deploy the same push twice.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   VPS_HOST        - server IP or hostname (e.g. 187.127.219.89)
+#   VPS_SSH_USER     - deploy user, e.g. erpapp
+#   VPS_SSH_KEY      - private key (ed25519) for erpapp, matching a public
+#                      key already in erpapp's ~/.ssh/authorized_keys
+#   VPS_SSH_PORT     - optional, defaults to 22
+#   DATABASE_URL     - same Supabase pooler URL, used only to gate migrations
+#                      in the test-backend job (same as deploy.yml)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-vps-production
+  cancel-in-progress: false
+
+jobs:
+  test-backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gravity_erp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run database migrations
+        env:
+          DATABASE_URL: "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/gravity_erp"
+        run: alembic upgrade head
+      - name: Run test suite
+        env:
+          DATABASE_URL: "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/gravity_erp"
+          JWT_SECRET: "ci-only-secret-not-for-production-use"
+          BYPASS_RATE_LIMIT: "true"
+        run: pytest -q
+
+  test-frontend:
+    name: Frontend build check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+      - name: Production build
+        run: npm run build
+        env:
+          CI: "false"
+
+  deploy:
+    name: Deploy to VPS
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Verify required secrets are configured
+        run: |
+          missing=()
+          [[ -z "${{ secrets.VPS_HOST }}" ]] && missing+=("VPS_HOST")
+          [[ -z "${{ secrets.VPS_SSH_USER }}" ]] && missing+=("VPS_SSH_USER")
+          [[ -z "${{ secrets.VPS_SSH_KEY }}" ]] && missing+=("VPS_SSH_KEY")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Missing repository secrets: ${missing[*]}"
+            exit 1
+          fi
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_SSH_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_SSH_PORT || 22 }}
+          timeout: 60s
+          command_timeout: 15m
+          script: |
+            set -e
+            bash /var/www/erp/deploy/deploy.sh

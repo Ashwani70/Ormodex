@@ -29,6 +29,7 @@ def test_uom_listing_and_creation(admin_session):
     uoms = resp.json()
     assert isinstance(uoms, list)
     assert "Nos" in uoms
+    assert "Pcs" in uoms
     assert "Kg" in uoms
     assert "Meter" in uoms
     assert "Litre" in uoms

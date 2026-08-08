@@ -318,6 +318,22 @@ async def summary(
         product_id, warehouse_id, from_date, to_date, doc_type, user_id, status, q
     )
 
+    # When from_date is unset, OPENING_STOCK rows are excluded from the
+    # in/out totals below — they represent a starting balance (reported
+    # separately as openingStock), not period movement. Without this, a
+    # product whose only transaction is its Opening Stock voucher would
+    # double-count that quantity into both openingStock AND totalInward,
+    # inflating closingStock (opening + in - out) by the opening amount.
+    # When from_date IS set, OPENING_STOCK rows before it are already
+    # folded into the opening_qty query below and excluded from this range
+    # by the date filter itself, so no extra exclusion is needed there.
+    agg_where_clause = where_clause
+    if not from_date and doc_type != "OPENING_STOCK":
+        agg_where_clause = (
+            f"{where_clause} AND t.doc_type != 'OPENING_STOCK'" if where_clause
+            else "WHERE t.doc_type != 'OPENING_STOCK'"
+        )
+
     agg_sql = text(f"""
         SELECT
             COALESCE(SUM(CASE WHEN t.delta > 0 THEN t.delta ELSE 0 END), 0) AS total_in,
@@ -329,16 +345,17 @@ async def summary(
         FROM stock_transactions t
         LEFT JOIN godowns g ON g.id = t.godown_id
         LEFT JOIN products p ON p.id = t.product_id
-        {where_clause}
+        {agg_where_clause}
     """)
 
-    # Opening stock: net movement for this product/warehouse scope strictly
-    # before from_date (defaults to 0 when no from_date is set — the whole
-    # ledger is then "the period").
-    opening_where, opening_params = _build_filters(
-        product_id, warehouse_id, None, None, None, None, None, None
-    )
-    opening_sql = None
+    # Opening stock: when from_date is set, it's the net movement strictly
+    # before that date (the balance carried into the filtered period). When
+    # no from_date is set, the "period" is the whole ledger, so opening
+    # stock is whatever was posted via an explicit OPENING_STOCK voucher —
+    # those rows represent a starting balance, not an inward movement, and
+    # must still show up here even with no earlier date to compare against
+    # (previously this branch fell through and returned 0, hiding a real
+    # Opening Stock voucher already sitting in stock_transactions).
     if from_date:
         opening_sql = text(f"""
             SELECT COALESCE(SUM(t.delta), 0) AS opening_qty
@@ -347,6 +364,20 @@ async def summary(
             {"AND t.product_id = :product_id" if product_id else ""}
             {"AND t.godown_id = :warehouse_id" if warehouse_id else ""}
         """)
+        opening_params: dict[str, Any] = {"from_date": from_date}
+    else:
+        opening_sql = text(f"""
+            SELECT COALESCE(SUM(t.delta), 0) AS opening_qty
+            FROM stock_transactions t
+            WHERE t.doc_type = 'OPENING_STOCK'
+            {"AND t.product_id = :product_id" if product_id else ""}
+            {"AND t.godown_id = :warehouse_id" if warehouse_id else ""}
+        """)
+        opening_params = {}
+    if product_id:
+        opening_params["product_id"] = product_id
+    if warehouse_id:
+        opening_params["warehouse_id"] = warehouse_id
 
     negative_stock_sql = text("""
         SELECT COUNT(*) FROM (
@@ -359,16 +390,8 @@ async def summary(
 
     async with get_session() as session:
         agg = (await session.execute(agg_sql, params)).mappings().first()
-        opening_qty = 0.0
-        if opening_sql is not None:
-            op_params = {"from_date": from_date}
-            if product_id:
-                op_params["product_id"] = product_id
-            if warehouse_id:
-                op_params["warehouse_id"] = warehouse_id
-            opening_row = (await session.execute(opening_sql, op_params)).mappings().first()
-            if opening_row is not None:
-                opening_qty = float(opening_row["opening_qty"] or 0)
+        opening_row = (await session.execute(opening_sql, opening_params)).mappings().first()
+        opening_qty = float(opening_row["opening_qty"] or 0) if opening_row is not None else 0.0
         negative_count = (await session.execute(negative_stock_sql)).scalar() or 0
         pending_transfers = (await session.execute(text(
             "SELECT COUNT(*) FROM stock_transfers WHERE status = 'PENDING'"

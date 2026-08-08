@@ -772,6 +772,9 @@ export default function PurchaseOrdersV2() {
                             <Select value={l.unit || DEFAULT_UOM} onChange={(e) => setLine(idx, { unit: e.target.value })}
                               ref={gridNav.registerCell(idx, 4)} onKeyDown={gridNav.handleKeyDown(idx, 4)}
                               className="h-9 px-1.5">
+                              {l.unit && !STANDARD_UOMS.includes(l.unit) && (
+                                <option key={l.unit} value={l.unit}>{l.unit}</option>
+                              )}
                               {STANDARD_UOMS.map((u) => <option key={u} value={u}>{u}</option>)}
                             </Select>
                           </td>

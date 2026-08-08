@@ -1818,6 +1818,9 @@ export default function JobWork() {
                             ref={challanGridNav.registerCell(idx, 4)}
                             onKeyDown={challanGridNav.handleKeyDown(idx, 4)}
                           >
+                            {item.unit && !STANDARD_UOMS.includes(item.unit) && (
+                              <option key={item.unit} value={item.unit}>{item.unit}</option>
+                            )}
                             {STANDARD_UOMS.map(u => <option key={u} value={u}>{u}</option>)}
                           </Select>
                         </td>
