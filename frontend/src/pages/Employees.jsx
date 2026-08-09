@@ -5,7 +5,7 @@ import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import QRCode from "react-qr-code";
-import api, { formatApiErrorDetail } from "@/lib/api";
+import api, { BACKEND_URL, formatApiErrorDetail } from "@/lib/api";
 import {
   PageHeader,
   PrimaryButton,
@@ -171,8 +171,7 @@ export default function Employees() {
     }
   };
 
-  const backend = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
-  const qrUrl = qrEmp ? `${backend.replace(/\/$/, "")}/qr/${qrEmp.qr_token}` : "";
+  const qrUrl = qrEmp ? `${BACKEND_URL.replace(/\/$/, "")}/qr/${qrEmp.qr_token}` : "";
 
   return (
     <div data-testid="employees-page">

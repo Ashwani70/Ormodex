@@ -1,9 +1,7 @@
 ﻿import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import api from "@/lib/api";
+import api, { BACKEND_URL } from "@/lib/api";
 import { Hammer, Download, ReceiptText } from "lucide-react";
-
-const BACKEND = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 
 export default function PayslipShare() {
   const { token } = useParams();
@@ -28,7 +26,7 @@ export default function PayslipShare() {
           <div className={`w-10 h-10 flex items-center justify-center overflow-hidden ${company?.logo_url ? "bg-white" : "bg-yellow-400"}`}>
             {company?.logo_url ? (
               <img
-                src={`${BACKEND}/api/public/logo`}
+                src={`${BACKEND_URL}/api/public/logo`}
                 alt="Logo"
                 className="w-full h-full object-contain p-0.5"
               />
@@ -64,7 +62,7 @@ export default function PayslipShare() {
               </div>
               <div className="mt-2 text-xs text-zinc-400">{info.amount_in_words}</div>
               <a
-                href={`${BACKEND}/api/hr/public/payslip/${token}/pdf`}
+                href={`${BACKEND_URL}/api/hr/public/payslip/${token}/pdf`}
                 target="_blank"
                 rel="noreferrer"
                 data-testid="public-payslip-pdf"
