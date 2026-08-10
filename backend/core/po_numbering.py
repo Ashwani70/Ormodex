@@ -90,6 +90,14 @@ async def _next_sequence(settings: dict, tenant_id: str) -> int:
             await db.counters.insert_one({"_id": counter_key, "seq": start - 1})
         except Exception:
             pass
+    elif existing.get("seq", 0) < start - 1:
+        try:
+            await db.counters.update_one(
+                {"_id": counter_key},
+                {"$set": {"seq": start - 1}}
+            )
+        except Exception:
+            pass
 
     res = await db.counters.find_one_and_update(
         {"_id": counter_key},
