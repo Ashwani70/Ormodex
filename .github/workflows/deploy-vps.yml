@@ -124,21 +124,16 @@ jobs:
             set -euo pipefail
 
             APP_ROOT="/var/www/erp"
+            BRANCH="main"
 
-            # Bootstrap: /var/www/erp is normally cloned once by hand (see
-            # docs/HOSTINGER_VPS_DEPLOYMENT_GUIDE.md step 5). If that step was
-            # skipped, or the directory was wiped/reset, deploy.sh itself can't
-            # help — it lives *inside* the clone it's supposed to update. This
-            # makes a first-time or drifted VPS self-heal instead of failing
-            # with "deploy.sh: No such file or directory" forever.
+            # erpapp's sudo grant (guide step 4) is scoped to exactly four
+            # systemctl/nginx commands — no mkdir/chown — so directory
+            # creation below only works (by design) when deploy/setup_server.sh
+            # already created and chowned $APP_ROOT to erpapp (its step 4).
+            # Never sudo here: a non-interactive SSH session would just hang
+            # on a password prompt it can never answer instead of failing fast.
             if [[ ! -d "$APP_ROOT/.git" ]]; then
               echo "== $APP_ROOT is not a git clone yet — bootstrapping =="
-              # erpapp's sudo grant (guide step 4) is scoped to exactly four
-              # systemctl/nginx commands — no mkdir/chown — so this only works
-              # (by design) when deploy/setup_server.sh already created and
-              # chowned $APP_ROOT to erpapp (its step 4). Don't sudo here: a
-              # non-interactive SSH session would just hang on a password
-              # prompt it can never answer instead of failing fast.
               if [[ ! -d "$APP_ROOT" ]]; then
                 echo "::error::$APP_ROOT doesn't exist at all. Run deploy/setup_server.sh on the VPS first (see docs/HOSTINGER_VPS_DEPLOYMENT_GUIDE.md steps 1-4) — it creates and owns this directory for erpapp." >&2
                 exit 1
@@ -154,22 +149,44 @@ jobs:
                 exit 1
               fi
               echo "== First-time clone complete =="
-
-              # deploy.sh assumes backend/.env + frontend/.env already exist
-              # (it never writes secrets — see its own header comment) and
-              # that erp-backend.service is already installed. Those are the
-              # manual, one-time steps in docs/HOSTINGER_VPS_DEPLOYMENT_GUIDE.md
-              # (steps 6-9) — check for them now and fail with a clear pointer
-              # rather than letting deploy.sh die confusingly inside alembic
-              # or systemctl.
-              missing_setup=()
-              [[ -f "$APP_ROOT/backend/.env" ]] || missing_setup+=("backend/.env (guide step 6)")
-              [[ -f "$APP_ROOT/frontend/.env" ]] || missing_setup+=("frontend/.env (guide step 7)")
-              systemctl list-unit-files erp-backend.service >/dev/null 2>&1 || missing_setup+=("erp-backend.service not installed (guide step 8)")
-              if [[ ${#missing_setup[@]} -gt 0 ]]; then
-                echo "::error::First-time VPS setup is incomplete. This looks like a brand-new clone with the following steps from docs/HOSTINGER_VPS_DEPLOYMENT_GUIDE.md still needed: ${missing_setup[*]}. Complete those manually over SSH once, then re-run this workflow." >&2
-                exit 1
-              fi
+            else
+              # The most common real-world case: $APP_ROOT IS a git clone, but
+              # it's stale — checked out at a commit from before deploy.sh (or
+              # some other file deploy.sh now depends on) existed, and nothing
+              # has pulled since. deploy.sh can't fix this itself: it lives
+              # *inside* the tree it's meant to update, so if this fast-forward
+              # is skipped, an old checkout stays permanently stuck re-failing
+              # with "No such file or directory" on every push, no matter how
+              # many times the file is added upstream.
+              echo "== $APP_ROOT already a git clone — fast-forwarding to origin/$BRANCH =="
+              git -C "$APP_ROOT" remote set-url origin "$REPO_URL"
+              git -C "$APP_ROOT" fetch origin "$BRANCH"
+              git -C "$APP_ROOT" reset --hard "origin/$BRANCH"
             fi
+
+            # deploy.sh assumes backend/.env + frontend/.env already exist (it
+            # never writes secrets — see its own header comment) and that
+            # erp-backend.service is already installed. Those are manual,
+            # one-time steps in docs/HOSTINGER_VPS_DEPLOYMENT_GUIDE.md (steps
+            # 6-9) — check for them now and fail with a clear pointer rather
+            # than letting deploy.sh die confusingly inside alembic/systemctl.
+            missing_setup=()
+            [[ -f "$APP_ROOT/backend/.env" ]] || missing_setup+=("backend/.env (guide step 6)")
+            [[ -f "$APP_ROOT/frontend/.env" ]] || missing_setup+=("frontend/.env (guide step 7)")
+            systemctl list-unit-files erp-backend.service >/dev/null 2>&1 || missing_setup+=("erp-backend.service not installed (guide step 8)")
+            if [[ ${#missing_setup[@]} -gt 0 ]]; then
+              echo "::error::VPS setup is incomplete — missing: ${missing_setup[*]}. Complete these manually over SSH per docs/HOSTINGER_VPS_DEPLOYMENT_GUIDE.md, then re-run this workflow." >&2
+              exit 1
+            fi
+
+            test -f "$APP_ROOT/deploy/deploy.sh" || {
+              echo "::error::$APP_ROOT/deploy/deploy.sh still missing after syncing to origin/$BRANCH — the file may have been removed upstream, or the fetch/reset above didn't reach the commit that adds it. Check 'git -C $APP_ROOT log --oneline -1' on the VPS." >&2
+              exit 1
+            }
+            chmod +x "$APP_ROOT/deploy/deploy.sh"
+            test -x "$APP_ROOT/deploy/deploy.sh" || {
+              echo "::error::$APP_ROOT/deploy/deploy.sh exists but is not executable even after chmod +x — check filesystem permissions/mount options on $APP_ROOT." >&2
+              exit 1
+            }
 
             bash "$APP_ROOT/deploy/deploy.sh"
