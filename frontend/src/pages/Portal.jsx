@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect, useCallback } from "react";
 import portalApi, { setPortalToken, getPortalTokenAsync } from "@/lib/portalApi";
+import { BACKEND_URL } from "@/lib/api";
 import { toast } from "sonner";
 import axios from "axios";
 

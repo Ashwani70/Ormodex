@@ -5,7 +5,7 @@ import { useModuleShortcuts } from "@/hooks/useModuleShortcuts";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import QRCode from "react-qr-code";
-import api, { formatApiErrorDetail } from "@/lib/api";
+import api, { BACKEND_URL, formatApiErrorDetail } from "@/lib/api";
 import {
   PageHeader,
   PrimaryButton,
