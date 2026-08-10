@@ -1,0 +1,15 @@
+[2026-08-10 11:23:41 +0000] [10439] [INFO] Starting gunicorn 22.0.0
+[2026-08-10 11:23:41 +0000] [10439] [INFO] Listening at: http://127.0.0.1:8001 (10439)
+[2026-08-10 11:23:41 +0000] [10439] [INFO] Using worker: uvicorn.workers.UvicornWorker
+[2026-08-10 11:23:41 +0000] [10440] [INFO] Booting worker with pid: 10440
+[2026-08-10 11:23:41 +0000] [10440] [INFO] Started server process [10440]
+[2026-08-10 11:23:41 +0000] [10440] [INFO] Waiting for application startup.
+[2026-08-10 11:23:41 +0000] [10440] [INFO] Application startup complete.
+[2026-08-10 11:23:41 +0000] [10442] [INFO] Booting worker with pid: 10442
+[2026-08-10 11:23:41 +0000] [10443] [INFO] Booting worker with pid: 10443
+[2026-08-10 11:23:41 +0000] [10442] [INFO] Started server process [10442]
+[2026-08-10 11:23:41 +0000] [10442] [INFO] Waiting for application startup.
+[2026-08-10 11:23:41 +0000] [10442] [INFO] Application startup complete.
+[2026-08-10 11:23:41 +0000] [10443] [INFO] Started server process [10443]
+[2026-08-10 11:23:41 +0000] [10443] [INFO] Waiting for application startup.
+[2026-08-10 11:23:41 +0000] [10443] [INFO] Application startup complete.

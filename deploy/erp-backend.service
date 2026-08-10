@@ -18,11 +18,11 @@ After=network.target
 Type=notice
 User=erpapp
 Group=erpapp
-WorkingDirectory=/var/www/erp/backend
-EnvironmentFile=/var/www/erp/backend/.env
-ExecStart=/var/www/erp/backend/venv/bin/gunicorn \
+WorkingDirectory=/var/www/erp/Ormodex/backend
+EnvironmentFile=/var/www/erp/Ormodex/backend/.env
+ExecStart=/var/www/erp/Ormodex/backend/venv/bin/gunicorn \
     -k uvicorn.workers.UvicornWorker \
-    -c /var/www/erp/backend/gunicorn.conf.py \
+    -c /var/www/erp/Ormodex/backend/gunicorn.conf.py \
     main:app
 
 ExecReload=/bin/kill -s HUP $MAINPID
@@ -36,7 +36,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/www/erp/backend/uploads /var/www/erp/backend/logs
+ReadWritePaths=/var/www/erp/Ormodex/backend/uploads /var/www/erp/Ormodex/backend/logs
 LimitNOFILE=65536
 
 # ── Resource limits (tune for your VPS plan) ────────────────────────────

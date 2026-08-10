@@ -171,7 +171,7 @@ export default function Employees() {
     }
   };
 
-  const backend = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
+  const backend = process.env.REACT_APP_BACKEND_URL || "https://api.ormodex.com";
   const qrUrl = qrEmp ? `${backend.replace(/\/$/, "")}/qr/${qrEmp.qr_token}` : "";
 
   return (

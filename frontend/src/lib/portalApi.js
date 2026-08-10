@@ -13,7 +13,7 @@ const portalTokenHydrated = secureGet(PORTAL_TOKEN_KEY).then((v) => { portalToke
 const BACKEND_URL =
   (typeof window !== "undefined" && window.__GRAVITYONE_BACKEND_URL__) ||
   process.env.REACT_APP_BACKEND_URL ||
-  "http://localhost:8000";
+  "https://api.ormodex.com";
 export const PORTAL_API = `${BACKEND_URL}/api/portal`;
 
 // A SEPARATE client from the internal `api` — its own baseURL and its own

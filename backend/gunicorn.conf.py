@@ -26,8 +26,8 @@ timeout = 60
 graceful_timeout = 30
 keepalive = 5
 
-accesslog = "/var/www/erp/backend/logs/access.log"
-errorlog = "/var/www/erp/backend/logs/error.log"
+accesslog = "/var/www/erp/Ormodex/backend/logs/access.log"
+errorlog = "/var/www/erp/Ormodex/backend/logs/error.log"
 loglevel = os.getenv("GUNICORN_LOG_LEVEL", "info")
 
 preload_app = True

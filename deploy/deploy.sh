@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-APP_ROOT="/var/www/erp"
+APP_ROOT="/var/www/erp/Ormodex"
 BRANCH="${DEPLOY_BRANCH:-main}"
 
 cd "$APP_ROOT"

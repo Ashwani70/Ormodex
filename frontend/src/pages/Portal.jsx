@@ -241,7 +241,7 @@ export default function Portal() {
   const [company, setCompany] = useState(null);
 
   useEffect(() => {
-    const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
+    const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "https://api.ormodex.com";
     axios.get(`${BACKEND_URL}/api/company/active`)
       .then((res) => setCompany(res.data))
       .catch((err) => console.error("Failed to fetch active company", err));

@@ -11,7 +11,7 @@
 set -euo pipefail
 
 APP_USER="erpapp"
-APP_ROOT="/var/www/erp"
+APP_ROOT="/var/www/erp/Ormodex"
 DOMAIN="${1:-}"
 
 if [[ $EUID -ne 0 ]]; then

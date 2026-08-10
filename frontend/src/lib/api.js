@@ -6,7 +6,7 @@ import { getToken, setToken, clearToken } from "./tokenStore";
 const BACKEND_URL =
   (typeof window !== "undefined" && window.__GRAVITYONE_BACKEND_URL__) ||
   process.env.REACT_APP_BACKEND_URL ||
-  "http://localhost:8000";
+  "https://api.ormodex.com";
 export const API = `${BACKEND_URL}/api`;
 
 const api = axios.create({
