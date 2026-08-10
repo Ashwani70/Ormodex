@@ -7,6 +7,7 @@ from core.auth_utils import (
     create_refresh_token,
     get_current_user,
     is_locked_out,
+    issue_csrf_cookie,
     jwt_secret,
     record_failed_login,
     record_successful_login,
@@ -532,6 +533,21 @@ async def _apply_password_reset(user: dict, new_password: str) -> None:
 @router.get("/me")
 async def me(user: dict = Depends(get_current_user)):
     return user
+
+
+@router.get("/csrf")
+async def issue_csrf(response: Response, user: dict = Depends(get_current_user)):
+    """Re-issue the CSRF double-submit cookie for the current session.
+
+    GET is a CSRF-safe method (see server.py's csrf_check), so this can't be
+    used to forge a state change — it only lets an already-authenticated
+    session recover from a stale/rotated csrf_token cookie (e.g. after a
+    token refresh reissued it, see set_auth_cookies) without forcing a full
+    re-login. The frontend calls this once and retries on a 403 whose detail
+    matches CSRF_MISMATCH_DETAIL (see api.js).
+    """
+    token = issue_csrf_cookie(response)
+    return {"csrf_token": token}
 
 
 @router.post("/refresh")

@@ -225,6 +225,27 @@ async def revoke_user_devices(user_id: str) -> None:
         )
 
 
+def issue_csrf_cookie(response: Response, remember_me: bool = True) -> str:
+    """Set (or re-set) the non-httponly CSRF double-submit cookie and return
+    its value. The frontend JS reads this cookie and echoes it back as
+    X-CSRF-Token on state-changing requests (see server.py's csrf_check
+    middleware) — it only proves "this JS runs on our origin", not
+    authentication, so exposing it to JS is the whole point.
+
+    Factored out of set_auth_cookies so routers/auth.py's GET /auth/csrf can
+    reissue just this cookie (a CSRF-safe GET) when a client's copy has gone
+    stale relative to the server's — e.g. after /auth/refresh rotates it —
+    without forcing a full re-login.
+    """
+    is_prod = os.environ.get("ENV", "development").lower() == "production"
+    secure = is_prod
+    samesite: Literal["lax", "strict", "none"] = "none" if is_prod else "lax"
+    max_age = ACCESS_TOKEN_MIN * 60 if remember_me else None
+    token = uuid.uuid4().hex
+    response.set_cookie("csrf_token", token, httponly=False, secure=secure, samesite=samesite, max_age=max_age, path="/")
+    return token
+
+
 def set_auth_cookies(response: Response, access: str, refresh: str, remember_me: bool = True):
     """Set the access/refresh cookies, plus a non-httponly CSRF double-submit
     cookie the frontend echoes back as X-CSRF-Token on state-changing requests
@@ -240,10 +261,7 @@ def set_auth_cookies(response: Response, access: str, refresh: str, remember_me:
     refresh_max_age = REFRESH_TOKEN_DAYS * 86400 if remember_me else None
     response.set_cookie("access_token", access, httponly=True, secure=secure, samesite=samesite, max_age=access_max_age, path="/")
     response.set_cookie("refresh_token", refresh, httponly=True, secure=secure, samesite=samesite, max_age=refresh_max_age, path="/")
-    # Deliberately NOT httponly — the frontend JS must be able to read this to
-    # echo it back as a header. It only proves "this JS runs on our origin",
-    # not authentication, so exposing it to JS is the whole point.
-    response.set_cookie("csrf_token", uuid.uuid4().hex, httponly=False, secure=secure, samesite=samesite, max_age=access_max_age, path="/")
+    issue_csrf_cookie(response, remember_me=remember_me)
 
 
 def clear_auth_cookies(response: Response):

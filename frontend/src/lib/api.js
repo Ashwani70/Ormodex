@@ -67,20 +67,53 @@ const processQueue = (error, token = null) => {
   failedQueue = [];
 };
 
+// Matches server.py's CSRF_MISMATCH_DETAIL — a 403 with this exact detail
+// means the CSRF double-submit cookie went stale (e.g. rotated by a token
+// refresh, see auth_utils.py's issue_csrf_cookie) rather than a real
+// authorization failure, so it's safe to self-heal by fetching a fresh
+// cookie and retrying once instead of surfacing a dead-end error.
+const CSRF_MISMATCH_DETAIL = "CSRF token missing or invalid. Refreshing session — please retry.";
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
+    const rawDetail =
+      error.response?.data?.detail ??
+      error.response?.data?.message ??
+      error.response?.data?.error;
 
-    if (error.response && error.response.data && error.response.data.detail) {
-      error.response.data.detail = formatApiErrorDetail(error.response.data.detail, error);
+    if (
+      error.response &&
+      error.response.status === 403 &&
+      rawDetail === CSRF_MISMATCH_DETAIL &&
+      originalRequest &&
+      !originalRequest._csrfRetry
+    ) {
+      originalRequest._csrfRetry = true;
+      try {
+        await axios.get(`${API}/auth/csrf`, { withCredentials: true, timeout: 30000 });
+        return api(originalRequest);
+      } catch {
+        // Fall through to normal error handling below (e.g. not logged in).
+      }
+    }
+
+    const formattedDetail = formatApiErrorDetail(rawDetail, error);
+    if (!error.response) {
+      error.response = { data: { detail: formattedDetail } };
+    } else if (!error.response.data || typeof error.response.data !== "object") {
+      error.response.data = { detail: formattedDetail };
+    } else {
+      error.response.data.detail = formattedDetail;
     }
 
     if (error.response && error.response.status === 401 && !originalRequest._retry) {
       if (
-        originalRequest.url.includes("/auth/login") ||
-        originalRequest.url.includes("/auth/refresh") ||
-        originalRequest.url.includes("/auth/logout")
+        originalRequest.url &&
+        (originalRequest.url.includes("/auth/login") ||
+          originalRequest.url.includes("/auth/refresh") ||
+          originalRequest.url.includes("/auth/logout"))
       ) {
         return Promise.reject(error);
       }
@@ -132,7 +165,34 @@ api.interceptors.response.use(
 );
 
 export function formatApiErrorDetail(detail, error) {
+  if (detail && (detail.isAxiosError || detail.message || detail.response || detail.config)) {
+    error = detail;
+    detail =
+      error.response?.data?.detail ??
+      error.response?.data?.message ??
+      error.response?.data?.error;
+  }
+
   const err = error || (detail && (detail.isAxiosError || detail.message) ? detail : null);
+
+  if (typeof detail === "string" && detail.trim()) return detail;
+
+  if (Array.isArray(detail) && detail.length > 0) {
+    const formattedArray = detail
+      .map((e) => {
+        if (!e) return "";
+        if (typeof e === "string") return e;
+        if (typeof e.msg === "string") return e.msg;
+        if (typeof e.detail === "string") return e.detail;
+        return JSON.stringify(e);
+      })
+      .filter(Boolean)
+      .join(" ");
+    if (formattedArray) return formattedArray;
+  }
+
+  if (detail && typeof detail.msg === "string" && detail.msg.trim()) return detail.msg;
+
   if (err) {
     if (!err.response) {
       if (err.code === "ECONNABORTED") return "Request timeout. Please try again.";
@@ -140,21 +200,21 @@ export function formatApiErrorDetail(detail, error) {
     }
     const status = err.response.status;
     const body = err.response.data;
-    const innerDetail = body?.detail || body?.message;
-    if (innerDetail) {
-      return formatApiErrorDetail(innerDetail);
+
+    if (body) {
+      const innerDetail = body.detail || body.message || body.error;
+      if (innerDetail && innerDetail !== detail) {
+        return formatApiErrorDetail(innerDetail, err);
+      }
+      if (typeof body === "string" && body.trim()) {
+        const cleanText = body.replace(/<[^>]*>?/gm, "").trim();
+        if (cleanText) return `Error ${status}: ${cleanText.slice(0, 120)}`;
+      }
     }
     return `Error ${status}: Request failed`;
   }
 
   if (detail == null) return "Something went wrong. Please try again.";
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail))
-    return detail
-      .map((e) => (e && typeof e.msg === "string" ? e.msg : JSON.stringify(e)))
-      .filter(Boolean)
-      .join(" ");
-  if (detail && typeof detail.msg === "string") return detail.msg;
   return String(detail);
 }
 

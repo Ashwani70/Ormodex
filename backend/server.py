@@ -875,6 +875,11 @@ if _trusted_hosts:
 # and desktop clients are confirmed to send the header correctly.
 CSRF_EXEMPT_PREFIXES = ("/api/auth/login", "/api/auth/refresh", "/api/auth/forgot-password", "/api/auth/reset-password")
 CSRF_SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+# Distinguishable detail string (also matched by the frontend's api.js) so a
+# CSRF-cookie desync — e.g. a stale cookie left over from before this session's
+# last /auth/refresh rotated it — surfaces as a specific, self-healable error
+# instead of the generic "Something went wrong" every other failure produces.
+CSRF_MISMATCH_DETAIL = "CSRF token missing or invalid. Refreshing session — please retry."
 
 
 @app.middleware("http")
@@ -888,7 +893,11 @@ async def csrf_check(request: Request, call_next):
         if cookie_token and cookie_token != header_token:
             enforce = os.environ.get("CSRF_ENFORCE", "").lower() in ("1", "true", "yes")
             if enforce:
-                return JSONResponse(status_code=403, content={"detail": "CSRF token missing or invalid"})
+                logger.warning(
+                    "CSRF token mismatch (blocked) [%s %s]: cookie=%s header=%s",
+                    request.method, request.url.path, bool(cookie_token), bool(header_token),
+                )
+                return JSONResponse(status_code=403, content={"detail": CSRF_MISMATCH_DETAIL})
             logger.warning(
                 "CSRF token mismatch (log-only) [%s %s]: cookie=%s header=%s",
                 request.method, request.url.path, bool(cookie_token), bool(header_token),
