@@ -39,6 +39,10 @@ npm ci --legacy-peer-deps
 CI=false npm run build
 
 echo "== Restarting backend service =="
+mkdir -p "$APP_ROOT/backend/logs"
+sudo chown -R erpapp:erpapp "$APP_ROOT/backend/logs"
+sudo find "$APP_ROOT/backend/logs" -type d -exec chmod 775 {} +
+sudo find "$APP_ROOT/backend/logs" -type f -exec chmod 664 {} +
 sudo systemctl restart erp-backend
 sleep 2
 sudo systemctl is-active --quiet erp-backend || {
