@@ -190,3 +190,52 @@ jobs:
             }
 
             bash "$APP_ROOT/deploy/deploy.sh"
+
+      # deploy.sh already dumps diagnostics to stderr on its own failure (the
+      # normal case), but that dump lives inside the same SSH session as the
+      # failure — if the session itself dies early (network blip, the 15m
+      # command_timeout, appleboy/ssh-action losing the connection) nothing
+      # from the VPS ever reaches this log at all. This is a second, always-a-
+      # fresh-SSH-session pass specifically so a post-mortem never depends on
+      # the failed session having survived long enough to print anything.
+      - name: On failure — pull fresh diagnostics from the VPS
+        if: failure()
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_SSH_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_SSH_PORT || 22 }}
+          timeout: 60s
+          command_timeout: 2m
+          script: |
+            APP_ROOT="/var/www/erp/Ormodex"
+            echo "=== systemctl status erp-backend ==="
+            sudo systemctl status erp-backend --no-pager -l || true
+            echo ""
+            echo "=== journalctl -u erp-backend -n 200 ==="
+            journalctl -u erp-backend -n 200 --no-pager || true
+            echo ""
+            echo "=== ss -tlnp (is anything on 8001?) ==="
+            ss -tlnp || true
+            echo ""
+            echo "=== pgrep -af gunicorn ==="
+            pgrep -af gunicorn || echo "(no gunicorn processes found)"
+            echo ""
+            echo "=== nginx -t ==="
+            sudo nginx -t || true
+            echo ""
+            echo "=== nginx error log (last 30 lines) ==="
+            sudo tail -n 30 /var/log/nginx/error.log || true
+            echo ""
+            echo "=== disk space ==="
+            df -h "$APP_ROOT" /data 2>&1 || true
+            echo ""
+            echo "=== memory ==="
+            free -h || true
+            echo ""
+            echo "=== current commit on the VPS vs what should have deployed ==="
+            git -C "$APP_ROOT" log --oneline -1 || true
+            echo ""
+            echo "=== backend/.env present + non-empty (names only, no values) ==="
+            [[ -s "$APP_ROOT/backend/.env" ]] && grep -o '^[A-Z_]*=' "$APP_ROOT/backend/.env" | sort || echo "MISSING or empty: $APP_ROOT/backend/.env"
