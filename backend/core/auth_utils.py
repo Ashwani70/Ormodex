@@ -232,6 +232,18 @@ def issue_csrf_cookie(response: Response, remember_me: bool = True) -> str:
     middleware) — it only proves "this JS runs on our origin", not
     authentication, so exposing it to JS is the whole point.
 
+    Needs an explicit `domain`: the API and the app live on different
+    subdomains (api.ormodex.com vs www.ormodex.com), and a cookie set with no
+    domain is scoped to the exact host that set it — api.ormodex.com. The
+    browser still attaches it to requests aimed at api.ormodex.com either way,
+    but document.cookie on a www.ormodex.com page can never see a cookie
+    scoped to a different subdomain, so the frontend's readCookie() always
+    came back empty and the header was never sent (confirmed in prod logs:
+    csrf_check's mismatch warning showing cookie=True header=False on every
+    single state-changing request). CSRF_COOKIE_DOMAIN lets this stay unset
+    for a single-host deployment (dev, or prod on one domain) instead of
+    silently assuming multi-subdomain everywhere.
+
     Factored out of set_auth_cookies so routers/auth.py's GET /auth/csrf can
     reissue just this cookie (a CSRF-safe GET) when a client's copy has gone
     stale relative to the server's — e.g. after /auth/refresh rotates it —
@@ -241,8 +253,9 @@ def issue_csrf_cookie(response: Response, remember_me: bool = True) -> str:
     secure = is_prod
     samesite: Literal["lax", "strict", "none"] = "none" if is_prod else "lax"
     max_age = ACCESS_TOKEN_MIN * 60 if remember_me else None
+    domain = os.environ.get("CSRF_COOKIE_DOMAIN") or None
     token = uuid.uuid4().hex
-    response.set_cookie("csrf_token", token, httponly=False, secure=secure, samesite=samesite, max_age=max_age, path="/")
+    response.set_cookie("csrf_token", token, httponly=False, secure=secure, samesite=samesite, max_age=max_age, path="/", domain=domain)
     return token
 
 
