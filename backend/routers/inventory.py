@@ -187,10 +187,7 @@ class UOMCreate(BaseModel):
     description: Optional[str] = None
 
 
-@router.get("/uoms")
-@router.get("/inventory/uoms")
-async def list_uoms(_: dict = Depends(get_current_user)):
-    """List standard + custom Units of Measure (UOMs)."""
+async def _load_uoms() -> list[str]:
     custom_rows = await db.uoms.find({"is_deleted": {"$ne": True}}).to_list(1000)
     custom_names = [row["name"] for row in custom_rows if row.get("name")]
 
@@ -205,6 +202,19 @@ async def list_uoms(_: dict = Depends(get_current_user)):
     return result
 
 
+@router.get("/uoms")
+@router.get("/inventory/uoms")
+async def list_uoms(_: dict = Depends(get_current_user)):
+    """List standard + custom Units of Measure (UOMs).
+
+    UOMs change rarely (an admin adding one from a form) but this list is
+    fetched on nearly every product/inventory page — same cross-region
+    round-trip cost as everything else in this file, for data that's
+    effectively static reference data. Cached like categories/company/theme.
+    """
+    return await cache.get_or_set("uoms:list", cache.TTL_REFERENCE, _load_uoms)
+
+
 @router.post("/uoms")
 @router.post("/inventory/uoms")
 async def create_uom(payload: UOMCreate, user: dict = Depends(get_current_user)):
@@ -213,7 +223,9 @@ async def create_uom(payload: UOMCreate, user: dict = Depends(get_current_user))
     if not name:
         raise HTTPException(status_code=400, detail="UOM name is required")
 
-    existing = await list_uoms(user)
+    # Direct read (not list_uoms) so the duplicate check always sees the
+    # latest DB state, not a possibly-stale cached list.
+    existing = await _load_uoms()
     for existing_uom in existing:
         if existing_uom.lower() == name.lower():
             return {"name": existing_uom, "message": "UOM already exists"}
@@ -223,6 +235,7 @@ async def create_uom(payload: UOMCreate, user: dict = Depends(get_current_user))
         "symbol": payload.symbol or name,
         "description": payload.description,
     }, user=user)
+    cache.invalidate("uoms:list")
     logger.info("Created custom UOM %r by user %s", name, user.get("id"))
     return created
 
