@@ -280,7 +280,18 @@ def set_auth_cookies(response: Response, access: str, refresh: str, remember_me:
 def clear_auth_cookies(response: Response):
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("refresh_token", path="/")
+    # Cookies are keyed by (name, domain, path) — deleting "csrf_token" with
+    # no domain only clears a cookie that was ALSO set with no domain. Any
+    # browser that logged in before CSRF_COOKIE_DOMAIN was introduced still
+    # holds that old, undomained cookie; deleting only the new domain-scoped
+    # one would leave the stale copy behind, and a browser sending both on
+    # the same request lets the server and the frontend's document.cookie
+    # read two different values — exactly the mismatch this is meant to
+    # prevent. Clear every variant this codebase has ever set.
+    domain = os.environ.get("CSRF_COOKIE_DOMAIN") or None
     response.delete_cookie("csrf_token", path="/")
+    if domain:
+        response.delete_cookie("csrf_token", path="/", domain=domain)
 
 
 def _read_token(request: Request) -> str | None:
