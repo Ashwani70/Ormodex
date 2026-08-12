@@ -368,12 +368,13 @@ export default function Products() {
     const payload = {
       ...form,
       sku: form.sku || autoSku(),
+      category: form.category || "",
       category_id: form.category_id || null,
-      cost_price: Number(form.cost_price),
-      selling_price: Number(form.selling_price),
-      quantity: Number(form.quantity),
-      low_stock_threshold: Number(form.low_stock_threshold),
-      gst_rate: Number(form.gst_rate),
+      cost_price: Number(form.cost_price) || 0,
+      selling_price: Number(form.selling_price) || 0,
+      quantity: Number(form.quantity) || 0,
+      low_stock_threshold: Number(form.low_stock_threshold) || 10,
+      gst_rate: Number(form.gst_rate) || 18,
       warehouse_id: form.warehouse_id || null,
     };
     // Strip UI-only / server-derived fields so they aren't persisted onto the
@@ -396,7 +397,7 @@ export default function Products() {
       setOpen(false);
       load();
     } catch (e) {
-      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+      toast.error(formatApiErrorDetail(e));
     } finally {
       setSaving(false);
     }

@@ -1,9 +1,7 @@
 import { useState, useEffect } from "react";
-import api from "@/lib/api";
+import api, { BACKEND_URL } from "@/lib/api";
 import { Upload, X, Image as ImageIcon } from "lucide-react";
 import { toast } from "sonner";
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "https://api.ormodex.com";
 
 export default function ImageUploader({ value, onChange }) {
   // value is the storage path (e.g. "gew-erp/products/.../uuid.png")

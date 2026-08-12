@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import portalApi, { setPortalToken, getPortalTokenAsync } from "@/lib/portalApi";
 import { BACKEND_URL } from "@/lib/api";
 import { toast } from "sonner";
@@ -242,7 +242,6 @@ export default function Portal() {
   const [company, setCompany] = useState(null);
 
   useEffect(() => {
-    const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "https://api.ormodex.com";
     axios.get(`${BACKEND_URL}/api/company/active`)
       .then((res) => setCompany(res.data))
       .catch((err) => console.error("Failed to fetch active company", err));

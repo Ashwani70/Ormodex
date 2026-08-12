@@ -2,11 +2,12 @@ import axios from "axios";
 import { getToken, setToken, clearToken } from "./tokenStore";
 
 // `window.__GRAVITYONE_BACKEND_URL__` lets the desktop (Electron) build override
-// the backend at runtime — the web build never sets it, so behaviour is unchanged.
+// the backend at runtime — the web build defaults to window.location.origin so
+// relative API requests go to the same origin without CORS or DNS issues.
 export const BACKEND_URL =
   (typeof window !== "undefined" && window.__GRAVITYONE_BACKEND_URL__) ||
   process.env.REACT_APP_BACKEND_URL ||
-  "https://api.ormodex.com";
+  (typeof window !== "undefined" && window.location?.origin ? window.location.origin : "");
 export const API = `${BACKEND_URL}/api`;
 
 const api = axios.create({
@@ -135,10 +136,12 @@ api.interceptors.response.use(
       isRefreshing = true;
 
       try {
+        const token = getToken();
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
         const { data } = await axios.post(
           `${API}/auth/refresh`,
           {},
-          { withCredentials: true, timeout: 30000 }
+          { headers, withCredentials: true, timeout: 30000 }
         );
         const newToken = data.access_token;
         if (newToken) {
@@ -191,7 +194,12 @@ export function formatApiErrorDetail(detail, error) {
     if (formattedArray) return formattedArray;
   }
 
-  if (detail && typeof detail.msg === "string" && detail.msg.trim()) return detail.msg;
+  if (detail && typeof detail === "object") {
+    if (typeof detail.msg === "string" && detail.msg.trim()) return detail.msg;
+    if (typeof detail.detail === "string" && detail.detail.trim()) return detail.detail;
+    if (typeof detail.error === "string" && detail.error.trim()) return detail.error;
+    if (typeof detail.message === "string" && detail.message.trim()) return detail.message;
+  }
 
   if (err) {
     if (!err.response) {

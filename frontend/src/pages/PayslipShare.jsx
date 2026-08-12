@@ -1,9 +1,7 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import api, { BACKEND_URL } from "@/lib/api";
 import { Hammer, Download, ReceiptText } from "lucide-react";
-
-const BACKEND = process.env.REACT_APP_BACKEND_URL || "https://api.ormodex.com";
 
 export default function PayslipShare() {
   const { token } = useParams();
