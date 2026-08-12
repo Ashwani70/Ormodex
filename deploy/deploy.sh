@@ -55,10 +55,21 @@ sudo nginx -t
 sudo systemctl reload nginx
 
 echo "== Health check =="
-sleep 1
-curl -fsS http://127.0.0.1:8001/health || {
+HEALTH_PASSED=false
+for i in {1..15}; do
+    if curl -fsS http://127.0.0.1:8001/health >/dev/null 2>&1; then
+        HEALTH_PASSED=true
+        break
+    fi
+    echo "Waiting for backend startup... ($i/15)"
+    sleep 3
+done
+
+if [[ "$HEALTH_PASSED" != "true" ]]; then
     echo "ERROR: /health check failed post-deploy." >&2
+    journalctl -u erp-backend -n 50 --no-pager >&2
     exit 1
-}
+fi
+echo "Health check passed successfully!"
 
 echo "== Deploy complete: $(git rev-parse --short HEAD) =="
