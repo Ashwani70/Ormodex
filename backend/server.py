@@ -888,30 +888,27 @@ async def csrf_check(request: Request, call_next):
         request.method not in CSRF_SAFE_METHODS
         and not request.url.path.startswith(CSRF_EXEMPT_PREFIXES)
     ):
-        cookie_token = request.cookies.get("csrf_token")
-        header_token = request.headers.get("X-CSRF-Token")
-        if cookie_token and cookie_token != header_token:
-            enforce = os.environ.get("CSRF_ENFORCE", "").lower() in ("1", "true", "yes")
-            # Distinguish "no header at all" from "a header was sent but its
-            # value doesn't match the cookie" — bool(header_token) collapsed
-            # both to the same log line, which made a real header/cookie
-            # VALUE mismatch (e.g. two differently-scoped csrf_token cookies
-            # coexisting after a Domain attribute change) indistinguishable
-            # from the header never being sent in the first place. Values
-            # themselves are never logged — only short, non-reversible
-            # fingerprints — so this can't leak the live token.
-            cookie_fp = cookie_token[:6] if cookie_token else None
-            header_fp = header_token[:6] if header_token else "<missing>"
-            if enforce:
+        # Bearer token requests (e.g. Authorization: Bearer ...) are immune to CSRF
+        # because browsers never automatically attach custom Authorization headers to
+        # cross-site requests. CSRF double-submit checks only apply to cookie-authenticated requests.
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            cookie_token = request.cookies.get("csrf_token")
+            header_token = request.headers.get("X-CSRF-Token")
+            if cookie_token and cookie_token != header_token:
+                enforce = os.environ.get("CSRF_ENFORCE", "").lower() in ("1", "true", "yes")
+                cookie_fp = cookie_token[:6] if cookie_token else None
+                header_fp = header_token[:6] if header_token else "<missing>"
+                if enforce:
+                    logger.warning(
+                        "CSRF token mismatch (blocked) [%s %s]: cookie_present=%s cookie_prefix=%s header_present=%s header_prefix=%s",
+                        request.method, request.url.path, bool(cookie_token), cookie_fp, bool(header_token), header_fp,
+                    )
+                    return JSONResponse(status_code=403, content={"detail": CSRF_MISMATCH_DETAIL})
                 logger.warning(
-                    "CSRF token mismatch (blocked) [%s %s]: cookie_present=%s cookie_prefix=%s header_present=%s header_prefix=%s",
+                    "CSRF token mismatch (log-only) [%s %s]: cookie_present=%s cookie_prefix=%s header_present=%s header_prefix=%s",
                     request.method, request.url.path, bool(cookie_token), cookie_fp, bool(header_token), header_fp,
                 )
-                return JSONResponse(status_code=403, content={"detail": CSRF_MISMATCH_DETAIL})
-            logger.warning(
-                "CSRF token mismatch (log-only) [%s %s]: cookie_present=%s cookie_prefix=%s header_present=%s header_prefix=%s",
-                request.method, request.url.path, bool(cookie_token), cookie_fp, bool(header_token), header_fp,
-            )
     return await call_next(request)
 
 
