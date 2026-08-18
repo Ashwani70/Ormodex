@@ -2,9 +2,10 @@ import { useEffect, useState, useCallback } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "@/lib/api";
 import { PageHeader, Input, Field, Select, EmptyState, SecondaryButton } from "@/components/ui-kit";
+import Modal from "@/components/Modal";
 import OfflineBanner from "@/components/OfflineBanner";
 import useOnline from "@/hooks/useOnline";
-import { Search, X, AlertTriangle, RefreshCw } from "lucide-react";
+import { Search, X, AlertTriangle, RefreshCw, Eye, ArrowRight } from "lucide-react";
 
 const TABS = [
   { key: "summary", label: "Stock Summary" },
@@ -49,20 +50,29 @@ export default function InventoryReports() {
   const online = useOnline();
   const [tab, setTab] = useState("summary");
   const [items, setItems] = useState([]);
+  const [godowns, setGodowns] = useState([]);
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [selItem, setSelItem] = useState("");
+  const [viewItem, setViewItem] = useState(null);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [search, setSearch] = useState("");
 
   useEffect(() => {
-    api.get("/inventory/v2/items").then((r) => {
-      const data = r.data;
-      setItems(Array.isArray(data) ? data : data?.items || []);
+    Promise.all([
+      api.get("/inventory/v2/items"),
+      api.get("/inventory/v2/godowns"),
+    ]).then(([rItems, rGodowns]) => {
+      const dItems = rItems.data;
+      const dGodowns = rGodowns.data;
+      setItems(Array.isArray(dItems) ? dItems : dItems?.items || []);
+      setGodowns(Array.isArray(dGodowns) ? dGodowns : dGodowns?.items || []);
     }).catch(() => {});
   }, []);
+
+  const godownName = (id) => godowns.find((g) => g.id === id)?.name || id;
 
   const fetchReport = useCallback(async () => {
     setLoading(true);
@@ -116,10 +126,6 @@ export default function InventoryReports() {
         e.entry_date?.includes(q)
       ) : data.entries)
     : [];
-
-  const showSearch = !loading && data !== null && tab !== "movement"
-    ? (summaryRows.length > 0 || agingRows.length > 0 || lowStockRows.length > 0)
-    : (!loading && tab === "movement" && !!selItem && movementRows.length >= 0);
 
   return (
     <div data-testid="inventory-reports-page">
@@ -218,6 +224,7 @@ export default function InventoryReports() {
             <th className="px-3 py-2.5 text-right">Outward</th>
             <th className="px-3 py-2.5 text-right">Closing Qty</th>
             <th className="px-3 py-2.5 text-right">Closing Value</th>
+            <th className="px-3 py-2.5 text-right">Seen</th>
           </>}>
             {summaryRows.map((r) => (
               <tr key={r.stock_item_id} data-testid={`summary-row-${r.stock_item_id}`} className="border-b border-border hover:bg-muted/40 text-foreground">
@@ -235,6 +242,17 @@ export default function InventoryReports() {
                 <td className="px-3 py-2.5 text-right text-amber-400">{inr(r.outward_qty)}</td>
                 <td className="px-3 py-2.5 text-right text-foreground font-semibold">{inr(r.closing_qty)}</td>
                 <td className="px-3 py-2.5 text-right text-primary">{inr(r.closing_value)}</td>
+                <td className="px-3 py-2.5 text-right">
+                  <button
+                    type="button"
+                    title="View item details"
+                    aria-label="View item details"
+                    onClick={() => setViewItem(r)}
+                    className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
+                  >
+                    <Eye className="w-4 h-4" />
+                  </button>
+                </td>
               </tr>
             ))}
           </Table>
@@ -275,6 +293,7 @@ export default function InventoryReports() {
             <th className="px-3 py-2.5 text-right">31–60</th>
             <th className="px-3 py-2.5 text-right">61–90</th>
             <th className="px-3 py-2.5 text-right">90+</th>
+            <th className="px-3 py-2.5 text-right">Seen</th>
           </>}>
             {agingRows.map((r) => (
               <tr key={r.stock_item_id} data-testid={`aging-row-${r.stock_item_id}`} className="border-b border-border hover:bg-muted/40 text-foreground">
@@ -291,6 +310,20 @@ export default function InventoryReports() {
                 <td className="px-3 py-2.5 text-right">{inr(r.buckets["31-60"])}</td>
                 <td className="px-3 py-2.5 text-right">{inr(r.buckets["61-90"])}</td>
                 <td className="px-3 py-2.5 text-right text-amber-400">{inr(r.buckets["90+"])}</td>
+                <td className="px-3 py-2.5 text-right">
+                  <button
+                    type="button"
+                    title="View item details"
+                    aria-label="View item details"
+                    onClick={() => {
+                      const sumItem = summaryRows.find((s) => s.stock_item_id === r.stock_item_id);
+                      setViewItem(sumItem || { stock_item_id: r.stock_item_id, name: r.name, closing_qty: r.closing_qty });
+                    }}
+                    className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
+                  >
+                    <Eye className="w-4 h-4" />
+                  </button>
+                </td>
               </tr>
             ))}
           </Table>
@@ -305,6 +338,7 @@ export default function InventoryReports() {
             <th className="px-3 py-2.5 text-right">Reorder Level</th>
             <th className="px-3 py-2.5 text-right">Shortfall</th>
             <th className="px-3 py-2.5 text-right">Reorder Qty</th>
+            <th className="px-3 py-2.5 text-right">Seen</th>
           </>}>
             {lowStockRows.map((r) => (
               <tr key={r.stock_item_id} data-testid={`lowstock-row-${r.stock_item_id}`} className="border-b border-border hover:bg-muted/40 text-foreground">
@@ -320,11 +354,130 @@ export default function InventoryReports() {
                 <td className="px-3 py-2.5 text-right text-muted-foreground">{inr(r.reorder_level)}</td>
                 <td className="px-3 py-2.5 text-right text-red-400">{inr(r.shortfall)}</td>
                 <td className="px-3 py-2.5 text-right text-muted-foreground">{inr(r.reorder_qty)}</td>
+                <td className="px-3 py-2.5 text-right">
+                  <button
+                    type="button"
+                    title="View item details"
+                    aria-label="View item details"
+                    onClick={() => {
+                      const sumItem = summaryRows.find((s) => s.stock_item_id === r.stock_item_id);
+                      setViewItem(sumItem || { stock_item_id: r.stock_item_id, name: r.name, closing_qty: r.closing_qty });
+                    }}
+                    className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
+                  >
+                    <Eye className="w-4 h-4" />
+                  </button>
+                </td>
               </tr>
             ))}
           </Table>
         ) : <EmptyState message={search ? `No items match "${search}"` : "No items at or below reorder level"} />
       )}
+
+      {/* Seen / View Item Details Modal */}
+      <Modal
+        open={Boolean(viewItem)}
+        onClose={() => setViewItem(null)}
+        title={`Stock Details — ${viewItem?.name || ""}`}
+        size="lg"
+        footer={
+          <div className="flex items-center justify-between w-full">
+            <SecondaryButton
+              icon={ArrowRight}
+              onClick={() => {
+                if (viewItem?.stock_item_id) {
+                  setSelItem(viewItem.stock_item_id);
+                  setTab("movement");
+                  setViewItem(null);
+                }
+              }}
+            >
+              View Movement Ledger
+            </SecondaryButton>
+            <SecondaryButton onClick={() => setViewItem(null)}>Close</SecondaryButton>
+          </div>
+        }
+      >
+        {viewItem && (
+          <div className="space-y-4 text-sm font-mono">
+            {/* Top metrics summary grid */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-3 bg-muted/30 border border-border rounded">
+                <div className="text-xs text-muted-foreground label-overline">Opening Stock</div>
+                <div className="font-semibold text-foreground">{inr(viewItem.opening_qty)}</div>
+                {viewItem.opening_value !== undefined && (
+                  <div className="text-xs text-muted-foreground">₹{inr(viewItem.opening_value)}</div>
+                )}
+              </div>
+              <div className="p-3 bg-emerald-950/20 border border-emerald-800/40 rounded">
+                <div className="text-xs text-emerald-400 label-overline">Total Inward</div>
+                <div className="font-semibold text-emerald-400">+{inr(viewItem.inward_qty)}</div>
+                {viewItem.inward_value !== undefined && (
+                  <div className="text-xs text-emerald-500/80">₹{inr(viewItem.inward_value)}</div>
+                )}
+              </div>
+              <div className="p-3 bg-amber-950/20 border border-amber-800/40 rounded">
+                <div className="text-xs text-amber-400 label-overline">Total Outward</div>
+                <div className="font-semibold text-amber-400">-{inr(viewItem.outward_qty)}</div>
+                {viewItem.outward_value !== undefined && (
+                  <div className="text-xs text-amber-500/80">₹{inr(viewItem.outward_value)}</div>
+                )}
+              </div>
+              <div className="p-3 bg-primary/10 border border-primary/30 rounded">
+                <div className="text-xs text-primary label-overline">Closing Balance</div>
+                <div className="font-semibold text-primary">{inr(viewItem.closing_qty)}</div>
+                {viewItem.closing_value !== undefined && (
+                  <div className="text-xs text-primary/80">₹{inr(viewItem.closing_value)}</div>
+                )}
+              </div>
+            </div>
+
+            {/* Item metadata */}
+            <div className="flex items-center justify-between p-2.5 bg-muted/20 border border-border rounded text-xs text-muted-foreground">
+              <div>
+                Valuation Method: <span className="font-semibold text-foreground">{viewItem.valuation_method || "DEFAULT"}</span>
+              </div>
+              {viewItem.stock_item_id && (
+                <div>
+                  Item ID: <span className="font-mono text-foreground">{viewItem.stock_item_id}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Warehouse / Godown breakdown */}
+            <div>
+              <div className="text-xs text-muted-foreground label-overline mb-2">Per-Warehouse Breakdown</div>
+              {(viewItem.per_godown && viewItem.per_godown.length > 0) ? (
+                <div className="border border-border rounded overflow-hidden">
+                  <table className="w-full text-sm text-left">
+                    <thead className="bg-muted text-muted-foreground border-b border-border">
+                      <tr>
+                        <th className="px-3 py-2">Warehouse</th>
+                        <th className="px-3 py-2 text-right">Closing Qty</th>
+                        <th className="px-3 py-2 text-right">Closing Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {viewItem.per_godown.map((g, idx) => (
+                        <tr key={idx} className="border-b border-border last:border-0 hover:bg-muted/20">
+                          <td className="px-3 py-2 font-medium text-foreground">{godownName(g.godown_id)}</td>
+                          <td className="px-3 py-2 text-right font-semibold text-foreground">{inr(g.qty)}</td>
+                          <td className="px-3 py-2 text-right text-primary">₹{inr(g.value)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="p-3 text-xs text-muted-foreground text-center bg-muted/10 border border-border rounded">
+                  No specific warehouse breakdown recorded for this item.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
+

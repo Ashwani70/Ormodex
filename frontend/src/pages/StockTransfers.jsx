@@ -8,7 +8,7 @@ import Modal from "@/components/Modal";
 import OfflineBanner from "@/components/OfflineBanner";
 import useOnline from "@/hooks/useOnline";
 import useEnterNavigation from "@/hooks/useEnterNavigation";
-import { Plus, X, Trash2, RefreshCw, AlertTriangle } from "lucide-react";
+import { Plus, X, Trash2, RefreshCw, AlertTriangle, Eye, Pencil } from "lucide-react";
 
 const blankLine = () => ({ stock_item_id: "", qty: 1 });
 const blank = () => ({ from_godown_id: "", to_godown_id: "", transfer_date: "", remarks: "", lines: [blankLine()] });
@@ -22,6 +22,10 @@ export default function StockTransfers() {
   const [godowns, setGodowns] = useState([]);
   const [transfers, setTransfers] = useState([]);
   const [open, setOpen] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [viewTransfer, setViewTransfer] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const [form, setForm] = useState(blank());
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -58,8 +62,43 @@ export default function StockTransfers() {
   const addLine = () => setForm((f) => ({ ...f, lines: [...f.lines, blankLine()] }));
   const removeLine = (idx) => setForm((f) => ({ ...f, lines: f.lines.filter((_, i) => i !== idx) }));
 
+  const handleEdit = (transfer) => {
+    setEditId(transfer.id);
+    setForm({
+      from_godown_id: transfer.from_godown_id || "",
+      to_godown_id: transfer.to_godown_id || "",
+      transfer_date: transfer.transfer_date || "",
+      remarks: transfer.remarks || "",
+      lines: (transfer.lines && transfer.lines.length > 0)
+        ? transfer.lines.map((l) => ({
+            stock_item_id: l.stock_item_id || l.product_id || "",
+            qty: l.qty ?? 1,
+            batch_id: l.batch_id || "",
+            serial_id: l.serial_id || "",
+          }))
+        : [blankLine()],
+    });
+    setOpen(true);
+  };
+
+  const handleDelete = async () => {
+    if (!deleteConfirm?.id) return;
+    if (!online) return toast.warning("You are offline — deleting is disabled.");
+    setDeleting(true);
+    try {
+      await api.delete(`/inventory/v2/transfers/${deleteConfirm.id}`);
+      toast.success("Transfer deleted successfully");
+      setDeleteConfirm(null);
+      load();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Failed to delete transfer");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const submit = async (e) => {
-    e.preventDefault();
+    if (e?.preventDefault) e.preventDefault();
     if (!online) return toast.warning("You are offline — saving is disabled.");
     if (form.from_godown_id === form.to_godown_id)
       return toast.error("Source and destination warehouses must differ.");
@@ -74,9 +113,15 @@ export default function StockTransfers() {
     if (saving) return;
     setSaving(true);
     try {
-      await api.post("/inventory/v2/transfers", payload);
-      toast.success("Transfer posted");
+      if (editId) {
+        await api.put(`/inventory/v2/transfers/${editId}`, payload);
+        toast.success("Transfer updated");
+      } else {
+        await api.post("/inventory/v2/transfers", payload);
+        toast.success("Transfer posted");
+      }
       setOpen(false);
+      setEditId(null);
       load();
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
@@ -104,7 +149,7 @@ export default function StockTransfers() {
         description="Move stock between warehouses. Posts paired outward/inward stock-ledger entries."
         actions={
           <PrimaryButton testid="new-transfer" icon={Plus} disabled={!online}
-            onClick={() => { setForm(blank()); setOpen(true); }}>
+            onClick={() => { setEditId(null); setForm(blank()); setOpen(true); }}>
             New transfer
           </PrimaryButton>
         }
@@ -137,6 +182,7 @@ export default function StockTransfers() {
                 <th className="px-3 py-2.5">From</th>
                 <th className="px-3 py-2.5">To</th>
                 <th className="px-3 py-2.5 text-right">Lines</th>
+                <th className="px-3 py-2.5 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -147,6 +193,39 @@ export default function StockTransfers() {
                   <td className="px-3 py-2.5 text-muted-foreground">{godownName(t.from_godown_id)}</td>
                   <td className="px-3 py-2.5 text-muted-foreground">{godownName(t.to_godown_id)}</td>
                   <td className="px-3 py-2.5 text-right text-muted-foreground">{(t.lines || []).length}</td>
+                  <td className="px-3 py-2.5 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        type="button"
+                        title="View transfer details"
+                        aria-label="View transfer details"
+                        onClick={() => setViewTransfer(t)}
+                        className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Edit transfer"
+                        aria-label="Edit transfer"
+                        disabled={!online}
+                        onClick={() => handleEdit(t)}
+                        className="p-1.5 text-muted-foreground hover:text-primary hover:bg-muted rounded transition-colors disabled:opacity-40"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Delete transfer"
+                        aria-label="Delete transfer"
+                        disabled={!online}
+                        onClick={() => setDeleteConfirm(t)}
+                        className="p-1.5 text-muted-foreground hover:text-red-400 hover:bg-muted rounded transition-colors disabled:opacity-40"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -154,11 +233,14 @@ export default function StockTransfers() {
         </div>
       )}
 
-      <Modal open={open} onClose={() => setOpen(false)} title="New Stock Transfer" size="lg"
+      {/* New / Edit Transfer Modal */}
+      <Modal open={open} onClose={() => setOpen(false)} title={editId ? "Edit Stock Transfer" : "New Stock Transfer"} size="lg"
         footer={
           <>
             <SecondaryButton onClick={() => setOpen(false)}>Cancel</SecondaryButton>
-            <PrimaryButton onClick={submit} testid="save-transfer" disabled={!online || saving}>{saving ? "Saving…" : "Post Transfer"}</PrimaryButton>
+            <PrimaryButton onClick={submit} testid="save-transfer" disabled={!online || saving}>
+              {saving ? "Saving…" : (editId ? "Update Transfer" : "Post Transfer")}
+            </PrimaryButton>
           </>
         }>
         <form ref={formRef} onSubmit={submit} className="space-y-4">
@@ -215,6 +297,139 @@ export default function StockTransfers() {
           </Field>
         </form>
       </Modal>
+
+      {/* Seen / View Transfer Modal */}
+      <Modal
+        open={Boolean(viewTransfer)}
+        onClose={() => setViewTransfer(null)}
+        title={`Stock Transfer Details — ${viewTransfer?.transfer_number || ""}`}
+        size="lg"
+        footer={
+          <div className="flex items-center justify-between w-full">
+            <div className="flex gap-2">
+              <SecondaryButton
+                icon={Pencil}
+                disabled={!online}
+                onClick={() => {
+                  const t = viewTransfer;
+                  setViewTransfer(null);
+                  handleEdit(t);
+                }}
+              >
+                Edit Transfer
+              </SecondaryButton>
+              <SecondaryButton
+                icon={Trash2}
+                disabled={!online}
+                className="text-red-400 border-red-800/60 hover:bg-red-950/40"
+                onClick={() => {
+                  const t = viewTransfer;
+                  setViewTransfer(null);
+                  setDeleteConfirm(t);
+                }}
+              >
+                Delete
+              </SecondaryButton>
+            </div>
+            <SecondaryButton onClick={() => setViewTransfer(null)}>Close</SecondaryButton>
+          </div>
+        }
+      >
+        {viewTransfer && (
+          <div className="space-y-4 text-sm font-mono">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-3 bg-muted/30 rounded-md border border-border">
+              <div>
+                <div className="text-xs text-muted-foreground label-overline">Transfer No</div>
+                <div className="font-semibold text-foreground">{viewTransfer.transfer_number}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground label-overline">Date</div>
+                <div>{viewTransfer.transfer_date || "—"}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground label-overline">From Warehouse</div>
+                <div className="font-medium text-foreground">{godownName(viewTransfer.from_godown_id)}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground label-overline">To Warehouse</div>
+                <div className="font-medium text-foreground">{godownName(viewTransfer.to_godown_id)}</div>
+              </div>
+            </div>
+
+            {viewTransfer.remarks && (
+              <div>
+                <div className="text-xs text-muted-foreground label-overline mb-1">Remarks</div>
+                <div className="p-2.5 bg-card border border-border rounded text-foreground text-xs">
+                  {viewTransfer.remarks}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <div className="text-xs text-muted-foreground label-overline mb-2">Transferred Items</div>
+              <div className="border border-border rounded overflow-hidden">
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-muted text-muted-foreground border-b border-border">
+                    <tr>
+                      <th className="px-3 py-2 w-12 text-center">#</th>
+                      <th className="px-3 py-2">Stock Item</th>
+                      <th className="px-3 py-2 text-right">Quantity</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(viewTransfer.lines || []).map((line, idx) => (
+                      <tr key={idx} className="border-b border-border last:border-0 hover:bg-muted/20">
+                        <td className="px-3 py-2 text-center text-muted-foreground">{idx + 1}</td>
+                        <td className="px-3 py-2 font-medium text-foreground">
+                          {itemName(line.stock_item_id || line.product_id)}
+                        </td>
+                        <td className="px-3 py-2 text-right font-semibold text-foreground">
+                          {line.qty}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        open={Boolean(deleteConfirm)}
+        onClose={() => setDeleteConfirm(null)}
+        title="Delete Stock Transfer"
+        size="sm"
+        footer={
+          <>
+            <SecondaryButton onClick={() => setDeleteConfirm(null)}>Cancel</SecondaryButton>
+            <PrimaryButton
+              onClick={handleDelete}
+              disabled={deleting || !online}
+              className="bg-red-600 hover:bg-red-700 text-white border-none"
+            >
+              {deleting ? "Deleting…" : "Delete Transfer"}
+            </PrimaryButton>
+          </>
+        }
+      >
+        <div className="space-y-3 py-2">
+          <div className="flex items-center gap-3 text-red-400">
+            <AlertTriangle className="w-6 h-6 shrink-0" />
+            <span className="font-semibold text-foreground">Confirm Deletion</span>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Are you sure you want to delete stock transfer{" "}
+            <strong className="text-foreground font-mono">{deleteConfirm?.transfer_number}</strong>?
+          </p>
+          <p className="text-xs text-red-400/90 bg-red-950/30 p-2.5 rounded border border-red-800/40">
+            This will permanently revert the outward and inward stock ledger entries and remove this transfer from stock records.
+          </p>
+        </div>
+      </Modal>
     </div>
   );
 }
+

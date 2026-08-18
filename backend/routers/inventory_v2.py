@@ -663,6 +663,77 @@ async def list_transfers(q: Optional[str] = None, page: Optional[int] = None, li
                                  from_date=from_date, to_date=to_date)
 
 
+@router.get("/transfers/{item_id}")
+async def get_transfer(item_id: str, user: dict = Depends(get_current_user)):
+    _require_inventory(user)
+    return await crud_get("stock_transfers", item_id, label="Stock Transfer")
+
+
+@router.put("/transfers/{item_id}")
+async def update_transfer(item_id: str, payload: StockTransfer, user: dict = Depends(get_current_user)):
+    _require_inventory(user)
+    existing = await crud_get("stock_transfers", item_id, label="Stock Transfer")
+
+    if payload.from_godown_id == payload.to_godown_id:
+        raise HTTPException(400, "Source and destination godowns must differ")
+    await crud_get("godowns", payload.from_godown_id)
+    await crud_get("godowns", payload.to_godown_id)
+
+    data = payload.model_dump()
+    for line in data["lines"]:
+        await resolve_line_stock_item(line, user)
+        if not line.get("stock_item_id"):
+            raise HTTPException(400, "Each transfer line needs a product_id or stock_item_id")
+    await validate_tracking_fields(data["lines"])
+
+    if not data.get("transfer_number"):
+        data["transfer_number"] = existing.get("transfer_number")
+    data["transfer_date"] = data.get("transfer_date") or existing.get("transfer_date") or date.today().isoformat()
+
+    updated = await crud_update("stock_transfers", item_id, data, user=user, label="Stock Transfer")
+
+    # Revert / clean up old stock ledger entries and transactions for this transfer
+    await db[LEDGER].delete_many({"source_doc_type": "stock_transfer", "source_doc_id": item_id})
+    await db["stock_transactions"].delete_many({"$or": [
+        {"source_doc_type": "stock_transfer", "source_doc_id": item_id},
+        {"doc_type": "STOCK_TRANSFER", "voucher_no": item_id}
+    ]})
+
+    # Re-post paired TRANSFER_OUT and TRANSFER_IN entries for updated lines
+    for line in data["lines"]:
+        out = await post_entry(
+            stock_item_id=line["stock_item_id"], godown_id=data["from_godown_id"],
+            qty=-abs(line["qty"]), movement_type="TRANSFER_OUT",
+            batch_id=line.get("batch_id"), serial_id=line.get("serial_id"),
+            source_doc_type="stock_transfer", source_doc_id=item_id,
+            entry_date=data["transfer_date"], user=user,
+        )
+        await post_entry(
+            stock_item_id=line["stock_item_id"], godown_id=data["to_godown_id"],
+            qty=abs(line["qty"]), movement_type="TRANSFER_IN",
+            rate=out["rate"],
+            batch_id=line.get("batch_id"), serial_id=line.get("serial_id"),
+            source_doc_type="stock_transfer", source_doc_id=item_id,
+            entry_date=data["transfer_date"], user=user,
+        )
+    return updated
+
+
+@router.delete("/transfers/{item_id}")
+async def delete_transfer(item_id: str, user: dict = Depends(get_current_user)):
+    _require_inventory(user)
+    await crud_get("stock_transfers", item_id, label="Stock Transfer")
+
+    await db[LEDGER].delete_many({"source_doc_type": "stock_transfer", "source_doc_id": item_id})
+    await db["stock_transactions"].delete_many({"$or": [
+        {"source_doc_type": "stock_transfer", "source_doc_id": item_id},
+        {"doc_type": "STOCK_TRANSFER", "voucher_no": item_id}
+    ]})
+
+    return await crud_delete("stock_transfers", item_id, user=user)
+
+
+
 # ───────────────────────── Reports ─────────────────────────
 
 def _date_filter(from_date: Optional[str], to_date: Optional[str]) -> dict:
