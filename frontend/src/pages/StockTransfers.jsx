@@ -54,25 +54,53 @@ export default function StockTransfers() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const itemName = (id) => items.find((i) => i.id === id)?.name || id;
+  const resolveItemName = (lineOrId) => {
+    if (!lineOrId) return "—";
+    if (typeof lineOrId === "string") {
+      return items.find((i) => i.id === lineOrId)?.name || lineOrId;
+    }
+    const id = lineOrId.stock_item_id || lineOrId.product_id;
+    const found = items.find((i) => i.id === id);
+    return (
+      found?.name ||
+      lineOrId.name ||
+      lineOrId.stock_item_name ||
+      lineOrId.product_name ||
+      id ||
+      "—"
+    );
+  };
   const godownName = (id) => godowns.find((g) => g.id === id)?.name || id;
 
+  const handleViewDetails = async (t) => {
+    setViewTransfer(t);
+    if (!t?.id) return;
+    try {
+      const res = await api.get(`/inventory/v2/transfers/${t.id}`);
+      if (res.data) setViewTransfer(res.data);
+    } catch (err) {
+      console.error("Error fetching transfer details:", err);
+    }
+  };
+
   const setLine = (idx, patch) =>
+
     setForm((f) => ({ ...f, lines: f.lines.map((l, i) => (i === idx ? { ...l, ...patch } : l)) }));
   const addLine = () => setForm((f) => ({ ...f, lines: [...f.lines, blankLine()] }));
   const removeLine = (idx) => setForm((f) => ({ ...f, lines: f.lines.filter((_, i) => i !== idx) }));
 
   const handleEdit = (transfer) => {
     setEditId(transfer.id);
+    const rawLines = transfer.lines || transfer.items || [];
     setForm({
       from_godown_id: transfer.from_godown_id || "",
       to_godown_id: transfer.to_godown_id || "",
       transfer_date: transfer.transfer_date || "",
-      remarks: transfer.remarks || "",
-      lines: (transfer.lines && transfer.lines.length > 0)
-        ? transfer.lines.map((l) => ({
+      remarks: transfer.remarks || transfer.notes || "",
+      lines: (rawLines.length > 0)
+        ? rawLines.map((l) => ({
             stock_item_id: l.stock_item_id || l.product_id || "",
-            qty: l.qty ?? 1,
+            qty: l.qty ?? l.quantity ?? 1,
             batch_id: l.batch_id || "",
             serial_id: l.serial_id || "",
           }))
@@ -186,48 +214,52 @@ export default function StockTransfers() {
               </tr>
             </thead>
             <tbody>
-              {transfers.map((t) => (
-                <tr key={t.id} data-testid={`transfer-row-${t.id}`} className="border-b border-border hover:bg-muted/40 text-foreground">
-                  <td className="px-3 py-2.5 text-foreground font-semibold">{t.transfer_number}</td>
-                  <td className="px-3 py-2.5 text-muted-foreground">{t.transfer_date}</td>
-                  <td className="px-3 py-2.5 text-muted-foreground">{godownName(t.from_godown_id)}</td>
-                  <td className="px-3 py-2.5 text-muted-foreground">{godownName(t.to_godown_id)}</td>
-                  <td className="px-3 py-2.5 text-right text-muted-foreground">{(t.lines || []).length}</td>
-                  <td className="px-3 py-2.5 text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      <button
-                        type="button"
-                        title="View transfer details"
-                        aria-label="View transfer details"
-                        onClick={() => setViewTransfer(t)}
-                        className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
-                      >
-                        <Eye className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        title="Edit transfer"
-                        aria-label="Edit transfer"
-                        disabled={!online}
-                        onClick={() => handleEdit(t)}
-                        className="p-1.5 text-muted-foreground hover:text-primary hover:bg-muted rounded transition-colors disabled:opacity-40"
-                      >
-                        <Pencil className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        title="Delete transfer"
-                        aria-label="Delete transfer"
-                        disabled={!online}
-                        onClick={() => setDeleteConfirm(t)}
-                        className="p-1.5 text-muted-foreground hover:text-red-400 hover:bg-muted rounded transition-colors disabled:opacity-40"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {transfers.map((t) => {
+                const trNum = t.transfer_number || t.voucher_no || t.number || (t.id ? `TRF-${t.id.slice(0, 8)}` : "—");
+                const trLines = t.lines || t.items || [];
+                return (
+                  <tr key={t.id} data-testid={`transfer-row-${t.id}`} className="border-b border-border hover:bg-muted/40 text-foreground">
+                    <td className="px-3 py-2.5 text-foreground font-semibold">{trNum}</td>
+                    <td className="px-3 py-2.5 text-muted-foreground">{t.transfer_date || "—"}</td>
+                    <td className="px-3 py-2.5 text-muted-foreground">{godownName(t.from_godown_id)}</td>
+                    <td className="px-3 py-2.5 text-muted-foreground">{godownName(t.to_godown_id)}</td>
+                    <td className="px-3 py-2.5 text-right text-muted-foreground">{trLines.length}</td>
+                    <td className="px-3 py-2.5 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          title="View transfer details"
+                          aria-label="View transfer details"
+                          onClick={() => handleViewDetails(t)}
+                          className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          title="Edit transfer"
+                          aria-label="Edit transfer"
+                          disabled={!online}
+                          onClick={() => handleEdit(t)}
+                          className="p-1.5 text-muted-foreground hover:text-primary hover:bg-muted rounded transition-colors disabled:opacity-40"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          title="Delete transfer"
+                          aria-label="Delete transfer"
+                          disabled={!online}
+                          onClick={() => setDeleteConfirm(t)}
+                          className="p-1.5 text-muted-foreground hover:text-red-400 hover:bg-muted rounded transition-colors disabled:opacity-40"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -302,7 +334,7 @@ export default function StockTransfers() {
       <Modal
         open={Boolean(viewTransfer)}
         onClose={() => setViewTransfer(null)}
-        title={`Stock Transfer Details — ${viewTransfer?.transfer_number || ""}`}
+        title={`Stock Transfer Details — ${viewTransfer?.transfer_number || viewTransfer?.voucher_no || viewTransfer?.number || (viewTransfer?.id ? `TRF-${viewTransfer.id.slice(0, 8)}` : "")}`}
         size="lg"
         footer={
           <div className="flex items-center justify-between w-full">
@@ -335,65 +367,78 @@ export default function StockTransfers() {
           </div>
         }
       >
-        {viewTransfer && (
-          <div className="space-y-4 text-sm font-mono">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-3 bg-muted/30 rounded-md border border-border">
-              <div>
-                <div className="text-xs text-muted-foreground label-overline">Transfer No</div>
-                <div className="font-semibold text-foreground">{viewTransfer.transfer_number}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground label-overline">Date</div>
-                <div>{viewTransfer.transfer_date || "—"}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground label-overline">From Warehouse</div>
-                <div className="font-medium text-foreground">{godownName(viewTransfer.from_godown_id)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground label-overline">To Warehouse</div>
-                <div className="font-medium text-foreground">{godownName(viewTransfer.to_godown_id)}</div>
-              </div>
-            </div>
-
-            {viewTransfer.remarks && (
-              <div>
-                <div className="text-xs text-muted-foreground label-overline mb-1">Remarks</div>
-                <div className="p-2.5 bg-card border border-border rounded text-foreground text-xs">
-                  {viewTransfer.remarks}
+        {viewTransfer && (() => {
+          const vNum = viewTransfer.transfer_number || viewTransfer.voucher_no || viewTransfer.number || (viewTransfer.id ? `TRF-${viewTransfer.id.slice(0, 8)}` : "—");
+          const vLines = viewTransfer.lines || viewTransfer.items || [];
+          const vRemarks = viewTransfer.remarks || viewTransfer.notes || "";
+          return (
+            <div className="space-y-4 text-sm font-mono">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-3 bg-muted/30 rounded-md border border-border">
+                <div>
+                  <div className="text-xs text-muted-foreground label-overline">Transfer No</div>
+                  <div className="font-semibold text-foreground">{vNum}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground label-overline">Date</div>
+                  <div>{viewTransfer.transfer_date || "—"}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground label-overline">From Warehouse</div>
+                  <div className="font-medium text-foreground">{godownName(viewTransfer.from_godown_id)}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground label-overline">To Warehouse</div>
+                  <div className="font-medium text-foreground">{godownName(viewTransfer.to_godown_id)}</div>
                 </div>
               </div>
-            )}
 
-            <div>
-              <div className="text-xs text-muted-foreground label-overline mb-2">Transferred Items</div>
-              <div className="border border-border rounded overflow-hidden">
-                <table className="w-full text-sm text-left">
-                  <thead className="bg-muted text-muted-foreground border-b border-border">
-                    <tr>
-                      <th className="px-3 py-2 w-12 text-center">#</th>
-                      <th className="px-3 py-2">Stock Item</th>
-                      <th className="px-3 py-2 text-right">Quantity</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(viewTransfer.lines || []).map((line, idx) => (
-                      <tr key={idx} className="border-b border-border last:border-0 hover:bg-muted/20">
-                        <td className="px-3 py-2 text-center text-muted-foreground">{idx + 1}</td>
-                        <td className="px-3 py-2 font-medium text-foreground">
-                          {itemName(line.stock_item_id || line.product_id)}
-                        </td>
-                        <td className="px-3 py-2 text-right font-semibold text-foreground">
-                          {line.qty}
-                        </td>
+              {vRemarks && (
+                <div>
+                  <div className="text-xs text-muted-foreground label-overline mb-1">Remarks</div>
+                  <div className="p-2.5 bg-card border border-border rounded text-foreground text-xs">
+                    {vRemarks}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <div className="text-xs text-muted-foreground label-overline mb-2">Transferred Items</div>
+                <div className="border border-border rounded overflow-hidden">
+                  <table className="w-full text-sm text-left">
+                    <thead className="bg-muted text-muted-foreground border-b border-border">
+                      <tr>
+                        <th className="px-3 py-2 w-12 text-center">#</th>
+                        <th className="px-3 py-2">Stock Item</th>
+                        <th className="px-3 py-2 text-right">Quantity</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {vLines.length > 0 ? (
+                        vLines.map((line, idx) => (
+                          <tr key={idx} className="border-b border-border last:border-0 hover:bg-muted/20">
+                            <td className="px-3 py-2 text-center text-muted-foreground">{idx + 1}</td>
+                            <td className="px-3 py-2 font-medium text-foreground">
+                              {resolveItemName(line)}
+                            </td>
+                            <td className="px-3 py-2 text-right font-semibold text-foreground">
+                              {line.qty ?? line.quantity ?? 0}
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={3} className="px-3 py-4 text-center text-muted-foreground text-xs">
+                            No transferred items recorded on this transfer
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </Modal>
 
       {/* Delete Confirmation Modal */}
@@ -422,7 +467,9 @@ export default function StockTransfers() {
           </div>
           <p className="text-sm text-muted-foreground">
             Are you sure you want to delete stock transfer{" "}
-            <strong className="text-foreground font-mono">{deleteConfirm?.transfer_number}</strong>?
+            <strong className="text-foreground font-mono">
+              {deleteConfirm?.transfer_number || deleteConfirm?.voucher_no || deleteConfirm?.number || (deleteConfirm?.id ? `TRF-${deleteConfirm.id.slice(0, 8)}` : "")}
+            </strong>?
           </p>
           <p className="text-xs text-red-400/90 bg-red-950/30 p-2.5 rounded border border-red-800/40">
             This will permanently revert the outward and inward stock ledger entries and remove this transfer from stock records.
@@ -432,4 +479,5 @@ export default function StockTransfers() {
     </div>
   );
 }
+
 

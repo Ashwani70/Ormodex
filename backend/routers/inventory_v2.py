@@ -608,6 +608,61 @@ async def adjust_stock(payload: StockAdjustmentIn, user: dict = Depends(get_curr
     return entry
 
 
+async def _enrich_transfers(transfers: list[dict]) -> list[dict]:
+    """Ensure every transfer object has lines, items, transfer_number, and remarks populated.
+
+    For historical rows created before the schema migration, `lines` or
+    `transfer_number` might be empty on the row itself. This helper fills `lines`
+    from `stock_ledger_entries` (where source_doc_type='stock_transfer' and
+    movement_type='TRANSFER_OUT') so both existing and new transfer records
+    render their full item lines and quantity in list and detail views.
+    """
+    if not transfers:
+        return []
+
+    empty_ids = []
+    for t in transfers:
+        if not t.get("lines") and t.get("items"):
+            t["lines"] = t["items"]
+        if not t.get("items") and t.get("lines"):
+            t["items"] = t["lines"]
+        if not t.get("remarks") and t.get("notes"):
+            t["remarks"] = t["notes"]
+        if not t.get("notes") and t.get("remarks"):
+            t["notes"] = t["remarks"]
+        if not t.get("transfer_number"):
+            t["transfer_number"] = t.get("voucher_no") or t.get("number") or (f"TRF-{t['id'][:8]}" if t.get("id") else "")
+
+        if not t.get("lines") and t.get("id"):
+            empty_ids.append(t["id"])
+
+    if empty_ids:
+        entries = await db[LEDGER].find({
+            "source_doc_type": "stock_transfer",
+            "source_doc_id": {"$in": empty_ids},
+            "movement_type": "TRANSFER_OUT",
+        }, {"_id": 0}).to_list(10000)
+
+        by_transfer: dict[str, list[dict]] = {}
+        for e in entries:
+            doc_id = e.get("source_doc_id")
+            if doc_id:
+                by_transfer.setdefault(doc_id, []).append({
+                    "stock_item_id": e.get("stock_item_id") or e.get("product_id"),
+                    "product_id": e.get("product_id"),
+                    "qty": abs(float(e.get("qty") or 0)),
+                    "batch_id": e.get("batch_id"),
+                    "serial_id": e.get("serial_id"),
+                })
+
+        for t in transfers:
+            if not t.get("lines") and t.get("id") in by_transfer:
+                t["lines"] = by_transfer[t["id"]]
+                t["items"] = by_transfer[t["id"]]
+
+    return transfers
+
+
 @router.post("/transfers")
 async def create_transfer(payload: StockTransfer, user: dict = Depends(get_current_user)):
     _require_inventory(user)
@@ -627,12 +682,16 @@ async def create_transfer(payload: StockTransfer, user: dict = Depends(get_curre
     if not data.get("transfer_number"):
         data["transfer_number"] = await next_doc_number("TRF", "stock_transfers")
     data["transfer_date"] = data.get("transfer_date") or date.today().isoformat()
+    data["items"] = data["lines"]
+    data["notes"] = data.get("remarks") or ""
+
     transfer = await crud_create("stock_transfers", data, user=user)
+    if not transfer.get("lines"):
+        transfer["lines"] = data["lines"]
+    if not transfer.get("transfer_number"):
+        transfer["transfer_number"] = data["transfer_number"]
 
     # Post paired TRANSFER_OUT (priced by engine) then TRANSFER_IN at same cost.
-    # post_entry mirrors each posting into stock_transactions itself (see
-    # core/stock_ledger.py's dual-write note), so the Stock Log grid picks up
-    # both legs automatically — no manual mirroring needed here.
     for line in data["lines"]:
         out = await post_entry(
             stock_item_id=line["stock_item_id"], godown_id=data["from_godown_id"],
@@ -657,16 +716,24 @@ async def list_transfers(q: Optional[str] = None, page: Optional[int] = None, li
                          from_date: Optional[str] = None, to_date: Optional[str] = None,
                          user: dict = Depends(get_current_user)):
     _require_inventory(user)
-    return await paginated_list("stock_transfers", page=page, limit=limit, q=q,
-                                 search_fields=["transfer_number", "remarks"],
-                                 sort_field="created_at", sort_dir=-1,
-                                 from_date=from_date, to_date=to_date)
+    res = await paginated_list("stock_transfers", page=page, limit=limit, q=q,
+                                search_fields=["transfer_number", "remarks", "notes"],
+                                sort_field="created_at", sort_dir=-1,
+                                from_date=from_date, to_date=to_date)
+    if isinstance(res, dict) and "items" in res:
+        res["items"] = await _enrich_transfers(res["items"])
+        return res
+    if isinstance(res, list):
+        return await _enrich_transfers(res)
+    return res
 
 
 @router.get("/transfers/{item_id}")
 async def get_transfer(item_id: str, user: dict = Depends(get_current_user)):
     _require_inventory(user)
-    return await crud_get("stock_transfers", item_id, label="Stock Transfer")
+    t = await crud_get("stock_transfers", item_id, label="Stock Transfer")
+    enriched = await _enrich_transfers([t])
+    return enriched[0] if enriched else t
 
 
 @router.put("/transfers/{item_id}")
@@ -689,8 +756,12 @@ async def update_transfer(item_id: str, payload: StockTransfer, user: dict = Dep
     if not data.get("transfer_number"):
         data["transfer_number"] = existing.get("transfer_number")
     data["transfer_date"] = data.get("transfer_date") or existing.get("transfer_date") or date.today().isoformat()
+    data["items"] = data["lines"]
+    data["notes"] = data.get("remarks") or ""
 
     updated = await crud_update("stock_transfers", item_id, data, user=user, label="Stock Transfer")
+    if not updated.get("lines"):
+        updated["lines"] = data["lines"]
 
     # Revert / clean up old stock ledger entries and transactions for this transfer
     await db[LEDGER].delete_many({"source_doc_type": "stock_transfer", "source_doc_id": item_id})
@@ -717,6 +788,7 @@ async def update_transfer(item_id: str, payload: StockTransfer, user: dict = Dep
             entry_date=data["transfer_date"], user=user,
         )
     return updated
+
 
 
 @router.delete("/transfers/{item_id}")

@@ -324,9 +324,13 @@ class StockTransfer(Base):
         Index("ix_stock_transfers_tenant_id", "tenant_id"),
         Index("ix_stock_transfers_tenant_status", "tenant_id", "status"),
     )
-    id = _pk(); tenant_id = _text(); from_godown_id = _text(); to_godown_id = _text()
-    items = _jsonb(); status = _text(); transfer_date = _ts(); notes = _text()
+    id = _pk(); tenant_id = _text(); transfer_number = _text()
+    from_godown_id = _text(); to_godown_id = _text()
+    lines = _jsonb(); items = _jsonb(); status = _text()
+    transfer_date = _ts(); remarks = _text(); notes = _text()
+    extra = _jsonb()
     created_at = _ts(); updated_at = _ts()
+
 
 
 class Batch(Base):

@@ -356,7 +356,22 @@ async def _startup_init() -> None:
                         logger.warning(f"Could not add drift column {_tbl}.{_col} — skipping")
             logger.info("Drift columns reconciled")
 
+    _stock_transfers_fix = """
+        ALTER TABLE IF EXISTS stock_transfers ADD COLUMN IF NOT EXISTS transfer_number TEXT DEFAULT NULL;
+        ALTER TABLE IF EXISTS stock_transfers ADD COLUMN IF NOT EXISTS lines JSONB DEFAULT NULL;
+        ALTER TABLE IF EXISTS stock_transfers ADD COLUMN IF NOT EXISTS remarks TEXT DEFAULT NULL;
+        ALTER TABLE IF EXISTS stock_transfers ADD COLUMN IF NOT EXISTS extra JSONB DEFAULT NULL;
+    """
+    try:
+        async with engine.begin() as conn:
+            for _stmt in [s.strip() for s in _stock_transfers_fix.strip().split(";") if s.strip()]:
+                await conn.execute(text(_stmt))
+        logger.info("stock_transfers schema ensured")
+    except Exception as _e:
+        logger.warning("stock_transfers schema fix skipped (non-fatal): %s", _e)
+
     # Always ensure stock_ledger_entries has the columns that post_entry writes.
+
     # These were missing from the initial schema migration, causing all inventory
     # reports to return empty/zero results. Idempotent — ADD COLUMN IF NOT EXISTS.
     _stock_ledger_fix = """
