@@ -244,7 +244,8 @@ export default function Products() {
     setOpen(true);
   };
   const startEdit = (item) => {
-    setForm({ ...blank, ...item });
+    const qty = item.stock_quantity ?? item.quantity ?? 0;
+    setForm({ ...blank, ...item, quantity: qty });
     setEditingId(item.id);
     setOpen(true);
   };
@@ -365,6 +366,7 @@ export default function Products() {
         .toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 12) || "ITEM";
       return `${base}-${Date.now().toString(36).toUpperCase().slice(-5)}`;
     };
+    const stockQty = Number(form.quantity) || 0;
     const payload = {
       ...form,
       sku: form.sku || autoSku(),
@@ -372,7 +374,8 @@ export default function Products() {
       category_id: form.category_id || null,
       cost_price: Number(form.cost_price) || 0,
       selling_price: Number(form.selling_price) || 0,
-      quantity: Number(form.quantity) || 0,
+      quantity: stockQty,
+      stock_quantity: stockQty,
       low_stock_threshold: Number(form.low_stock_threshold) || 10,
       gst_rate: Number(form.gst_rate) || 18,
       warehouse_id: form.warehouse_id || null,
@@ -395,7 +398,7 @@ export default function Products() {
         toast.success("Product created");
       }
       setOpen(false);
-      load();
+      await load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e));
     } finally {
@@ -1109,7 +1112,16 @@ export default function Products() {
               inputMode="decimal"
               data-testid="form-opening-quantity"
               value={form.quantity ?? ""}
-              onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+              onChange={(e) => {
+                const stockVal = e.target.value;
+                console.log("EDIT PRODUCT STOCK", {
+                  productId: editingId,
+                  oldStock: form.quantity,
+                  newStock: stockVal,
+                  warehouseId: form.warehouse_id
+                });
+                setForm({ ...form, quantity: stockVal });
+              }}
             />
           </Field>
           <Field label="UOM (Unit of Measure)" required hint="Mandatory unit for stock transactions">

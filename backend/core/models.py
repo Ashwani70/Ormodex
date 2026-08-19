@@ -78,12 +78,14 @@ class Product(BaseModel):
     cost_price: float = 0
     selling_price: float = 0
     quantity: float = 0
+    stock_quantity: Optional[float] = None
     low_stock_threshold: float = 10
     warehouse_id: Optional[str] = None
     image_url: Optional[str] = None
     image_path: Optional[str] = None
     hsn_code: Optional[str] = None
     gst_rate: float = 18.0
+
 
 
 # ---------------- Purchase ----------------
@@ -119,7 +121,8 @@ class POItem(BaseModel):
     description: Optional[str] = None
     sku: Optional[str] = ""
     quantity: float
-    unit: str = "Nos"
+    unit: Optional[str] = None
+    uom: Optional[str] = None
     unit_price: float
     gst_rate: float = 18.0
     hsn_code: Optional[str] = None

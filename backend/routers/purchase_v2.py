@@ -806,6 +806,8 @@ async def grn_pdf(grn_id: str, user: dict = Depends(get_current_user)):
         "product_name": ln.get("product_name") or ln.get("item_name") or "",
         "sku": ln.get("sku") or ln.get("item_code") or "",
         "hsn_code": ln.get("hsn_code") or ln.get("hsn") or "",
+        "unit": ln.get("unit") or ln.get("uom") or "",
+        "uom": ln.get("unit") or ln.get("uom") or "",
         "quantity": ln.get("qty_received") if ln.get("qty_received") is not None else ln.get("qty", 0),
         "unit_price": ln.get("rate", 0),
         "gst_rate": ln.get("gst_rate", 0),

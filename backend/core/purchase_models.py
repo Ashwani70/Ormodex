@@ -84,6 +84,7 @@ class POLine(BaseModel):
     description: Optional[str] = None
     hsn_code: Optional[str] = None
     unit: Optional[str] = None
+    uom: Optional[str] = None
     gst_type: Optional[str] = None
     cgst_rate: Optional[float] = None
     sgst_rate: Optional[float] = None
@@ -116,6 +117,7 @@ class GRNLine(BaseModel):
     product_name: Optional[str] = None   # manual-entry name (frontend key)
     hsn_code: Optional[str] = None
     unit: Optional[str] = None
+    uom: Optional[str] = None
     po_line_index: Optional[int] = None  # links back to the PO line
     qty_received: float
     rate: float = 0.0
@@ -145,6 +147,7 @@ class BillLine(BaseModel):
     product_name: Optional[str] = None   # manual-entry name (frontend key)
     hsn_code: Optional[str] = None
     unit: Optional[str] = None
+    uom: Optional[str] = None
     qty: float
     rate: float
     gst_rate: float = 18.0
@@ -174,6 +177,7 @@ class ReturnLine(BaseModel):
     product_name: Optional[str] = None   # manual-entry name (frontend key)
     hsn_code: Optional[str] = None
     unit: Optional[str] = None
+    uom: Optional[str] = None
     qty: float          # positive; posted as outward
     rate: float = 0.0
     gst_rate: float = 18.0

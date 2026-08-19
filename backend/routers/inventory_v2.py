@@ -821,21 +821,23 @@ def _date_filter(from_date: Optional[str], to_date: Optional[str]) -> dict:
 async def stock_summary(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    godown_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
-    """Per item: opening / inward / outward / closing (qty + value), and a per-godown split."""
+    """Per item: opening / inward / outward / adjustment / closing (qty + value), and a per-godown split."""
     _require_inventory(user)
+    target_godown_id = godown_id or warehouse_id
     items = await db.stock_items.find({}, {"_id": 0}).to_list(5000)
     cfg_by_id = await item_valuation_configs([it["id"] for it in items], resolve_tenant(user))
 
-    # Batch-read every item's ledger history in ONE query instead of a
-    # find_one-per-item loop (was a genuine N+1 — 1 + N round-trips, each
-    # ~260ms cross-region, see core/cache.py's WHY note — timing out the
-    # frontend's 30s axios timeout with even a modest item count). Mirrors
-    # the batched pattern stock_aging already uses below.
     item_ids = [it["id"] for it in items if it.get("id")]
+    query: dict = {"stock_item_id": {"$in": item_ids}} if item_ids else {}
+    if target_godown_id and item_ids:
+        query["godown_id"] = target_godown_id
+
     all_ledger_entries = await db[LEDGER].find(
-        {"stock_item_id": {"$in": item_ids}}, {"_id": 0}
+        query, {"_id": 0}
     ).sort([("entry_date", 1), ("created_at", 1)]).to_list(1000000) if item_ids else []
     entries_by_item: dict[str, list[dict]] = {sid: [] for sid in item_ids}
     for e in all_ledger_entries:
@@ -850,21 +852,52 @@ async def stock_summary(
         all_entries = entries_by_item.get(it["id"], [])
 
         def _safe_date(e: dict) -> str:
-            return e.get("entry_date") or "9999-12-31"
+            return (e.get("entry_date") or "9999-12-31")[:10]
 
-        before = [e for e in all_entries if not from_date or _safe_date(e) < from_date]
+        def _is_adjustment(e: dict) -> bool:
+            m_type = str(e.get("movement_type") or "").upper()
+            s_type = str(e.get("source_doc_type") or "").lower()
+            return m_type == "ADJUSTMENT" or s_type == "product_adjust"
+
+        def _is_opening(e: dict) -> bool:
+            m_type = str(e.get("movement_type") or "").upper()
+            s_type = str(e.get("source_doc_type") or "").lower()
+            return m_type == "OPENING" or s_type == "product_opening_stock"
+
+        before = [
+            e for e in all_entries
+            if (from_date and _safe_date(e) < from_date) or (not from_date and _is_opening(e))
+        ]
         in_period = [
             e for e in all_entries
             if (not from_date or _safe_date(e) >= from_date)
             and (not to_date or _safe_date(e) <= to_date)
+            and not (not from_date and _is_opening(e))
         ]
 
         opening = _value(before, cfg)
         closing = _value(before + in_period, cfg)
-        inward_qty = sum(float(e.get("qty") or 0) for e in in_period if (e.get("qty") or 0) > 0)
-        outward_qty = -sum(float(e.get("qty") or 0) for e in in_period if (e.get("qty") or 0) < 0)
-        inward_val = sum(float(e.get("value") or 0) for e in in_period if (e.get("qty") or 0) > 0)
-        outward_val = -sum(float(e.get("value") or 0) for e in in_period if (e.get("qty") or 0) < 0)
+
+        inward_entries = [
+            e for e in in_period
+            if float(e.get("qty") or 0) > 0 and not _is_adjustment(e) and not _is_opening(e)
+        ]
+        outward_entries = [
+            e for e in in_period
+            if float(e.get("qty") or 0) < 0 and not _is_adjustment(e) and not _is_opening(e)
+        ]
+        adjustment_entries = [
+            e for e in in_period
+            if _is_adjustment(e)
+        ]
+
+        inward_qty = sum(float(e.get("qty") or 0) for e in inward_entries)
+        outward_qty = -sum(float(e.get("qty") or 0) for e in outward_entries)
+        adjustment_qty = sum(float(e.get("qty") or 0) for e in adjustment_entries)
+
+        inward_val = sum(float(e.get("value") or 0) for e in inward_entries)
+        outward_val = -sum(float(e.get("value") or 0) for e in outward_entries)
+        adjustment_val = sum(float(e.get("value") or 0) for e in adjustment_entries)
 
         # Per-godown closing breakdown.
         godown_ids = {e["godown_id"] for e in before + in_period if e.get("godown_id")}
@@ -873,16 +906,17 @@ async def stock_summary(
             g_entries = [e for e in (before + in_period) if e.get("godown_id") == gid]
             g_val = _value(g_entries, cfg)
             per_godown.append({
-                "godown_id": gid, "qty": g_val.closing_qty, "value": g_val.closing_value,
+                "godown_id": gid, "qty": round(g_val.closing_qty, 4), "value": round(g_val.closing_value, 4),
             })
 
         out.append({
             "stock_item_id": it["id"], "name": it["name"],
             "valuation_method": method,
-            "opening_qty": opening.closing_qty, "opening_value": opening.closing_value,
+            "opening_qty": round(opening.closing_qty, 4), "opening_value": round(opening.closing_value, 4),
             "inward_qty": round(inward_qty, 4), "inward_value": round(inward_val, 4),
             "outward_qty": round(outward_qty, 4), "outward_value": round(outward_val, 4),
-            "closing_qty": closing.closing_qty, "closing_value": closing.closing_value,
+            "adjustment_qty": round(adjustment_qty, 4), "adjustment_value": round(adjustment_val, 4),
+            "closing_qty": round(closing.closing_qty, 4), "closing_value": round(closing.closing_value, 4),
             "per_godown": per_godown,
         })
     return out

@@ -175,7 +175,7 @@ export default function PurchaseOrdersV2() {
       description: desc,
       ...(p ? {
         hsn_code: p.hsn_code || "",
-        unit: p.unit || DEFAULT_UOM,
+        unit: p.unit || p.uom || DEFAULT_UOM,
         rate,
         gst_rate: gst,
         _cgst: half,
@@ -254,7 +254,7 @@ export default function PurchaseOrdersV2() {
           product_name: l.product_name || l.item_name || "",
           description: l.description || l.item_description || l.line_description || "",
           hsn_code: l.hsn_code || "",
-          unit: l.unit || DEFAULT_UOM,
+          unit: l.unit || l.uom || DEFAULT_UOM,
           qty: l.qty != null && l.qty !== 0 ? l.qty : (l.quantity != null ? l.quantity : ""),
           rate: l.rate != null && l.rate !== 0 ? l.rate : (l.unit_price != null ? l.unit_price : ""),
           gst_rate: gst !== "" ? gst : "",
@@ -284,7 +284,7 @@ export default function PurchaseOrdersV2() {
         product_name: l._manual ? l.product_name : items.find((i) => i.id === l.product_id)?.name,
         description: l.description ? l.description.trim() : null,
         hsn_code: l.hsn_code || null,
-        unit: l.unit || DEFAULT_UOM,
+        unit: l.unit || l.uom || DEFAULT_UOM,
         qty: parseFloat(l.qty), rate: parseFloat(l.rate) || 0, gst_rate: parseFloat(l.gst_rate) || 0,
         gst_type: l._gst_type || "GST",
         cgst_rate: l._gst_type === "CGST_SGST" ? parseFloat(l._cgst) || 0 : null,
@@ -294,6 +294,7 @@ export default function PurchaseOrdersV2() {
     if (lines.length === 0) return toast.error("Add at least one line.");
 
     const body = { ...form, expected_date: form.expected_date || null, lines };
+    console.log("PO SAVE PAYLOAD", JSON.stringify(body, null, 2));
     if (editingId) {
       // On edit, only send po_number when it actually changed (a real rename);
       // otherwise let the server keep the existing one. Drop the auto-preview noise.
@@ -775,7 +776,10 @@ export default function PurchaseOrdersV2() {
                               className="h-9 w-full" />
                           </td>
                           <td className="px-1.5 py-1.5">
-                            <Select value={l.unit || DEFAULT_UOM} onChange={(e) => setLine(idx, { unit: e.target.value })}
+                            <Select value={l.unit || l.uom || DEFAULT_UOM} onChange={(e) => {
+                              console.log("PO LINE UNIT CHANGE", { productId: l.product_id, unit: e.target.value });
+                              setLine(idx, { unit: e.target.value });
+                            }}
                               ref={gridNav.registerCell(idx, 4)} onKeyDown={gridNav.handleKeyDown(idx, 4)}
                               className="h-9 px-1.5">
                               {l.unit && !STANDARD_UOMS.includes(l.unit) && (

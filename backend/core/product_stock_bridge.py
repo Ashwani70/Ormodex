@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from .db import db
-from .stock_ledger import on_hand_bulk
+from .stock_ledger import on_hand, on_hand_bulk
 from .utils import crud_create, crud_get
 
 
@@ -156,19 +156,17 @@ async def enrich_products_with_live_stock(products: list[dict]) -> list[dict]:
     The product's own value is kept as a fallback when there is no link or no
     movement yet. selling_price is left untouched — it lives only on the product.
     Each enriched product gets `stock_linked: bool` so the UI can show the source.
-
-    Batched: the link resolution and on-hand valuation are each done in a fixed
-    number of queries for the whole list, not per-product. The previous per-item
-    loop issued ~3 round-trips per product, which on a remote DB made the
-    Products page take tens of seconds.
     """
     for p in products:
         p["stock_linked"] = False
+        p["stock_quantity"] = float(p.get("quantity") or 0.0)
     if not products:
         return products
 
     items_by_pid = await _linked_stock_items_for(products)
     if not items_by_pid:
+        for p in products:
+            p["stock_quantity"] = float(p.get("quantity") or 0.0)
         return products
 
     oh_by_sid = await on_hand_bulk([it["id"] for it in items_by_pid.values()])
@@ -176,22 +174,41 @@ async def enrich_products_with_live_stock(products: list[dict]) -> list[dict]:
     for p in products:
         pid = p.get("id")
         if pid is None:
+            p["stock_quantity"] = float(p.get("quantity") or 0.0)
             continue
         item = items_by_pid.get(pid)
         if not item:
+            p["stock_quantity"] = float(p.get("quantity") or 0.0)
             continue
         p["stock_linked"] = True
         p["stock_item_id"] = item["id"]
         if item.get("gst_rate") is not None:
             p["gst_rate"] = item["gst_rate"]
-        oh = oh_by_sid.get(item["id"]) or {}
-        qty = oh.get("qty")
+
+        wh_id = p.get("warehouse_id")
+        oh_bulk = oh_by_sid.get(item["id"]) or {}
+        if wh_id:
+            oh_godown = await on_hand(item["id"], wh_id)
+            g_qty = oh_godown.get("qty", 0.0)
+            if g_qty != 0.0 or not oh_bulk.get("qty"):
+                qty = g_qty
+                val = oh_godown.get("value") or 0.0
+            else:
+                qty = oh_bulk.get("qty")
+                val = oh_bulk.get("value") or 0.0
+        else:
+            qty = oh_bulk.get("qty")
+            val = oh_bulk.get("value") or 0.0
+
         if qty is not None:
             p["quantity"] = qty
-            value = oh.get("value") or 0.0
+            p["stock_quantity"] = qty
             if qty:
-                p["cost_price"] = round(value / qty, 2)
+                p["cost_price"] = round(val / qty, 2)
+        else:
+            p["stock_quantity"] = float(p.get("quantity") or 0.0)
     return products
+
 
 
 async def _linked_stock_items_for(products: list[dict]) -> dict[str, dict]:

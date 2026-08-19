@@ -53,6 +53,7 @@ export default function InventoryReports() {
   const [godowns, setGodowns] = useState([]);
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  const [selGodown, setSelGodown] = useState("");
   const [selItem, setSelItem] = useState("");
   const [viewItem, setViewItem] = useState(null);
   const [data, setData] = useState(null);
@@ -82,6 +83,7 @@ export default function InventoryReports() {
       const params = {};
       if (fromDate) params.from_date = fromDate;
       if (toDate) params.to_date = toDate;
+      if (selGodown) params.godown_id = selGodown;
       let url;
       if (tab === "summary") url = "/inventory/v2/reports/stock-summary";
       else if (tab === "aging") { url = "/inventory/v2/reports/stock-aging"; }
@@ -101,7 +103,7 @@ export default function InventoryReports() {
     } finally {
       setLoading(false);
     }
-  }, [tab, fromDate, toDate, selItem]);
+  }, [tab, fromDate, toDate, selItem, selGodown]);
 
   useEffect(() => { fetchReport(); }, [fetchReport]);
   useEffect(() => { setSearch(""); }, [tab]);
@@ -139,6 +141,17 @@ export default function InventoryReports() {
 
       {(showDateRange || showItemPicker) && (
         <div className="flex flex-wrap gap-3 items-end mb-4">
+          {tab === "summary" && (
+            <div className="w-56">
+              <Field label="Warehouse">
+                <Select value={selGodown} data-testid="report-godown-select"
+                  onChange={(e) => setSelGodown(e.target.value)}>
+                  <option value="">— All Warehouses —</option>
+                  {godowns.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                </Select>
+              </Field>
+            </div>
+          )}
           {showItemPicker && (
             <div className="w-64">
               <Field label="Stock Item">
@@ -222,6 +235,7 @@ export default function InventoryReports() {
             <th className="px-3 py-2.5 text-right">Opening Qty</th>
             <th className="px-3 py-2.5 text-right">Inward</th>
             <th className="px-3 py-2.5 text-right">Outward</th>
+            <th className="px-3 py-2.5 text-right">Adjustment</th>
             <th className="px-3 py-2.5 text-right">Closing Qty</th>
             <th className="px-3 py-2.5 text-right">Closing Value</th>
             <th className="px-3 py-2.5 text-right">Seen</th>
@@ -240,6 +254,7 @@ export default function InventoryReports() {
                 <td className="px-3 py-2.5 text-right text-muted-foreground">{inr(r.opening_qty)}</td>
                 <td className="px-3 py-2.5 text-right text-emerald-400">{inr(r.inward_qty)}</td>
                 <td className="px-3 py-2.5 text-right text-amber-400">{inr(r.outward_qty)}</td>
+                <td className={`px-3 py-2.5 text-right font-medium ${r.adjustment_qty < 0 ? "text-red-400" : r.adjustment_qty > 0 ? "text-emerald-400" : "text-muted-foreground"}`}>{inr(r.adjustment_qty)}</td>
                 <td className="px-3 py-2.5 text-right text-foreground font-semibold">{inr(r.closing_qty)}</td>
                 <td className="px-3 py-2.5 text-right text-primary">{inr(r.closing_value)}</td>
                 <td className="px-3 py-2.5 text-right">

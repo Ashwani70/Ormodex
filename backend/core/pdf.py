@@ -647,11 +647,17 @@ def _build_item_rows(items: list[dict], currency: str, doc: dict) -> tuple[list[
         else:
             desc_content = p_name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+        unit_val = (
+            it.get("unit")
+            or it.get("uom")
+            or it.get("unit_name")
+            or "Nos"
+        )
         rows.append({
             "sno": str(i),
             "description": C.table_cell_paragraph(desc_content),
             "hsn": str(hsn),
-            "unit": it.get("unit") or "Nos",
+            "unit": str(unit_val),
             "qty": f"{qty:g}",
             "rate": _money(rate, currency),
             "discount": _money(discount, currency) if discount else "—",
@@ -1059,11 +1065,14 @@ def normalize_purchase_doc(doc: dict, party_field: str = "vendor") -> dict:
     for line in doc.get("lines", []):
         qty_val = line.get("qty") if line.get("qty") is not None else line.get("quantity", 0)
         rate_val = line.get("rate") if line.get("rate") is not None else line.get("unit_price", 0)
+        unit_val = line.get("unit") or line.get("uom") or line.get("unit_name") or ""
         items.append({
             "product_name": line.get("product_name") or line.get("item_name") or "",
             "description": line.get("description") or "",
             "sku": line.get("sku") or line.get("item_code") or "",
             "hsn_code": line.get("hsn_code") or line.get("hsn_sac_code") or line.get("hsn") or "",
+            "unit": unit_val,
+            "uom": unit_val,
             "quantity": qty_val if qty_val is not None else 0,
             "unit_price": rate_val if rate_val is not None else 0,
             "gst_rate": line.get("gst_rate") or 0,

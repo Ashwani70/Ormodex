@@ -268,96 +268,111 @@ async def create_product(payload: Product, user: dict = Depends(get_current_user
     return product
 
 
+@router.get("/products/{item_id}")
+async def get_product(item_id: str, _: dict = Depends(get_current_user)):
+    product = await crud_get("products", item_id, label="Product")
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    enriched = await enrich_products_with_live_stock([product])
+    return enriched[0]
+
+
 @router.put("/products/{item_id}")
 async def update_product(item_id: str, payload: Product, user: dict = Depends(get_current_user)):
-    from core.db import get_session
-    from core.schema import Product as DBProduct
-    from sqlalchemy import select, and_
-
     data = await _resolve_category(payload.model_dump())
     if not data.get("unit") or not str(data.get("unit")).strip():
         data["unit"] = "Nos"
 
-    async with get_session() as session:
-        # 1. Row-level locking on products table row FOR UPDATE
-        stmt = select(DBProduct).where(and_(DBProduct.id == item_id, DBProduct.is_deleted != True)).with_for_update()
-        row = (await session.execute(stmt)).scalars().first()
-        if not row:
-            raise HTTPException(status_code=404, detail="Product not found")
+    # 1. Read existing product record & check SKU uniqueness
+    existing_product = await crud_get("products", item_id, label="Product")
+    if not existing_product:
+        raise HTTPException(status_code=404, detail="Product not found")
 
-        # 2. Check SKU uniqueness
-        if payload.sku and payload.sku != row.sku:
-            sku_stmt = select(DBProduct).where(
-                and_(DBProduct.sku == payload.sku, DBProduct.id != item_id, DBProduct.is_deleted != True)
-            )
-            if (await session.execute(sku_stmt)).scalars().first():
-                raise HTTPException(status_code=400, detail="SKU already exists")
-
-        # 3. Read old stock quantity from locked product record and live on_hand ledger
-        stock_item_id = await resolve_stock_item_id_for_product(item_id, user)
-        godown_id = await resolve_godown_id(data.get("warehouse_id"))
-
-        current_on_hand_info = await on_hand(stock_item_id, godown_id)
-        current_stock = float(current_on_hand_info.get("qty", 0)) if current_on_hand_info and current_on_hand_info.get("qty") is not None else float(row.quantity or 0)
-        old_quantity = current_stock
-
-        submitted_qty = data.get("quantity")
-        new_quantity = float(submitted_qty) if submitted_qty is not None else old_quantity
-        difference = round(new_quantity - old_quantity, 4)
-
-        if difference < 0 and (old_quantity + difference < 0):
-            raise HTTPException(status_code=400, detail="Insufficient stock for this quantity change")
-
-        # 4. Update product record with new quantity and updated fields
-        data["quantity"] = new_quantity
-        result = await crud_update("products", item_id, data, user=user)
-        await db.stock_items.update_many({"product_id": item_id}, {"$set": {"uom": data["unit"]}})
-
-        # 5. Handle stock ledger adjustment posting atomically
-        rate = float(data.get("cost_price") or 0)
-
-        existing_opening = await db.stock_ledger_entries.find_one({
-            "source_doc_type": "product_opening_stock",
-            "source_doc_id": item_id,
+    if payload.sku and payload.sku != existing_product.get("sku"):
+        dup = await db.products.find_one({
+            "sku": payload.sku, "id": {"$ne": item_id}, "is_deleted": {"$ne": True}
         })
-        if existing_opening is None:
-            existing_opening = await db.stock_ledger_entries.find_one({
-                "source_doc_type": "product_opening_stock",
-                "product_id": item_id,
-            })
+        if dup:
+            raise HTTPException(status_code=400, detail="SKU already exists")
 
-        if difference != 0:
-            if existing_opening is None:
-                # No opening movement posted yet: post opening entry with difference
-                await post_entry(
-                    stock_item_id=stock_item_id, godown_id=godown_id,
-                    qty=difference, movement_type="OPENING", rate=rate,
-                    source_doc_type="product_opening_stock", source_doc_id=item_id,
-                    user=user, skip_product_sync=True,
-                )
-            else:
-                adj_rate = rate if difference > 0 else float(current_on_hand_info.get("rate") or rate)
-                entry = await post_entry(
-                    stock_item_id=stock_item_id, godown_id=godown_id,
-                    qty=difference, movement_type="ADJUSTMENT", rate=adj_rate,
-                    source_doc_type="product_adjust", source_doc_id=item_id,
-                    user=user, skip_product_sync=True,
-                )
-                logger.info(
-                    "product %s: edit-modal stock change posted as adjustment delta=%s entry=%s",
-                    item_id, difference, entry["id"],
-                )
+    # 2. Read old stock quantity from live on_hand ledger (or product record)
+    stock_item_id = await resolve_stock_item_id_for_product(item_id, user)
+    godown_id = await resolve_godown_id(data.get("warehouse_id"))
 
-        response_payload = {
-            **result,
-            "success": True,
-            "product_id": item_id,
-            "old_quantity": old_quantity,
-            "new_quantity": new_quantity,
-            "adjustment_quantity": difference,
-            "stock_quantity": new_quantity,
-        }
-        return response_payload
+    current_on_hand_total = await on_hand(stock_item_id, None)
+    total_qty = float(current_on_hand_total.get("qty", 0.0)) if current_on_hand_total and current_on_hand_total.get("qty") is not None else float(existing_product.get("quantity") or 0.0)
+    old_quantity = total_qty
+
+    submitted_qty = data.get("quantity")
+    if submitted_qty is None:
+        submitted_qty = data.get("stock_quantity")
+
+    new_quantity = float(submitted_qty) if submitted_qty is not None else old_quantity
+    difference = round(new_quantity - old_quantity, 4)
+
+    print("PRODUCT UPDATE")
+    print("product_id =", item_id)
+    print("requested_stock =", new_quantity)
+    logger.info("PRODUCT UPDATE product_id=%s old_stock=%s requested_stock=%s diff=%s godown_id=%s",
+                item_id, old_quantity, new_quantity, difference, godown_id)
+
+    if difference < 0 and (old_quantity + difference < 0):
+        raise HTTPException(status_code=400, detail="Insufficient stock for this quantity change")
+
+    # 3. Update product record with new quantity and updated fields
+    data["quantity"] = new_quantity
+    data["stock_quantity"] = new_quantity
+    result = await crud_update("products", item_id, data, user=user)
+    await db.stock_items.update_many({"product_id": item_id}, {"$set": {"uom": data["unit"]}})
+
+    # 4. Handle stock ledger adjustment posting atomically
+    rate = float(data.get("cost_price") or 0)
+
+    has_opening = await db.stock_ledger_entries.find_one({
+        "stock_item_id": stock_item_id,
+        "$or": [
+            {"movement_type": "OPENING"},
+            {"source_doc_type": "product_opening_stock"},
+        ]
+    })
+
+    if difference != 0:
+        if has_opening is None:
+            # No opening movement posted yet for this product: post opening entry
+            await post_entry(
+                stock_item_id=stock_item_id, godown_id=godown_id,
+                qty=difference, movement_type="OPENING", rate=rate,
+                source_doc_type="product_opening_stock", source_doc_id=item_id,
+                user=user, skip_product_sync=True,
+            )
+        else:
+            adj_rate = rate if difference > 0 else float(current_on_hand_total.get("rate") or rate)
+            entry = await post_entry(
+                stock_item_id=stock_item_id, godown_id=godown_id,
+                qty=difference, movement_type="ADJUSTMENT", rate=adj_rate,
+                source_doc_type="product_adjust", source_doc_id=item_id,
+                user=user, skip_product_sync=True,
+            )
+            logger.info(
+                "product %s: edit-modal stock change posted as adjustment delta=%s entry=%s",
+                item_id, difference, entry["id"],
+            )
+
+    # Invalidate products list cache so GET /products immediately reflects new stock
+    cache.bump_generation("stock")
+    cache.invalidate_prefix("products:")
+
+    response_payload = {
+        **result,
+        "success": True,
+        "product_id": item_id,
+        "old_quantity": old_quantity,
+        "new_quantity": new_quantity,
+        "adjustment_quantity": difference,
+        "stock_quantity": new_quantity,
+        "quantity": new_quantity,
+    }
+    return response_payload
 
 
 @router.delete("/products/{item_id}")
