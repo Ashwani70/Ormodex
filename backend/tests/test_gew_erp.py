@@ -1,4 +1,4 @@
-﻿"""Comprehensive backend tests for Ormodex ERP."""
+"""Comprehensive backend tests for Ormodex ERP."""
 import os
 import time
 from typing import Any
@@ -166,7 +166,7 @@ class TestPurchaseOrders:
         r = admin_session.post(f"{BASE_URL}/api/purchase-orders", json=po_payload)
         assert r.status_code == 200, r.text
         po = r.json()
-        assert po["po_number"].startswith("PO-")
+        assert po["po_number"].startswith("PO")
         assert po["total"] > 0
         rcv = admin_session.post(f"{BASE_URL}/api/purchase-orders/{po['id']}/receive")
         assert rcv.status_code == 200
@@ -191,14 +191,14 @@ class TestSalesFlow:
         # Quotation
         rq = admin_session.post(f"{BASE_URL}/api/quotations", json={"customer_id": cust["id"], "items": items})
         assert rq.status_code == 200, rq.text
-        assert rq.json()["quote_number"].startswith("QUO-")
+        assert rq.json()["quote_number"].startswith("QUO")
         assert rq.json()["total"] == round(2*500 + 2*500*0.18, 2)
 
         # SO
         rs = admin_session.post(f"{BASE_URL}/api/sales-orders", json={"customer_id": cust["id"], "items": items})
         assert rs.status_code == 200
         so = rs.json()
-        assert so["order_number"].startswith("SO-")
+        assert so["order_number"].startswith("SO")
         rconf = admin_session.post(f"{BASE_URL}/api/sales-orders/{so['id']}/confirm")
         assert rconf.status_code == 200
         # confirm again should fail

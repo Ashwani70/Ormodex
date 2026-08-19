@@ -51,7 +51,7 @@ function InvKpi({ tone, icon: Icon, label, value, unit }) {
 
 const STATUSES = ["DRAFT", "SENT", "PARTIALLY_RECEIVED", "RECEIVED", "CLOSED", "CANCELLED"];
 const STATUS_TONE = { DRAFT: "neutral", SENT: "info", PARTIALLY_RECEIVED: "warning", RECEIVED: "success", CLOSED: "success", CANCELLED: "danger" };
-const blankLine = () => ({ product_id: "", product_name: "", hsn_code: "", unit: DEFAULT_UOM, qty: "", rate: "", gst_rate: "", _manual: false, _gst_type: "GST", _cgst: "", _sgst: "", _igst: "" });
+const blankLine = () => ({ product_id: "", product_name: "", description: "", hsn_code: "", unit: DEFAULT_UOM, qty: "", rate: "", gst_rate: "", _manual: false, _gst_type: "GST", _cgst: "", _sgst: "", _igst: "" });
 const blank = () => ({ vendor_id: "", expected_date: "", status: "DRAFT", notes: "", lines: [blankLine()], po_number: "", po_number_reason: "" });
 
 const lineBase = (l) => (parseFloat(l.qty) || 0) * (parseFloat(l.rate) || 0);
@@ -153,10 +153,10 @@ export default function PurchaseOrdersV2() {
   // Columns: Product(0) → Description(1) → HSN/SAC(2) → Ordered Qty(3) → Unit(4)
   // → Rate(5) → GST(6, or 6+7 for CGST+SGST). Discount is a disabled placeholder
   // (not yet wired to the backend) so it is skipped from the grid entirely.
-  const gstColsForRow = (row) => (form.lines[row]?._gst_type === "CGST_SGST" ? 8 : 7);
+  const colsForLine = (line) => (line?._gst_type === "CGST_SGST" ? 8 : 7);
   const gridNav = useGridKeyNav({
     rowCount: form.lines.length,
-    colCount: gstColsForRow,
+    colCount: (r) => colsForLine(form.lines[r]),
     onRowComplete: addLine,
     onInsertRow: insertLineAfter,
     onDeleteRow: removeLineKeepingOne,
@@ -168,8 +168,11 @@ export default function PurchaseOrdersV2() {
     const rate = p?.cost_price != null ? Number(p.cost_price) : "";
     const gst = p?.gst_rate != null ? Number(p.gst_rate) : "";
     const half = gst !== "" ? gst / 2 : "";
+    const curLine = form.lines[idx];
+    const desc = curLine?.description ? curLine.description : (p?.description || "");
     setLine(idx, {
       product_id: pid,
+      description: desc,
       ...(p ? {
         hsn_code: p.hsn_code || "",
         unit: p.unit || DEFAULT_UOM,
@@ -240,20 +243,22 @@ export default function PurchaseOrdersV2() {
       expected_date: po.expected_date || "",
       status: po.status || "DRAFT",
       notes: po.notes || "",
+      remarks: po.remarks || "",
       po_number: po.po_number || "",
       po_number_reason: "",
-      lines: (po.lines || []).map((l) => {
+      lines: (po.lines || po.items || []).map((l) => {
         const gst = l.gst_rate ?? 18;
         const gstType = l.gst_type || "GST";
         return {
           product_id: l.product_id || "",
-          product_name: l.product_name || "",
+          product_name: l.product_name || l.item_name || "",
+          description: l.description || l.item_description || l.line_description || "",
           hsn_code: l.hsn_code || "",
           unit: l.unit || DEFAULT_UOM,
-          qty: l.qty != null && l.qty !== 0 ? l.qty : "",
-          rate: l.rate != null && l.rate !== 0 ? l.rate : "",
+          qty: l.qty != null && l.qty !== 0 ? l.qty : (l.quantity != null ? l.quantity : ""),
+          rate: l.rate != null && l.rate !== 0 ? l.rate : (l.unit_price != null ? l.unit_price : ""),
           gst_rate: gst !== "" ? gst : "",
-          _manual: !l.product_id && !!l.product_name,
+          _manual: !l.product_id && !!(l.product_name || l.item_name),
           _gst_type: gstType,
           _cgst: gstType === "CGST_SGST" ? (l.cgst_rate ?? (parseFloat(gst) || 0) / 2) : (parseFloat(gst) || 0) / 2,
           _sgst: gstType === "CGST_SGST" ? (l.sgst_rate ?? (parseFloat(gst) || 0) / 2) : (parseFloat(gst) || 0) / 2,
@@ -277,6 +282,7 @@ export default function PurchaseOrdersV2() {
       .map((l) => ({
         product_id: l._manual ? null : l.product_id,
         product_name: l._manual ? l.product_name : items.find((i) => i.id === l.product_id)?.name,
+        description: l.description ? l.description.trim() : null,
         hsn_code: l.hsn_code || null,
         unit: l.unit || DEFAULT_UOM,
         qty: parseFloat(l.qty), rate: parseFloat(l.rate) || 0, gst_rate: parseFloat(l.gst_rate) || 0,

@@ -8,6 +8,7 @@ const blankRow = () => ({
   product_id: "",
   product_name: "",
   sku: "",
+  description: "",
   hsn_code: "",
   unit: DEFAULT_UOM,
   quantity: "",
@@ -60,11 +61,11 @@ export default function LineItemsEditor({ items, setItems, products }) {
   const removeRowKeepingNone = (idx) => setItems(items.filter((_, i) => i !== idx));
 
   // Tally-style row×column keyboard nav (see useGridKeyNav): Product → [SKU
-  // if manual] → HSN → Qty → Unit → Rate → GST, Enter on the last cell of the
+  // if manual] → Description → HSN → Qty → Unit → Rate → GST, Enter on the last cell of the
   // last row appends a fresh row. Manual-entry rows have one extra column
   // (product name + SKU as separate cells) vs catalog rows (a single
   // product <select>), so colCount varies per row exactly like SalesOrders.jsx.
-  const colsForRow = (row) => (items[row]?._manual ? 7 : 6);
+  const colsForRow = (row) => (items[row]?._manual ? 8 : 7);
   const gridNav = useGridKeyNav({
     rowCount: items.length,
     colCount: colsForRow,
@@ -73,11 +74,20 @@ export default function LineItemsEditor({ items, setItems, products }) {
     onDeleteRow: removeRowKeepingNone,
   });
   // Column index of a given field depends on manual vs catalog shape:
-  //   catalog: 0=product select, 1=HSN, 2=Qty, 3=Unit, 4=Rate, 5=GST
-  //   manual:  0=product name, 1=SKU, 2=HSN, 3=Qty, 4=Unit, 5=Rate, 6=GST
+  //   catalog: 0=product select, 1=description, 2=HSN, 3=Qty, 4=Unit, 5=Rate, 6=GST
+  //   manual:  0=product name, 1=SKU, 2=description, 3=HSN, 4=Qty, 5=Unit, 6=Rate, 7=GST
   const col = (row, field) => {
     const manual = items[row]?._manual;
-    const idx = { product: 0, sku: 1, hsn: manual ? 2 : 1, qty: manual ? 3 : 2, unit: manual ? 4 : 3, rate: manual ? 5 : 4, gst: manual ? 6 : 5 };
+    const idx = {
+      product: 0,
+      sku: 1,
+      description: manual ? 2 : 1,
+      hsn: manual ? 3 : 2,
+      qty: manual ? 4 : 3,
+      unit: manual ? 5 : 4,
+      rate: manual ? 6 : 5,
+      gst: manual ? 7 : 6,
+    };
     return idx[field];
   };
 
@@ -109,6 +119,7 @@ export default function LineItemsEditor({ items, setItems, products }) {
             <tr className="text-left label-overline border-b border-border bg-muted/20 text-muted-foreground">
               <th className="px-2 py-2 w-7" title="Toggle catalog / manual entry" />
               <th className="px-2 py-2">Product</th>
+              <th className="px-2 py-2 w-44">Description</th>
               <th className="px-2 py-2 w-24">HSN Code</th>
               <th className="px-2 py-2 w-20 text-right">Qty</th>
               <th className="px-2 py-2 w-20">Unit</th>
@@ -121,7 +132,7 @@ export default function LineItemsEditor({ items, setItems, products }) {
           <tbody>
             {items.length === 0 ? (
               <tr>
-                <td colSpan={9} className="text-center text-muted-foreground py-6 font-mono text-xs uppercase">
+                <td colSpan={10} className="text-center text-muted-foreground py-6 font-mono text-xs uppercase">
                   No line items — click "Add line"
                 </td>
               </tr>
@@ -180,6 +191,16 @@ export default function LineItemsEditor({ items, setItems, products }) {
                           })}
                         </select>
                       )}
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        placeholder="Description"
+                        value={it.description || ""}
+                        onChange={(e) => updateRow(idx, { description: e.target.value })}
+                        ref={gridNav.registerCell(idx, col(idx, "description"))}
+                        onKeyDown={gridNav.handleKeyDown(idx, col(idx, "description"))}
+                        className="w-full bg-background border border-input text-foreground text-sm px-2 py-1 focus:border-primary focus:outline-none transition-colors"
+                      />
                     </td>
                     <td className="px-2 py-1.5">
                       <input

@@ -116,6 +116,7 @@ class Supplier(BaseModel):
 class POItem(BaseModel):
     product_id: Optional[str] = None
     product_name: str
+    description: Optional[str] = None
     sku: Optional[str] = ""
     quantity: float
     unit: str = "Nos"
@@ -131,6 +132,7 @@ class PurchaseOrder(BaseModel):
     items: List[POItem]
     status: Literal["DRAFT", "SENT", "RECEIVED", "CANCELLED"] = "DRAFT"
     notes: Optional[str] = None
+    remarks: Optional[str] = None
     expected_date: Optional[str] = None
 
 

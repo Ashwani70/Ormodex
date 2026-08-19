@@ -246,6 +246,7 @@ async def post_entry(
     source_doc_id: str | None = None,
     entry_date: str | None = None,
     user: dict | None = None,
+    skip_product_sync: bool = False,
 ) -> dict:
     """Append one signed StockLedgerEntry, pricing outward moves via the engine.
 
@@ -318,7 +319,8 @@ async def post_entry(
     )
     await log_audit("CREATE", LEDGER, entry["id"], user, new_values=entry)
     await _mirror_to_legacy_transaction(entry)
-    await _sync_product_quantity(linked_product_id, qty)
+    if not skip_product_sync:
+        await _sync_product_quantity(linked_product_id, qty)
     logger.info("stock_ledger.post_entry: success for entry %s", entry["id"])
     return entry
 

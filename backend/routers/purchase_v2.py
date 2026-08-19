@@ -191,6 +191,10 @@ async def create_order(payload: PurchaseOrderV2, user: dict = Depends(get_curren
     data["po_number_locked"] = False
     vendor = await crud_get("vendors", data["vendor_id"])
     data["vendor_name"] = data.get("vendor_name") or vendor.get("company") or vendor.get("name")
+    remarks_val = data.get("remarks") or data.get("notes")
+    if remarks_val is not None:
+        data["remarks"] = remarks_val
+        data["notes"] = remarks_val
     for ln in data["lines"]:
         await resolve_line_stock_item(ln, user)  # product_id → backing stock_item_id
         ln["amount"] = _line_amount(ln)
@@ -231,6 +235,10 @@ async def update_order(po_id: str, payload: PurchaseOrderV2, user: dict = Depend
     reason = data.pop("po_number_reason", None)
     vendor = await crud_get("vendors", data["vendor_id"], label="Vendor")
     data["vendor_name"] = data.get("vendor_name") or vendor.get("company") or vendor.get("name")
+    remarks_val = data.get("remarks") or data.get("notes")
+    if remarks_val is not None:
+        data["remarks"] = remarks_val
+        data["notes"] = remarks_val
 
     # ── PO number edit rules ─────────────────────────────────────────────────
     # The number may change only when the PO is still a Draft AND the number is

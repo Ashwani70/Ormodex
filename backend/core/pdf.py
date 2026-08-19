@@ -479,15 +479,14 @@ def build_document_pdf(
     story += C.document_header(company_data, doc_type, doc_number, status=status,
                                issue_date=issue_date, due_date=due_date, barcode_flowable=barcode)
 
-    # ── Our Company, then Party — stacked full-width sections (not side by
-    # side): Our Company always renders first, per the "Bill From" convention,
-    # followed by the counterparty (Buyer/Supplier) below it. ────────────────
+    # ── Our Company + Counterparty — side-by-side cards ───────────────────────────
     party_name = party_data.get("name") or doc.get("customer_name") or "—"
     party_heading = party_role if party_role == "BUYER" else supplier_role
-    story.append(C.party_card("OUR COMPANY (BILL FROM)", company_data.get("name") or "—", company_data, width=C.CONTENT_W, two_col=True))
-    story.append(Spacer(1, 5))
-    story.append(C.party_card(party_heading, party_name, party_data, width=C.CONTENT_W, two_col=True))
-    story.append(Spacer(1, 6))
+    card_w = (C.CONTENT_W - 6 * mm) / 2
+    left_card = C.party_card("OUR COMPANY (BILL FROM)", company_data.get("name") or "—", company_data, width=card_w, two_col=False)
+    right_card = C.party_card(party_heading, party_name, party_data, width=card_w, two_col=False)
+    story.append(C.party_card_row(left_card, right_card, gap_mm=6))
+    story.append(Spacer(1, 4))
 
     # ── Document detail grid: only fields with a real value render ──────────────
     detail_pairs = [
@@ -565,6 +564,14 @@ def build_document_pdf(
         story.append(payment)
         story.append(Spacer(1, 3))
 
+    # ── Remarks section ──────────────────────────────────────────────────────────
+    remarks_text = str(doc.get("remarks") or doc.get("notes") or "").strip()
+    if remarks_text:
+        remarks_card = C.terms_card("REMARKS", remarks_text)
+        if remarks_card:
+            story.append(remarks_card)
+            story.append(Spacer(1, 5))
+
     # ── Declaration (left) + Signature block (bottom-right) ─────────────────────
     # Note: deliberately NOT wrapped in KeepTogether. ReportLab's KeepTogether
     # always reports an oversized height on its first wrap() pass (by design,
@@ -631,9 +638,18 @@ def _build_item_rows(items: list[dict], currency: str, doc: dict) -> tuple[list[
             total_cgst += round(gst_amt / 2, 2)
             total_sgst += gst_amt - round(gst_amt / 2, 2)
         hsn = it.get("hsn_code") or it.get("hsn_sac_code") or it.get("hsn") or "—"
+        p_name = str(it.get("product_name") or it.get("item_name") or "").strip()
+        d_text = str(it.get("description") or "").strip()
+        if d_text and d_text != p_name:
+            escaped_name = p_name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            escaped_desc = d_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
+            desc_content = f"<b>{escaped_name}</b><br/><font color='#52525b' size='7.5'>{escaped_desc}</font>"
+        else:
+            desc_content = p_name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
         rows.append({
             "sno": str(i),
-            "description": C.table_cell_paragraph(it.get("product_name", "")),
+            "description": C.table_cell_paragraph(desc_content),
             "hsn": str(hsn),
             "unit": it.get("unit") or "Nos",
             "qty": f"{qty:g}",
@@ -1034,12 +1050,18 @@ def normalize_purchase_doc(doc: dict, party_field: str = "vendor") -> dict:
         return doc
 
     out = dict(doc)
+    remarks_val = doc.get("notes") or doc.get("remarks") or ""
+    if remarks_val:
+        out["notes"] = remarks_val
+        out["remarks"] = remarks_val
+
     items = []
     for line in doc.get("lines", []):
         qty_val = line.get("qty") if line.get("qty") is not None else line.get("quantity", 0)
         rate_val = line.get("rate") if line.get("rate") is not None else line.get("unit_price", 0)
         items.append({
             "product_name": line.get("product_name") or line.get("item_name") or "",
+            "description": line.get("description") or "",
             "sku": line.get("sku") or line.get("item_code") or "",
             "hsn_code": line.get("hsn_code") or line.get("hsn_sac_code") or line.get("hsn") or "",
             "quantity": qty_val if qty_val is not None else 0,

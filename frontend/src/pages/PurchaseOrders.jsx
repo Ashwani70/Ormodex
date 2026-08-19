@@ -66,6 +66,7 @@ export default function PurchaseOrders() {
         quantity: Number(i.quantity),
         unit_price: Number(i.unit_price),
         gst_rate: Number(i.gst_rate || 0),
+        description: i.description ? i.description.trim() : null,
       })),
     };
     try {

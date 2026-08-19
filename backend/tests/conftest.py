@@ -146,3 +146,16 @@ def patched_request(self, method, url, *args, **kwargs):
         raise e
 
 requests.Session.request = patched_request
+
+
+@_pytest.fixture(scope="session")
+def admin_session():
+    BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
+    s = requests.Session()
+    r = s.post(f"{BASE_URL}/api/auth/login", json={"email": "admin@ormodex.com", "password": "Admin@123456"})
+    assert r.status_code == 200, f"Admin login failed: {r.status_code} {r.text}"
+    data = r.json()
+    s.headers.update({"Authorization": f"Bearer {data['access_token']}"})
+    s.user = data["user"]
+    return s
+

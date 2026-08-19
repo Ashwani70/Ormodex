@@ -81,6 +81,7 @@ class POLine(BaseModel):
     product_id: Optional[str] = None
     item_name: Optional[str] = None
     product_name: Optional[str] = None   # manual-entry name (frontend key)
+    description: Optional[str] = None
     hsn_code: Optional[str] = None
     unit: Optional[str] = None
     gst_type: Optional[str] = None
@@ -103,6 +104,7 @@ class PurchaseOrderV2(BaseModel):
     status: POStatus = "DRAFT"
     lines: List[POLine]
     notes: Optional[str] = None
+    remarks: Optional[str] = None
 
 
 # ───────────────────────── Goods Receipt Note ─────────────────────────
